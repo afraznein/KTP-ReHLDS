@@ -1151,6 +1151,14 @@ int Host_Init(quakeparms_t *parms)
 
 	Q_snprintf(versionString, sizeof(versionString), "%s,%i,%i", gpszVersionString, PROTOCOL_VERSION, build_number());
 	Cvar_Set("sv_version", versionString);
+
+	// KTP Modification: Identify custom build
+	Con_Printf("========================================\n");
+	Con_Printf("  KTP ReHLDS - Selective Pause Build\n");
+	Con_Printf("  Chat & HUD enabled during pause\n");
+	Con_Printf("  Build: %s\n", __DATE__);
+	Con_Printf("========================================\n");
+
 	Con_DPrintf("%4.1f Mb heap\n", (double)parms->memsize / (1024.0f * 1024.0f));
 	R_InitTextures();
 	HPAK_CheckIntegrity("custom");

@@ -5230,7 +5230,10 @@ void SV_SendClientMessages(void)
 		if (host_limitlocal.value == 0.0f && cl->netchan.remote_address.type == NA_LOOPBACK)
 			cl->send_message = TRUE;
 
-		if (cl->active && cl->spawned && cl->fully_connected && host_frametime + realtime >= cl->next_messagetime)
+		// KTP Modification: Force message sending during pause for chat/HUD
+		if (g_psv.paused && cl->active && cl->spawned && cl->fully_connected)
+			cl->send_message = TRUE;
+		else if (cl->active && cl->spawned && cl->fully_connected && host_frametime + realtime >= cl->next_messagetime)
 			cl->send_message = TRUE;
 
 		if (cl->netchan.message.flags & SIZEBUF_OVERFLOWED)

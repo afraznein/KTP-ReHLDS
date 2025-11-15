@@ -1497,6 +1497,7 @@ void SV_ParseStringCommand(client_t *pSenderClient)
 			float savedFrametime = gGlobalVariables.frametime;
 			gGlobalVariables.frametime = host_frametime;  // Temporarily set frametime
 
+			Con_DPrintf("[KTP] Processing command during pause: %s\n", s);
 			gEntityInterface.pfnClientCommand(sv_player);
 
 			gGlobalVariables.frametime = savedFrametime;  // Restore to 0 (paused state)
@@ -1505,7 +1506,17 @@ void SV_ParseStringCommand(client_t *pSenderClient)
 		}
 		break;
 	case 1:
-		Cmd_ExecuteString(s, src_client);
+		// KTP Modification: Also allow engine commands during pause
+		if (g_psv.paused) {
+			float savedFrametime = gGlobalVariables.frametime;
+			gGlobalVariables.frametime = host_frametime;
+
+			Cmd_ExecuteString(s, src_client);
+
+			gGlobalVariables.frametime = savedFrametime;
+		} else {
+			Cmd_ExecuteString(s, src_client);
+		}
 		break;
 	case 2:	// TODO: Check not used path
 		Cbuf_InsertText(s);
