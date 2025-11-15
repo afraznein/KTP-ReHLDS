@@ -860,6 +860,11 @@ IRehldsHookRegistry_SV_Frame* CRehldsHookchains::SV_Frame() {
 	return &m_SV_Frame;
 }
 
+// KTP Modification: Accessor for pause HUD update hook
+IRehldsHookRegistry_SV_UpdatePausedHUD* CRehldsHookchains::SV_UpdatePausedHUD() {
+	return &m_SV_UpdatePausedHUD;
+}
+
 IRehldsHookRegistry_SV_ShouldSendConsistencyList* CRehldsHookchains::SV_ShouldSendConsistencyList() {
 	return &m_SV_ShouldSendConsistencyList;
 }

@@ -1490,7 +1490,19 @@ void SV_ParseStringCommand(client_t *pSenderClient)
 			s[127] = 0;
 		}
 		Cmd_TokenizeString(s);
-		gEntityInterface.pfnClientCommand(sv_player);
+
+		// KTP Modification: Allow command processing during pause
+		// This enables chat and custom commands while game time stays frozen
+		if (g_psv.paused) {
+			float savedFrametime = gGlobalVariables.frametime;
+			gGlobalVariables.frametime = host_frametime;  // Temporarily set frametime
+
+			gEntityInterface.pfnClientCommand(sv_player);
+
+			gGlobalVariables.frametime = savedFrametime;  // Restore to 0 (paused state)
+		} else {
+			gEntityInterface.pfnClientCommand(sv_player);
+		}
 		break;
 	case 1:
 		Cmd_ExecuteString(s, src_client);

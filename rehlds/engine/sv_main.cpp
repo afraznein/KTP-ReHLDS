@@ -8080,6 +8080,22 @@ void SV_CheckMapDifferences(void)
 	}
 }
 
+// KTP Modification: Allow HUD updates during pause
+void EXT_FUNC SV_UpdatePausedHUD_Internal(void)
+{
+	// Default implementation: Hook chain allows plugins to update HUD
+	// AMX plugins (via REAPI) will hook this to send HUD messages during pause
+}
+
+void SV_UpdatePausedHUD(void)
+{
+	if (!g_psv.paused)
+		return;
+
+	// Call hook chain to allow plugins to update HUD during pause
+	g_RehldsHookchains.m_SV_UpdatePausedHUD.callChain(SV_UpdatePausedHUD_Internal);
+}
+
 void SV_Frame()
 {
 	g_RehldsHookchains.m_SV_Frame.callChain(SV_Frame_Internal);
@@ -8098,6 +8114,11 @@ void EXT_FUNC SV_Frame_Internal()
 	{
 		SV_Physics();
 		g_psv.time += host_frametime;
+	}
+	else
+	{
+		// KTP Modification: Update HUD during pause
+		SV_UpdatePausedHUD();
 	}
 	SV_RequestMissingResourcesFromClients();
 	SV_CheckTimeouts();

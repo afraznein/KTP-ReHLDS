@@ -204,6 +204,10 @@ typedef IHookChainRegistry<bool, netadr_t &, const uint8_t *, int> IRehldsHookRe
 typedef IVoidHookChain<> IRehldsHook_SV_Frame;
 typedef IVoidHookChainRegistry<> IRehldsHookRegistry_SV_Frame;
 
+//SV_UpdatePausedHUD hook (KTP Modification - allows HUD updates during pause)
+typedef IVoidHookChain<> IRehldsHook_SV_UpdatePausedHUD;
+typedef IVoidHookChainRegistry<> IRehldsHookRegistry_SV_UpdatePausedHUD;
+
 //SV_ShouldSendConsistencyList hook
 typedef IHookChain<bool, IGameClient *, bool> IRehldsHook_SV_ShouldSendConsistencyList;
 typedef IHookChainRegistry<bool, IGameClient *, bool> IRehldsHookRegistry_SV_ShouldSendConsistencyList;
@@ -309,6 +313,7 @@ public:
 	virtual IRehldsHookRegistry_CreateFakeClient* CreateFakeClient() = 0;
 	virtual IRehldsHookRegistry_SV_CheckConnectionLessRateLimits* SV_CheckConnectionLessRateLimits() = 0;
 	virtual IRehldsHookRegistry_SV_Frame* SV_Frame() = 0;
+	virtual IRehldsHookRegistry_SV_UpdatePausedHUD* SV_UpdatePausedHUD() = 0;  // KTP Modification
 	virtual IRehldsHookRegistry_SV_ShouldSendConsistencyList* SV_ShouldSendConsistencyList() = 0;
 	virtual IRehldsHookRegistry_GetEntityInit* GetEntityInit() = 0;
 	virtual IRehldsHookRegistry_SV_EmitPings* SV_EmitPings() = 0;

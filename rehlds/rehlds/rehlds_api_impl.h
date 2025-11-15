@@ -198,6 +198,10 @@ typedef IHookChainRegistryImpl<bool, netadr_t &, const uint8_t *, int> CRehldsHo
 typedef IVoidHookChainImpl<> CRehldsHook_SV_Frame;
 typedef IVoidHookChainRegistryImpl<> CRehldsHookRegistry_SV_Frame;
 
+//SV_UpdatePausedHUD hook (KTP Modification)
+typedef IVoidHookChainImpl<> CRehldsHook_SV_UpdatePausedHUD;
+typedef IVoidHookChainRegistryImpl<> CRehldsHookRegistry_SV_UpdatePausedHUD;
+
 //SV_ShouldSendConsistencyList hook
 typedef IHookChainImpl<bool, IGameClient *, bool> CRehldsHook_SV_ShouldSendConsistencyList;
 typedef IHookChainRegistryImpl<bool, IGameClient *, bool> CRehldsHookRegistry_SV_ShouldSendConsistencyList;
@@ -301,6 +305,7 @@ public:
 	CRehldsHookRegistry_CreateFakeClient m_CreateFakeClient;
 	CRehldsHookRegistry_SV_CheckConnectionLessRateLimits m_SV_CheckConnectionLessRateLimits;
 	CRehldsHookRegistry_SV_Frame m_SV_Frame;
+	CRehldsHookRegistry_SV_UpdatePausedHUD m_SV_UpdatePausedHUD;  // KTP Modification
 	CRehldsHookRegistry_SV_ShouldSendConsistencyList m_SV_ShouldSendConsistencyList;
 	CRehldsHookRegistry_GetEntityInit m_GetEntityInit;
 	CRehldsHookRegistry_SV_EmitPings m_SV_EmitPings;
@@ -359,6 +364,7 @@ public:
 	EXT_FUNC virtual IRehldsHookRegistry_CreateFakeClient* CreateFakeClient();
 	EXT_FUNC virtual IRehldsHookRegistry_SV_CheckConnectionLessRateLimits* SV_CheckConnectionLessRateLimits();
 	EXT_FUNC virtual IRehldsHookRegistry_SV_Frame* SV_Frame();
+	EXT_FUNC virtual IRehldsHookRegistry_SV_UpdatePausedHUD* SV_UpdatePausedHUD();  // KTP Modification
 	EXT_FUNC virtual IRehldsHookRegistry_SV_ShouldSendConsistencyList* SV_ShouldSendConsistencyList();
 	EXT_FUNC virtual IRehldsHookRegistry_GetEntityInit* GetEntityInit();
 	EXT_FUNC virtual IRehldsHookRegistry_SV_EmitPings* SV_EmitPings();
