@@ -1,4 +1,16 @@
+# Build directories
 **/build
+**/bin
+**/obj
+**/out
+**/x64
+**/Win32
+**/Debug
+**/Release
+**/RelWithDebInfo
+**/MinSizeRel
+
+# Visual Studio / MSBuild
 *.iml
 *.bat
 *.log
@@ -18,5 +30,35 @@
 **/msvc/*.amplxeproj
 **/msvc/.vs
 **/msvc/ipch
+*.VC.db
+*.VC.VC.opendb
+.vs/
+ipch/
 
+# C/C++ build artifacts
+*.o
+*.obj
+*.pch
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.lib
+*.dll
+*.exe
+*.so
+*.a
+*.dylib
+*.ncb
+*.sdf
+*.opensdf
+
+# KTP Documentation (internal only)
+docs/
+
+# Accidental output files
+nul
+**/nul
+
+# Version tracking
 rehlds/version/appversion.h
