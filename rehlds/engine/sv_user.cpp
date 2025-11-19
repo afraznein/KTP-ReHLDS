@@ -28,6 +28,9 @@
 
 #include "precompiled.h"
 
+// KTP Modification: External flag from sv_main.cpp to track temporary unpause
+extern int g_ktp_temporary_unpause;
+
 sv_adjusted_positions_t truepositions[MAX_CLIENTS];
 qboolean g_balreadymoved;
 
@@ -1493,13 +1496,28 @@ void SV_ParseStringCommand(client_t *pSenderClient)
 
 		// KTP Modification: Allow command processing during pause
 		// This enables chat and custom commands while game time stays frozen
+		// We temporarily unpause both frametime AND g_psv.paused so the game DLL
+		// processes the command normally (especially chat "say" commands)
 		if (g_psv.paused) {
 			float savedFrametime = gGlobalVariables.frametime;
-			gGlobalVariables.frametime = host_frametime;  // Temporarily set frametime
+			int wasPaused = g_psv.paused;
 
-			Con_DPrintf("[KTP] Processing command during pause: %s\n", s);
+			gGlobalVariables.frametime = host_frametime;  // Temporarily set frametime
+			g_psv.paused = 0;  // Temporarily unpause
+
+			Con_Printf("[KTP-SV_USER] Processing command during pause: %s\n", s);
 			gEntityInterface.pfnClientCommand(sv_player);
 
+			// KTP: Only restore pause if it wasn't explicitly changed during command processing
+			// If a command (like /cancel) called SetServerPause(), g_psv.paused will be 0 and
+			// g_ktp_temporary_unpause will be 0 (cleared by SetServerPause)
+			if (g_ktp_temporary_unpause) {
+				// Still temporary, restore it
+				g_psv.paused = wasPaused;
+				Con_Printf("[KTP-SV_USER] Restored pause after command (temp flag still set)\n");
+			} else {
+				Con_Printf("[KTP-SV_USER] NOT restoring pause - was changed during command (temp flag cleared)\n");
+			}
 			gGlobalVariables.frametime = savedFrametime;  // Restore to 0 (paused state)
 		} else {
 			gEntityInterface.pfnClientCommand(sv_player);

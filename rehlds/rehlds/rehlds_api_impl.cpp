@@ -28,6 +28,9 @@
 
 #include "precompiled.h"
 
+// KTP Modification: External flag from sv_main.cpp to track temporary unpause
+extern int g_ktp_temporary_unpause;
+
 struct plugin_api_t
 {
 	char name[32];
@@ -470,7 +473,15 @@ void EXT_FUNC SV_WriteMovevarsToClient_api(sizebuf_t *message)
 
 void EXT_FUNC SetServerPause(bool setPause)
 {
+	Con_Printf("[KTP] SetServerPause called: setPause=%d, old paused=%d, temp_flag=%d\n",
+		setPause, g_psv.paused, g_ktp_temporary_unpause);
+
 	g_psv.paused = setPause;
+
+	// KTP Modification: Clear temporary unpause flag
+	// This signals that the pause state was explicitly changed by plugin
+	g_ktp_temporary_unpause = 0;
+
 #ifdef REHLDS_FIXES
 	for (int i = 0; i < g_psvs.maxclients; i++)
 	{

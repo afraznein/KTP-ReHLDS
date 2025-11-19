@@ -58,6 +58,9 @@ globalvars_t gGlobalVariables;
 server_static_t g_psvs;
 server_t g_psv;
 
+// KTP Modification: Flag to track temporary unpause for chat (not static, used in rehlds_api_impl.cpp)
+int g_ktp_temporary_unpause = 0;
+
 rehlds_server_t g_rehlds_sv;
 
 decalname_t sv_decalnames[MAX_BASE_DECALS];
@@ -5231,7 +5234,8 @@ void SV_SendClientMessages(void)
 			cl->send_message = TRUE;
 
 		// KTP Modification: Force message sending during pause for chat/HUD
-		if (g_psv.paused && cl->active && cl->spawned && cl->fully_connected)
+		// Check temp_flag to detect if we're in a real pause (temporarily unpaused for chat)
+		if (g_ktp_temporary_unpause && cl->active && cl->spawned && cl->fully_connected)
 			cl->send_message = TRUE;
 		else if (cl->active && cl->spawned && cl->fully_connected && host_frametime + realtime >= cl->next_messagetime)
 			cl->send_message = TRUE;
@@ -8092,8 +8096,9 @@ void EXT_FUNC SV_UpdatePausedHUD_Internal(void)
 
 void SV_UpdatePausedHUD(void)
 {
-	if (!g_psv.paused)
-		return;
+	// KTP Modification: Don't check g_psv.paused here because it may be temporarily set to 0
+	// for chat processing. The caller (SV_Frame_Internal) only calls this when !shouldSimulate,
+	// so we know we're truly paused even if g_psv.paused is temporarily 0.
 
 	// Call hook chain to allow plugins to update HUD during pause
 	g_RehldsHookchains.m_SV_UpdatePausedHUD.callChain(SV_UpdatePausedHUD_Internal);
@@ -8113,19 +8118,54 @@ void EXT_FUNC SV_Frame_Internal()
 	g_psv.oldtime = g_psv.time;
 	SV_CheckCmdTimes();
 	SV_ReadPackets();
-	if (SV_IsSimulating())
+
+	// KTP Modification: Check simulation state BEFORE any pause manipulation
+	// We need to know if we should run physics or not based on the REAL pause state
+	qboolean shouldSimulate = SV_IsSimulating();
+
+	// Track whether we're doing a temporary unpause
+	// When plugin calls SetServerPause(), it will clear this flag
+	// This lets us distinguish between temporary (for chat) and permanent (plugin) unpause
+	int wasPaused = g_psv.paused;
+	g_ktp_temporary_unpause = 0;  // Reset flag
+
+	if (wasPaused) {
+		g_psv.paused = 0;  // Temporarily unpause for entire frame
+		g_ktp_temporary_unpause = 1;  // Mark that this is temporary
+	}
+
+	if (shouldSimulate)
 	{
 		SV_Physics();
 		g_psv.time += host_frametime;
 	}
 	else
 	{
-		// KTP Modification: Update HUD during pause
+		// When paused, SV_Physics() doesn't run, so:
+		// - No player movement, weapon firing, damage, or game simulation
+		// - Game time (g_psv.time) doesn't advance
+		// - Player physics frozen (frametime = 0)
+		//
+		// The g_psv.paused flag was cleared above to allow chat processing
+		gEntityInterface.pfnStartFrame();
 		SV_UpdatePausedHUD();
 	}
 	SV_RequestMissingResourcesFromClients();
 	SV_CheckTimeouts();
 	SV_SendClientMessages();
+
+	// KTP Modification: Restore pause state AFTER message sending
+	// Only restore if temporary_unpause flag is still set
+	// If plugin called SetServerPause(), it will have cleared the flag
+	if (wasPaused && g_ktp_temporary_unpause) {
+		// Still marked as temporary, plugin didn't change pause state, restore it
+		Con_Printf("[KTP] Restoring pause state (temp unpause for chat)\n");
+		g_psv.paused = wasPaused;
+	}
+	else if (wasPaused && !g_ktp_temporary_unpause) {
+		Con_Printf("[KTP] NOT restoring pause - plugin changed pause state (flag cleared)\n");
+	}
+
 	SV_CheckMapDifferences();
 	SV_GatherStatistics();
 	Steam_RunFrame();
