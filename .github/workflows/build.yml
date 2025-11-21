@@ -16,7 +16,7 @@ on:
 jobs:
   windows:
     name: 'Windows'
-    runs-on: windows-2025
+    runs-on: windows-2022
 
     env:
       solution: 'msvc/ReHLDS.sln'
