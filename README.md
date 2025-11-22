@@ -1,176 +1,655 @@
-# ReHLDS [![C/C++ CI](https://github.com/rehlds/ReHLDS/actions/workflows/build.yml/badge.svg)](https://github.com/rehlds/ReHLDS/actions/workflows/build.yml) [![GitHub release (by tag)](https://img.shields.io/github/downloads/rehlds/ReHLDS/latest/total)](https://github.com/rehlds/ReHLDS/releases/latest) ![GitHub all releases](https://img.shields.io/github/downloads/rehlds/ReHLDS/total) [![Percentage of issues still open](http://isitmaintained.com/badge/open/rehlds/ReHLDS.svg)](http://isitmaintained.com/project/rehlds/ReHLDS "Percentage of issues still open") [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://www.gnu.org/licenses/gpl-3.0)  [![CII Best Practices](https://bestpractices.dev/projects/10929/badge)](https://www.bestpractices.dev/en/projects/10929) <img align="right" src="https://user-images.githubusercontent.com/5860435/111066129-040e5e00-84f0-11eb-9e1f-7a7e8611da2b.png" alt="ReHLDS" />
-Reverse-engineered (and bugfixed) HLDS
+# KTP-ReHLDS
 
-## What is this?
-ReHLDS is a result of reverse engineering of original HLDS (build 6152/6153) using DWARF debug info embedded into linux version of HLDS, engine_i486.so
+**Custom ReHLDS fork with selective pause system and real-time HUD updates**
 
-Along with reverse engineering, a lot of defects and (potential) bugs were found and fixed
+A specialized fork of [ReHLDS](https://github.com/rehlds/rehlds) that enables advanced competitive match features through engine-level pause control, HUD updates during pause, and selective subsystem operation.
 
-You can try playing on one of many servers that are using ReHLDS: [Game Tracker](http://www.gametracker.com/search/?search_by=server_variable&search_by2=sv_version)
+---
 
-> [!TIP]
-> ReHLDS linux-releases now is signed via `GPG`, pubkey is: `63547829004f07716f7be4856c32c4282e60fb67` and could be found at [https://keyserver.ubuntu.com/](https://keyserver.ubuntu.com/pks/lookup?search=63547829004f07716f7be4856c32c4282e60fb67+&fingerprint=on&op=index).
->
-> How to:
-> 1. [Download](https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x63547829004f07716f7be4856c32c4282e60fb67) `63547829004f07716f7be4856c32c4282e60fb67.asc` key
-> 2. Import: `gpg --import 63547829004f07716f7be4856c32c4282e60fb67.asc`
-> 3. Download release `archive` and `.asc` file.
-> 4. Verify: `gpg --verify some-rehlds.zip.asc some-rehlds.zip`.
+## 🎯 Purpose
 
-## Goals of the project
-<ul>
-<li>Provide more stable (than official) version of Half-Life dedicated server with extended API for mods and plugins</li>
-<li>Performance optimizations (use of SSE for vector math for example) is another goal for the future</li>
-</ul>
+Standard GoldSrc/ReHLDS pause (`pausable 1` + `pause`) completely freezes the server, including:
+- ❌ **Game simulation** (desired - freeze gameplay)
+- ❌ **Chat system** (problematic - can't communicate)
+- ❌ **HUD updates** (problematic - no countdown timers)
+- ❌ **Client commands** (problematic - can't use `/confirmunpause`)
 
-## 🛠 License
+**This creates critical UX issues in competitive matches:**
 
-ReHLDS is licensed under the [MIT License](./LICENSE).
+1. Player disconnects → auto-pause triggered
+2. Player reconnects during pause
+3. **Nobody knows they're back** - chat frozen
+4. Teams can't coordinate unpause - commands frozen
+5. **Result**: Confusion, delays, poor player experience
 
-### License Transition
-> [!NOTE]  
-> Originally released under [GPLv3](https://www.gnu.org/licenses/gpl-3.0.html), ReHLDS transitioned to the MIT License in July 2025 with the agreement of the core contributors.  
-> See [LICENSE-TRANSITION.md](./LICENSE-TRANSITION.md) for details.
+**KTP-ReHLDS solves this** by allowing selective subsystem operation during pause.
 
-## How can use it?
-ReHLDS is fully compatible with the official pre-anniversary edition of HLDS (engine version <= 8684) downloaded by steamcmd. All you have to do is to download ReHLDS binaries and replace original swds.dll/engine_i486.so. For windows you can also copy a swds.pdb file with a debug information.
+---
 
-> [!CAUTION]  
-> ReHLDS is not compatible with an old 5xxx or below platforms downloaded by hldsupdatetool.
+## 🏗️ Architecture Position
 
-#### Downloading HLDS via steamcmd
+KTP-ReHLDS is the **engine foundation** of the KTP competitive stack:
 
 ```
-app_set_config 90 mod cstrike
-app_update 90 -beta steam_legacy validate
+┌─────────────────────────────────────────────────┐
+│  Layer 4: KTPMatchHandler (AMX Plugin)          │
+│  Match logic, pause workflow, Discord           │
+└─────────────────────────────────────────────────┘
+                     ↓ Uses hooks from
+┌─────────────────────────────────────────────────┐
+│  Layer 3: KTPCvarChecker (AMX Plugin)           │
+│  Anti-cheat, cvar enforcement                   │
+└─────────────────────────────────────────────────┘
+                     ↓ Calls ReAPI hooks
+┌─────────────────────────────────────────────────┐
+│  Layer 2: KTP-ReAPI (AMX Module)                │
+│  Exposes RH_SV_UpdatePausedHUD hook             │
+└─────────────────────────────────────────────────┘
+                     ↓ Bridges to
+┌─────────────────────────────────────────────────┐
+│  Layer 1: KTP-ReHLDS (Engine) ← YOU ARE HERE    │
+│  Provides: SV_UpdatePausedHUD() function        │
+│  Features: Pause with pausable 0, HUD updates   │
+└─────────────────────────────────────────────────┘
 ```
 
-## Downloads
-* [Release builds](https://github.com/rehlds/ReHLDS/releases)
-* [Dev builds](https://github.com/rehlds/ReHLDS/actions/workflows/build.yml)
+---
 
-ReHLDS binaries require `SSE`, `SSE2` and `SSE3` instruction sets to run and can benefit from `SSE4.1` and `SSE4.2`
+## ✨ Key Features
 
-<b>Warning!</b> ReHLDS is not binary compatible with original hlds since it's compiled with compilers other than ones used for original hlds.
-This means that plugins that do binary code analysis (Orpheu for example) probably will not work with ReHLDS.
+### 🎮 Selective Pause System
 
-## Configuring
-<details>
-<summary>Click to expand</summary>
-<ul>
-<li>listipcfgfile &lt;filename&gt; // File for permanent ip bans. Default: listip.cfg
-<li>syserror_logfile &lt;filename&gt; // File for the system error log. Default: sys_error.log
-<li>sv_auto_precache_sounds_in_models &lt;1|0&gt; // Automatically precache sounds attached to models. Deault: 0
-<li>sv_delayed_spray_upload &lt;1|0&gt; // Upload custom sprays after entering the game instead of when connecting. It increases upload speed. Default: 0
-<li>sv_echo_unknown_cmd &lt;1|0&gt; // Echo in the console when trying execute an unknown command. Default: 0
-<li>sv_rcon_condebug &lt;1|0&gt; // Print rcon debug in the console. Default: 1
-<li>sv_force_ent_intersection &lt;1|0&gt; // In a 3-rd party plugins used to force colliding of SOLID_SLIDEBOX entities. Default: 0
-<li>sv_rehlds_force_dlmax &lt;1|0&gt; // Force a client's cl_dlmax cvar to 1024. It avoids an excessive packets fragmentation. Default: 0
-<li>sv_rehlds_hull_centering &lt;1|0&gt; // Use center of hull instead of corner. Default: 0
-<li>sv_rehlds_movecmdrate_max_avg // Max average level of 'move' cmds for ban. Default: 400
-<li>sv_rehlds_movecmdrate_avg_punish // Time in minutes for which the player will be banned (0 - Permanent, use a negative number for a kick). Default: 5
-<li>sv_rehlds_movecmdrate_max_burst // Max burst level of 'move' cmds for ban. Default: 2500
-<li>sv_rehlds_movecmdrate_burst_punish // Time in minutes for which the player will be banned (0 - Permanent, use a negative number for a kick). Default: 5
-<li>sv_rehlds_send_mapcycle &lt;1|0&gt; // Send mapcycle.txt in serverinfo message (HLDS behavior, but it is unused on the client). Default: 0
-<li>sv_rehlds_stringcmdrate_max_avg // Max average level of 'string' cmds for ban. Default: 80
-<li>sv_rehlds_stringcmdrate_avg_punish // Time in minutes for which the player will be banned (0 - Permanent, use a negative number for a kick). Default: 5
-<li>sv_rehlds_stringcmdrate_max_burst // Max burst level of 'string' cmds for ban. Default: 400
-<li>sv_rehlds_stringcmdrate_burst_punish // Time in minutes for which the player will be banned (0 - Permanent, use a negative number for a kick). Default: 5
-<li>sv_rehlds_userinfo_transmitted_fields // Userinfo fields only with these keys will be transmitted to clients via network. If not set then all fields will be transmitted (except prefixed with underscore). Each key must be prefixed by backslash, for example "\name\model\*sid\*hltv\bottomcolor\topcolor". See [wiki](https://github.com/rehlds/ReHLDS/wiki/Userinfo-keys) to collect sufficient set of keys for your server. Default: ""
-<li>sv_rehlds_attachedentities_playeranimationspeed_fix // Fixes bug with gait animation speed increase when player has some attached entities (aiments). Can cause animation lags when cl_updaterate is low. Default: 0
-<li>sv_rehlds_maxclients_from_single_ip // Limit number of connections at the same time from single IP address, not confuse to already connected players. Default: 5
-<li>sv_rehlds_local_gametime &lt;1|0&gt; // A feature of local gametime which decrease "lags" if you run same map for a long time. Default: 0
-<li>sv_rehlds_allow_large_sprays &lt;1|0&gt; // Allow larger custom logos than 64x64. Default: 1
-<li>sv_use_entity_file // Use custom entity file for a map. Path to an entity file will be "maps/[map name].ent". 0 - use original entities. 1 - use .ent files from maps directory. 2 - use .ent files from maps directory and create new .ent file if not exist.
-<li>sv_usercmd_custom_random_seed // When enabled server will populate an additional random seed independent of the client. Default: 0
-<li>sv_net_incoming_decompression &lt;1|0&gt; // When enabled server will decompress of incoming compressed file transfer payloads. Default: 1
-<li>sv_net_incoming_decompression_max_ratio &lt;0|100&gt; // Sets the max allowed ratio between compressed and uncompressed data for file transfer. (A ratio close to 90 indicates large uncompressed data with low entropy) Default: 80.0
-<li>sv_net_incoming_decompression_max_size &lt;16|65536&gt; // Sets the max allowed size for decompressed file transfer data. Default: 65536 bytes
-<li>sv_net_incoming_decompression_min_failures &lt;0|10&gt; // Sets the min number of decompression failures required before a player's connection is flagged for potential punishment. Default: 4
-<li>sv_net_incoming_decompression_max_failures &lt;0|10&gt; // Sets the max number of decompression failures allowed within a specified time window before action is taken against the player. Default: 10
-<li>sv_net_incoming_decompression_min_failuretime: &lt;0.1|10.0&gt; // Sets the min time in secs within which decompression failures are tracked to determine if the player exceeds the failure thresholds. Default: 0.1
-<li>sv_net_incoming_decompression_punish // Time in minutes for which the player will be banned for malformed/abnormal bzip2 fragments (0 - Permanent, use a negative number for a kick). Default: -1
-<li>sv_tags &lt;comma-delimited string list of tags&gt; // Sets a string defining the "gametags" for this server, this is optional, but if it is set it allows users/scripts to filter in the matchmaking/server-browser interfaces based on the value. Default: ""
-<li>sv_filterban &lt;-1|0|1&gt;// Set packet filtering by IP mode. -1 - All players will be rejected without any exceptions. 0 - No checks will happen. 1 - All incoming players will be checked if they're IP banned (if they have an IP filter entry), if they are, they will be kicked. Default: 1
-</ul>
-</details>
+**Game Stays Frozen:**
+- ✅ Physics simulation (`SV_Physics()` skipped)
+- ✅ Game time frozen (`g_psv.time` stops advancing)
+- ✅ Entity thinking disabled
+- ✅ Player movement blocked
+- ✅ `host_frametime` = 0 (complete time freeze)
 
-## Commands
-<ul>
-<li>rescount // Prints the total count of precached resources in the server console
-<li>reslist &lt;sound | model | decal | generic | event&gt; // Separately prints the details of the precached resources for sounds, models, decals, generic and events in server console. Useful for managing resources and dealing with the goldsource precache limits.
-<li>rcon_adduser &lt;ipaddress/CIDR&gt; // Add a new IP address or CIDR range to RCON user list (This command adds a new IP address to the RCON user list. The specified IP or CIDR range is granted privileged access to server console. Without any Rcon users, access is allowed to anyone with a valid password)</li>
-<li>rcon_deluser &lt;ipaddress&gt; {removeAll} // Remove an IP address or CIDR range from RCON user list</li>
-<li>rcon_users // List all IP addresses and CIDR ranges in RCON user list</li>
-</ul>
+**Communication Continues:**
+- ✅ Network I/O processes
+- ✅ Server messages work (`rcon say`, join/leave events)
+- ✅ HUD messages sent (`MSG_WriteByte(svc_*)`)
+- ✅ Client message buffers flushed (`SV_SendClientMessages()`)
+- ✅ Commands processed (`/cancel`, `/pause`, etc.)
+- ⚠️ Player chat (first message works, subsequent blocked by DoD DLL - use RCON as workaround)
 
-## Build instructions
-### Checking requirements
-There are several software requirements for building ReHLDS:
+### 🔧 Engine-Level Pause Control
+
+**Works with `pausable 0`:**
+- Standard engine pause (`pausable 1`) disabled
+- Only KTP pause system works (via ReAPI `rh_set_server_pause()`)
+- Prevents abuse of engine pause command
+- Full control from AMX plugins
+
+### 📊 Real-Time HUD Updates During Pause
+
+**New Engine Hook: `SV_UpdatePausedHUD()`**
+- Called **every frame** during pause (~60-100 Hz)
+- Allows plugins to update HUD with live timers
+- Displays MM:SS countdown for pause duration
+- Shows unpause countdowns (5...4...3...2...1)
+- Updates warnings (30s, 10s remaining)
+
+### 🔌 ReAPI Integration
+
+**Custom Hook Exposed:**
+```cpp
+// rehlds/public/rehlds/rehlds_api.h
+class IRehldsHook_SV_UpdatePausedHUD {
+public:
+    virtual ~IRehldsHook_SV_UpdatePausedHUD() {}
+    virtual void SV_UpdatePausedHUD() = 0;
+};
+```
+
+**Called from Engine:**
+```cpp
+// rehlds/engine/sv_main.cpp
+void SV_Frame() {
+    if (g_RehldsHookchains.m_SV_UpdatePausedHUD) {
+        g_RehldsHookchains.m_SV_UpdatePausedHUD->callChain();
+    }
+}
+```
+
+**Consumed by KTP-ReAPI:**
+- KTP-ReAPI registers handler for this hook
+- Exposes to AMX plugins as `RH_SV_UpdatePausedHUD`
+- KTPMatchHandler uses it for real-time HUD
+
+---
+
+## 🔬 Technical Implementation
+
+### Engine Modifications
+
+#### 1. **Pause Hook System** (`rehlds/public/rehlds/rehlds_api.h`)
+
+Added new hook interface and hookchain:
+```cpp
+// Hook interface
+class IRehldsHook_SV_UpdatePausedHUD {
+public:
+    virtual ~IRehldsHook_SV_UpdatePausedHUD() {}
+    virtual void SV_UpdatePausedHUD() = 0;
+};
+
+// Hook chain registry
+class IRehldsHookchains {
+    // ... existing hooks ...
+    IRehldsHookRegistry_SV_UpdatePausedHUD* m_SV_UpdatePausedHUD;
+};
+```
+
+#### 2. **Frame Processing** (`rehlds/rehlds/engine/sv_main.cpp`)
+
+Modified `SV_Frame()` to call pause hook:
+```cpp
+void SV_Frame() {
+    // ... existing frame processing ...
+
+    // Call pause HUD update hook (if registered)
+    if (g_RehldsHookchains.m_SV_UpdatePausedHUD) {
+        g_RehldsHookchains.m_SV_UpdatePausedHUD->callChain();
+    }
+
+    // ... continue frame processing ...
+}
+```
+
+**Key Changes:**
+- Hook called every frame, regardless of pause state
+- Plugins check pause state internally
+- Zero overhead when no hooks registered
+
+#### 3. **Message Buffer Handling** (`rehlds/rehlds/engine/sv_user.cpp`)
+
+Ensured `SV_SendClientMessages()` processes during pause:
+```cpp
+void SV_SendClientMessages() {
+    // Process message buffers even during pause
+    // This allows HUD messages to reach clients
+    for (int i = 0; i < svs.maxclients; i++) {
+        client_t* client = &svs.clients[i];
+        if (client->active || client->spawned) {
+            SV_SendClientDatagram(client);
+        }
+    }
+}
+```
+
+**Why This Works:**
+- Message buffers (`MSG_WriteByte()`) accumulate during pause
+- `SV_SendClientMessages()` flushes buffers to network
+- Clients receive and render HUD updates in real-time
+
+#### 4. **Chat During Pause**
+
+**Current Status:**
+- ✅ `rcon say` works (bypasses client command processing)
+- ✅ Server events work (join/leave use direct buffer writes)
+- ✅ Commands processed (`/cancel`, `/pause`, etc.)
+- ✅ First chat message per pause works
+- ⚠️ Subsequent messages blocked by DoD game DLL flood protection
+
+**Technical Implementation:**
+- Frame-wide temporary unpause system (`g_ktp_temporary_unpause` flag)
+- `g_psv.paused` temporarily cleared for entire frame, restored after `SV_SendClientMessages()`
+- ReHLDS string command rate limiter bypassed during temporary unpause
+- Game time (`g_psv.time`) remains frozen - match timer unaffected
+- Physics simulation still skipped via `shouldSimulate` check
+
+**Known Limitation:**
+- DoD game DLL has built-in chat flood protection checking frozen game time
+- Only first message per pause works for client "say" commands
+- Workaround: Use RCON messages for subsequent communication
+- Full fix requires DoD game DLL source code modifications
+
+### Modified Files Summary
+
+| File | Purpose | Changes |
+|------|---------|---------|
+| `rehlds/public/rehlds/rehlds_api.h` | API definitions | Added `IRehldsHook_SV_UpdatePausedHUD` interface |
+| `rehlds/rehlds/engine/sv_main.cpp` | Frame processing | Added hook call in `SV_Frame()` |
+| `rehlds/rehlds/engine/sv_user.cpp` | Client messages | Ensured message flushing during pause |
+| `rehlds/rehlds/public/rehlds/hookchains.h` | Hook registry | Registered new hook in chainregistry |
+
+---
+
+## 🆚 Comparison: Standard ReHLDS vs KTP-ReHLDS
+
+| Feature | Standard ReHLDS | KTP-ReHLDS |
+|---------|----------------|------------|
+| **Pause Method** | `pausable 1` + `pause` | ReAPI `rh_set_server_pause()` |
+| **Works with `pausable 0`** | ❌ No | ✅ Yes |
+| **HUD Updates During Pause** | ❌ Frozen | ✅ Real-time (60-100 Hz) |
+| **Server Messages During Pause** | ❌ Frozen | ✅ Works (`rcon say`, events) |
+| **Player Chat During Pause** | ❌ Frozen | ⚠️ WIP |
+| **Custom Hook: SV_UpdatePausedHUD** | ❌ Not available | ✅ Available |
+| **ReAPI Integration** | ✅ Standard hooks | ✅ Standard + KTP hooks |
+| **Backward Compatibility** | ✅ N/A | ✅ Full compatibility |
+
+---
+
+## 💡 Real-World Impact
+
+### Before KTP-ReHLDS:
+```
+Player disconnects during match
+
+Plugin executes: pause (pausable 1)
+Server freezes EVERYTHING
+Players see: "⏸ PAUSED ⏸" [frozen forever]
+
+Player reconnects...
+Nobody knows! (chat frozen)
+Admins must use RCON: rcon say "Player reconnected!"
+Teams confused about unpause timing
+
+Result: Delays, frustration, unprofessional experience
+```
+
+### After KTP-ReHLDS:
+```
+Player disconnects during match
+
+Plugin executes: rh_set_server_pause(1)  (pausable 0)
+KTP-ReHLDS pauses game, keeps HUD alive
+Players see: "⏸ PAUSED ⏸"
+             "04:37 remaining"
+             "Waiting for player..."
+             [Updates every frame!]
+
+Player reconnects...
+Server event: "Player has reconnected" (works during pause!)
+HUD updates: "Player reconnected - type /confirmunpause"
+Teams coordinate unpause smoothly
+
+Result: Professional experience, clear communication
+```
+
+---
+
+## 📋 Version Information
+
+- **Based on**: ReHLDS 3.14.x (upstream)
+- **KTP Version**: 3.14-ktp
+- **Platform Toolset**: Visual Studio 2022 (v143) for Windows
+- **Compiler**: GCC 4.9.2+ or Clang 6.0+ for Linux
+- **Compatible with**: ReAPI 5.26+, KTP-ReAPI 1.0+
+
+---
+
+## 🚀 Quick Start
+
+### For Server Administrators
+
+**Prerequisites:**
+- Existing Half-Life Dedicated Server (HLDS) installation
+- AMX Mod X 1.9+ installed
+- KTP-ReAPI module (for hook exposure)
+
+**Installation Steps:**
+
+1. **Backup existing engine:**
+   ```bash
+   # Linux
+   cp <hlds>/engine_i486.so <hlds>/engine_i486.so.backup
+
+   # Windows
+   copy <hlds>\swds.dll <hlds>\swds.dll.backup
+   ```
+
+2. **Download KTP-ReHLDS:**
+   ```bash
+   # From releases
+   # https://github.com/afraznein/KTP-ReHLDS/releases
+   ```
+
+3. **Install KTP-ReHLDS binary:**
+   ```bash
+   # Linux
+   cp engine_i486.so <hlds>/
+
+   # Windows
+   copy swds.dll <hlds>\
+   ```
+
+4. **Configure server.cfg:**
+   ```
+   // CRITICAL: Disable engine pause
+   pausable 0
+
+   // Let ReAPI handle pause via rh_set_server_pause()
+   // KTPMatchHandler will control pause
+   ```
+
+5. **Install KTP-ReAPI module:**
+   ```bash
+   # See: https://github.com/afraznein/KTP-ReAPI
+   ```
+
+6. **Install KTPMatchHandler plugin:**
+   ```bash
+   # See: https://github.com/afraznein/KTPMatchHandler
+   ```
+
+7. **Verify installation:**
+   ```bash
+   # Start server and check console
+   # Should see: ReHLDS version 3.14-ktp
+
+   # In server console:
+   meta version  # Check ReAPI loaded
+   amxx list     # Check KTPMatchHandler loaded
+   ```
+
+---
+
+## 🔧 Build Instructions
+
+### For Developers
+
+**Prerequisites:**
 
 #### Windows
-<pre>
-Visual Studio 2015 (C++14 standard) and later
-</pre>
+- Visual Studio 2022 (v143 toolset)
+- CMake 3.10+ (optional, for Visual Studio project generation)
 
 #### Linux
-<pre>
-cmake >= 3.10
-GCC >= 4.9.2 (Optional)
-ICC >= 15.0.1 20141023 (Optional)
-LLVM (Clang) >= 6.0 (Optional)
-</pre>
+- CMake 3.10+
+- GCC 4.9.2+ or Clang 6.0+
+- 32-bit development libraries
 
-### Building
+**Building on Windows:**
 
-#### Windows
-Use `Visual Studio` to build, open `msvc/ReHLDS.sln` and just select from the solution configurations list `Release Swds` or `Debug Swds`
+1. Clone repository:
+   ```bash
+   git clone https://github.com/afraznein/KTP-ReHLDS.git
+   cd KTP-ReHLDS/rehlds
+   ```
 
-#### Linux
+2. Open Visual Studio solution:
+   ```bash
+   # Open msvc/rehlds.sln in Visual Studio 2022
+   ```
 
-* Optional options using `build.sh --compiler=[gcc] --jobs=[N] -D[option]=[ON or OFF]` (without square brackets)
+3. Build:
+   - Select configuration: `Release`
+   - Select platform: `Win32`
+   - Build → Rebuild Solution
 
-<pre>
--c=|--compiler=[icc|gcc|clang]  - Select preferred C/C++ compiler to build
--j=|--jobs=[N]                  - Specifies the number of jobs (commands) to run simultaneously (For faster building)
+4. Output:
+   ```
+   msvc/Release/swds.dll
+   msvc/Release/swds.pdb  (debug symbols)
+   ```
 
-<sub>Definitions (-D)</sub>
-DEBUG                           - Enables debugging mode
-USE_STATIC_LIBSTDC              - Enables static linking library libstdc++
-</pre>
+**Building on Linux:**
 
-* ICC          <pre>./build.sh --compiler=intel</pre>
-* LLVM (Clang) <pre>./build.sh --compiler=clang</pre>
-* GCC          <pre>./build.sh --compiler=gcc</pre>
+1. Clone repository:
+   ```bash
+   git clone https://github.com/afraznein/KTP-ReHLDS.git
+   cd KTP-ReHLDS/rehlds
+   ```
 
-##### Checking build environment (Debian / Ubuntu)
+2. Install dependencies (Debian/Ubuntu):
+   ```bash
+   sudo dpkg --add-architecture i386
+   sudo apt-get update
+   sudo apt-get install -y gcc-multilib g++-multilib
+   sudo apt-get install -y build-essential cmake
+   sudo apt-get install -y libc6-dev libc6-dev-i386
+   ```
 
-<details>
-<summary>Click to expand</summary>
+3. Build using script:
+   ```bash
+   # GCC (default)
+   ./build.sh --compiler=gcc
 
-<ul>
-<li>
-Installing required packages
-<pre>
-sudo dpkg --add-architecture i386
-sudo apt-get update
-sudo apt-get install -y gcc-multilib g++-multilib
-sudo apt-get install -y build-essential
-sudo apt-get install -y libc6-dev libc6-dev-i386
-sudo apt-get install -y cmake			
-</pre>
-</li>
+   # Clang (alternative)
+   ./build.sh --compiler=clang
 
-<li>
-Select the preferred C/C++ Compiler installation
-<pre>
-1) sudo apt-get install -y gcc g++
-2) sudo apt-get install -y clang
-</pre>
-</li>
-</ul>
-</details>
+   # With debug symbols
+   ./build.sh --compiler=gcc -DDEBUG=ON
+   ```
 
-## How can I help the project?
-Just install it on your game server and report problems you faced.
-Merge requests are also welcome :)
+4. Output:
+   ```
+   build/rehlds/engine_i486.so
+   ```
+
+**Development Build Options:**
+
+```bash
+# Build with multiple jobs (faster)
+./build.sh --compiler=gcc --jobs=4
+
+# Enable debug mode
+./build.sh -DDEBUG=ON
+
+# Static libstdc++ linking
+./build.sh -DUSE_STATIC_LIBSTDC=ON
+```
+
+---
+
+## 🎮 Integration with KTP Stack
+
+### How KTPMatchHandler Uses KTP-ReHLDS
+
+**Pause Workflow:**
+
+1. **Player triggers pause:**
+   ```pawn
+   // In KTPMatchHandler.sma
+   public CmdPause(id) {
+       // Use ReAPI to pause (not engine command)
+       rh_set_server_pause(1);  // KTP-ReHLDS handles this!
+
+       // Start HUD updates
+       g_bIsPaused = true;
+       g_iPauseStartTime = get_systime();
+   }
+   ```
+
+2. **KTP-ReHLDS processes pause:**
+   ```cpp
+   // In KTP-ReHLDS sv_main.cpp
+   void SV_Frame() {
+       if (sv.paused) {
+           // Skip physics (game frozen)
+           // But call pause hook for HUD updates
+           g_RehldsHookchains.m_SV_UpdatePausedHUD->callChain();
+       }
+   }
+   ```
+
+3. **KTP-ReAPI forwards to plugin:**
+   ```cpp
+   // In KTP-ReAPI hook_callback.cpp
+   void SV_UpdatePausedHUD() {
+       // Call registered AMX plugin handlers
+       callForward(g_forwards[FWD_SV_UpdatePausedHUD]);
+   }
+   ```
+
+4. **KTPMatchHandler updates HUD:**
+   ```pawn
+   // In KTPMatchHandler.sma
+   public OnPausedHUDUpdate() {
+       new iRemaining = g_iPauseDuration - (get_systime() - g_iPauseStartTime);
+       new iMinutes = iRemaining / 60;
+       new iSeconds = iRemaining % 60;
+
+       set_hudmessage(255, 255, 0, -1.0, 0.35, 0, 0.0, 0.1, 0.0, 0.0, -1);
+       show_hudmessage(0, "⏸ PAUSED ⏸^n%02d:%02d", iMinutes, iSeconds);
+
+       return HC_CONTINUE;
+   }
+   ```
+
+**Result**: Players see real-time MM:SS countdown during pause!
+
+---
+
+## 🔗 Related KTP Projects
+
+### **Complete KTP Competitive Infrastructure:**
+
+**🔧 Engine Layer:**
+- **[KTP-ReHLDS](https://github.com/afraznein/KTP-ReHLDS)** - This project
+  - Selective pause system
+  - Real-time HUD updates during pause
+  - Chat during pause (WIP)
+  - Provides `SV_UpdatePausedHUD()` engine hook
+
+**🔌 Module Layer:**
+- **[KTP-ReAPI](https://github.com/afraznein/KTP-ReAPI)** - Custom ReAPI fork
+  - Exposes KTP-ReHLDS hooks to AMX plugins
+  - Adds `RH_SV_UpdatePausedHUD` constant
+  - Bridges engine to plugin layer
+
+**🎮 Plugin Layer:**
+- **[KTP Match Handler](https://github.com/afraznein/KTPMatchHandler)** - Match management
+  - Pause system with real-time countdown
+  - Discord integration via relay
+  - Match workflow (ready-up, live, pause)
+  - Uses `RH_SV_UpdatePausedHUD` for HUD
+
+- **[KTP Cvar Checker](https://github.com/afraznein/KTPCvarChecker)** - Anti-cheat
+  - Real-time client cvar enforcement
+  - FTP screenshot upload
+  - Player compliance tracking
+
+**🌐 Supporting Services:**
+- **[KTP Discord Relay](https://github.com/afraznein/DiscordRelay)** - HTTP relay for Discord
+- **[KTP HLTV Kicker](https://github.com/afraznein/KTPHLTVKicker)** - HLTV spectator management
+
+### **Upstream Projects:**
+- **[ReHLDS (Upstream)](https://github.com/rehlds/rehlds)** - Original ReHLDS project
+- **[ReAPI](https://github.com/rehlds/ReAPI)** - AMX Mod X module for ReHLDS hooks
+- **[AMX Mod X](https://www.amxmodx.org/)** - Half-Life scripting platform
+
+---
+
+## 📚 Documentation
+
+**KTP Stack Documentation:**
+- [KTP Match Handler - Discord Guide](https://github.com/afraznein/KTPMatchHandler/blob/main/DISCORD_GUIDE.md) - Complete stack overview
+- [KTP-ReAPI README](https://github.com/afraznein/KTP-ReAPI/blob/main/README.md) - Module integration
+- [KTP Match Handler README](https://github.com/afraznein/KTPMatchHandler/blob/main/README.md) - Plugin usage
+
+**Upstream Documentation:**
+- [ReHLDS Wiki](https://github.com/rehlds/ReHLDS/wiki)
+- [ReAPI Documentation](https://github.com/rehlds/ReAPI/wiki)
+- [AMX Mod X Documentation](https://www.amxmodx.org/api/)
+
+---
+
+## 🙏 Acknowledgments
+
+**KTP Fork:**
+- **Nein_** ([@afraznein](https://github.com/afraznein)) - KTP-ReHLDS fork maintainer
+- **KTP Community** - Testing, feedback, competitive insights
+
+**Upstream ReHLDS:**
+- **dreamstalker** - Original ReHLDS reverse engineering
+- **s1lentq** - ReHLDS development and maintenance
+- **ReHLDS Contributors** - Bug fixes and enhancements
+- **Valve Software** - Original GoldSrc engine
+
+---
+
+## 📝 License
+
+**MIT License** - Same as upstream ReHLDS (transitioned from GPL v3 in July 2025)
+
+See [LICENSE](https://github.com/rehlds/rehlds/blob/master/LICENSE) for full text.
+
+---
+
+## 🤝 Contributing
+
+### For KTP-Specific Features
+
+This is a specialized fork for **KTP competitive infrastructure**.
+
+**KTP contributions welcome:**
+- New engine hooks for competitive features
+- Performance optimizations for pause system
+- Bug fixes for KTP-specific code
+- Documentation improvements
+
+**Submit issues/PRs at:**
+- https://github.com/afraznein/KTP-ReHLDS/issues
+
+### For General ReHLDS Features
+
+For **general ReHLDS improvements** (not KTP-specific):
+- **[Upstream ReHLDS](https://github.com/rehlds/ReHLDS)**
+
+We periodically sync with upstream to incorporate improvements.
+
+---
+
+## 💬 Support
+
+**For KTP-ReHLDS help:**
+- Open an issue: https://github.com/afraznein/KTP-ReHLDS/issues
+- Check KTP Match Handler docs: https://github.com/afraznein/KTPMatchHandler
+- Review KTP-ReAPI docs: https://github.com/afraznein/KTP-ReAPI
+
+**For general ReHLDS questions:**
+- Upstream docs: https://github.com/rehlds/ReHLDS
+- ReHLDS community forums
+
+---
+
+## 🐛 Troubleshooting
+
+### HUD Updates Not Working
+
+**Problem:** Pause HUD shows static message, no countdown
+
+**Solutions:**
+- ✅ Verify KTP-ReHLDS installed (check version in console)
+- ✅ Verify KTP-ReAPI loaded (`meta list`)
+- ✅ Verify KTPMatchHandler loaded (`amxx list`)
+- ✅ Check `pausable 0` in server.cfg
+- ✅ Check plugin uses `rh_set_server_pause()` not `pause` command
+
+### Chat During Pause Not Working
+
+**Problem:** Player chat doesn't display during pause
+
+**Solutions:**
+- ⚠️ **Player chat is WIP** - not fully implemented yet
+- ✅ `rcon say` works (use for announcements)
+- ✅ Server events (join/leave) work automatically
+- ✅ Plugin messages via `client_print()` work
+
+### Server Crashes on Pause
+
+**Problem:** Server crashes when pause is triggered
+
+**Solutions:**
+- ✅ Verify KTP-ReHLDS build matches your HLDS version
+- ✅ Check you're using KTP-ReAPI (not standard ReAPI)
+- ✅ Verify no conflicting plugins using engine pause
+- ✅ Check server logs for error messages
+
+### Performance Issues
+
+**Problem:** Server lags during pause
+
+**Solutions:**
+- ✅ Hook called every frame (~60-100 Hz) - keep HUD updates lightweight
+- ✅ Avoid complex calculations in `OnPausedHUDUpdate()`
+- ✅ Cache countdown strings instead of recalculating every frame
+- ✅ Limit message buffer size
+
+---
+
+**KTP-ReHLDS** - The engine foundation that makes professional competitive matches possible. 🎮

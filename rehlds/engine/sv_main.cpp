@@ -5258,6 +5258,16 @@ void SV_SendClientMessages(void)
 
 		if (cl->send_message)
 		{
+			// KTP Modification: Reset network throttle ONLY when about to send during pause
+			// This allows chat to go through without flooding client with empty packets
+			if (g_ktp_temporary_unpause)
+			{
+				// Only reset if netchan would otherwise block (cleartime > realtime)
+				// This prevents flooding while still allowing messages through
+				if (cl->netchan.cleartime >= realtime)
+					cl->netchan.cleartime = realtime - 0.001; // Slightly in past to pass check
+			}
+
 			if (!Netchan_CanPacket(&cl->netchan))
 			{
 				++cl->chokecount;
@@ -8159,12 +8169,9 @@ void EXT_FUNC SV_Frame_Internal()
 	// If plugin called SetServerPause(), it will have cleared the flag
 	if (wasPaused && g_ktp_temporary_unpause) {
 		// Still marked as temporary, plugin didn't change pause state, restore it
-		Con_Printf("[KTP] Restoring pause state (temp unpause for chat)\n");
 		g_psv.paused = wasPaused;
 	}
-	else if (wasPaused && !g_ktp_temporary_unpause) {
-		Con_Printf("[KTP] NOT restoring pause - plugin changed pause state (flag cleared)\n");
-	}
+	// else: Plugin changed pause state (called SetServerPause), don't restore
 
 	SV_CheckMapDifferences();
 	SV_GatherStatistics();

@@ -1474,10 +1474,14 @@ void SV_ParseStringCommand(client_t *pSenderClient)
 {
 	//check string commands rate for this player
 #ifdef REHLDS_FIXES
-	g_StringCommandsRateLimiter.StringCommandIssued(pSenderClient - g_psvs.clients);
+	// KTP Modification: Skip rate limiting during temporary unpause for chat/commands during pause
+	// Rate limiter uses realtime which continues during pause, causing false positives
+	if (!g_ktp_temporary_unpause) {
+		g_StringCommandsRateLimiter.StringCommandIssued(pSenderClient - g_psvs.clients);
 
-	if (!pSenderClient->connected) {
-		return; //return if player was kicked
+		if (!pSenderClient->connected) {
+			return; //return if player was kicked
+		}
 	}
 #endif
 
@@ -1494,34 +1498,10 @@ void SV_ParseStringCommand(client_t *pSenderClient)
 		}
 		Cmd_TokenizeString(s);
 
-		// KTP Modification: Allow command processing during pause
-		// This enables chat and custom commands while game time stays frozen
-		// We temporarily unpause both frametime AND g_psv.paused so the game DLL
-		// processes the command normally (especially chat "say" commands)
-		if (g_psv.paused) {
-			float savedFrametime = gGlobalVariables.frametime;
-			int wasPaused = g_psv.paused;
-
-			gGlobalVariables.frametime = host_frametime;  // Temporarily set frametime
-			g_psv.paused = 0;  // Temporarily unpause
-
-			Con_Printf("[KTP-SV_USER] Processing command during pause: %s\n", s);
-			gEntityInterface.pfnClientCommand(sv_player);
-
-			// KTP: Only restore pause if it wasn't explicitly changed during command processing
-			// If a command (like /cancel) called SetServerPause(), g_psv.paused will be 0 and
-			// g_ktp_temporary_unpause will be 0 (cleared by SetServerPause)
-			if (g_ktp_temporary_unpause) {
-				// Still temporary, restore it
-				g_psv.paused = wasPaused;
-				Con_Printf("[KTP-SV_USER] Restored pause after command (temp flag still set)\n");
-			} else {
-				Con_Printf("[KTP-SV_USER] NOT restoring pause - was changed during command (temp flag cleared)\n");
-			}
-			gGlobalVariables.frametime = savedFrametime;  // Restore to 0 (paused state)
-		} else {
-			gEntityInterface.pfnClientCommand(sv_player);
-		}
+		// KTP Modification: Commands during pause are handled by frame-wide unpause in SV_Frame()
+		// We no longer need to unpause here since SV_Frame() does it for the entire frame
+		// This ensures chat messages have time to be queued before pause is restored
+		gEntityInterface.pfnClientCommand(sv_player);
 		break;
 	case 1:
 		// KTP Modification: Also allow engine commands during pause

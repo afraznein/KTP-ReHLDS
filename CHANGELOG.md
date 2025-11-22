@@ -6,6 +6,49 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.15.0.888-dev+m`] - 2025-11-20
+
+**KTP-ReHLDS** is a custom fork of ReHLDS with enhanced pause functionality for competitive gameplay.
+
+### Added
+- **Chat During Pause**: Partial chat functionality while game is paused
+  - Engine rate limiting bypassed during temporary unpause frames
+  - Commands processed correctly (e.g., `/cancel` works during pause)
+  - First chat message displays to clients
+  - **Known Limitation**: Subsequent chat messages blocked by DoD game DLL flood protection
+    - Only first message per pause works for client "say" commands
+    - RCON messages work normally as workaround
+- **HUD Updates During Pause**: `RH_SV_UpdatePausedHUD` hook called every frame
+  - Enables real-time countdown timers (MM:SS format)
+  - Live pause info updates (extensions, commands, budget)
+  - Auto-warnings at 30s and 10s remaining
+- **Temporary Unpause System**: Frame-by-frame pause state manipulation
+  - `g_ktp_temporary_unpause` flag distinguishes temporary vs permanent unpause
+  - `g_psv.paused` temporarily cleared for chat/command processing
+  - Physics remain frozen (`SV_Physics()` skipped when `shouldSimulate == FALSE`)
+  - Game time (`g_psv.time`) remains frozen - match timer unaffected
+  - Network messages sent/received normally during pause
+  - State restored after `SV_SendClientMessages()` completes
+
+### Fixed
+- **ReHLDS String Command Rate Limiter**: Bypassed during temporary unpause
+  - Issue: Rate limiter used `realtime` which continues during pause, causing false positives
+  - Fix: Skip `g_StringCommandsRateLimiter.StringCommandIssued()` when `g_ktp_temporary_unpause == 1`
+  - Result: Commands no longer blocked by engine rate limiting during pause
+
+### Technical Details
+- `realtime` continues advancing during pause (network timing)
+- `g_psv.time` frozen during pause (game simulation time)
+- `host_frametime` set to 0 during pause (physics freeze)
+- `shouldSimulate` checked BEFORE pause manipulation (correct freeze behavior)
+- Compatible with `pausable 0` (ReAPI native pause control)
+
+### Repository
+- **GitHub**: https://github.com/afraznein/KTP-ReHLDS
+- **Based on**: ReHLDS 3.14.0.857 (upstream)
+
+---
+
 ## [`3.14.0.857`](https://github.com/rehlds/rehlds/releases/tag/3.14.0.857) - 2025-03-27
 
 ### Added
