@@ -519,13 +519,20 @@ extern DLL_FUNCTIONS		gEntityInterface;
 
 typedef struct
 {
-	// Called right before the object's memory is freed. 
+	// Called right before the object's memory is freed.
 	// Calls its destructor.
 	void			(*pfnOnFreeEntPrivateData)(edict_t *pEnt);
 	void			(*pfnGameShutdown)(void);
 	int				(*pfnShouldCollide)( edict_t *pentTouched, edict_t *pentOther );
 	void			(*pfnCvarValue)( const edict_t *pEnt, const char *value );
     void            (*pfnCvarValue2)( const edict_t *pEnt, int requestID, const char *cvarName, const char *value );
+
+	// KTP Custom: Real-time client cvar change notification
+	// Called whenever a client cvar query response is received from the client
+	// This provides real-time notification for ALL client cvars (not just FCVAR_USERINFO)
+	// Use this to implement real-time cvar validation/enforcement without periodic polling
+	// Parameters: pEnt - player entity, cvarName - name of cvar, value - current value
+	void			(*pfnClientCvarChanged)( const edict_t *pEnt, const char *cvarName, const char *value );
 } NEW_DLL_FUNCTIONS;
 typedef int(*NEW_DLL_FUNCTIONS_FN)(NEW_DLL_FUNCTIONS *pFunctionTable, int *interfaceVersion);
 

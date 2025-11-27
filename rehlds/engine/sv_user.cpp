@@ -1813,6 +1813,12 @@ void SV_ParseCvarValue2(client_t *cl)
 	if (gNewDLLFunctions.pfnCvarValue2)
 		gNewDLLFunctions.pfnCvarValue2(cl->edict, requestID, cvarName, value);
 
+	// KTP Custom: Real-time cvar change notification
+	// Trigger pfnClientCvarChanged for all cvar query responses
+	// This enables real-time cvar validation without periodic polling
+	if (gNewDLLFunctions.pfnClientCvarChanged)
+		gNewDLLFunctions.pfnClientCvarChanged(cl->edict, cvarName, value);
+
 	Con_DPrintf("Cvar query response: name:%s, request ID %d, cvar:%s, value:%s\n", cl->name, requestID, cvarName, value);
 }
 
