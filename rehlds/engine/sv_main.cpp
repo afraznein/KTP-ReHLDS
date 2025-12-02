@@ -5233,12 +5233,14 @@ void SV_SendClientMessages(void)
 		if (host_limitlocal.value == 0.0f && cl->netchan.remote_address.type == NA_LOOPBACK)
 			cl->send_message = TRUE;
 
-		// KTP Modification: Force message sending during pause for chat/HUD
-		// Check temp_flag to detect if we're in a real pause (temporarily unpaused for chat)
-		if (g_ktp_temporary_unpause && cl->active && cl->spawned && cl->fully_connected)
-			cl->send_message = TRUE;
-		else if (cl->active && cl->spawned && cl->fully_connected && host_frametime + realtime >= cl->next_messagetime)
-			cl->send_message = TRUE;
+		// KTP Modification: During temporary unpause, respect normal message timing
+		// We want to allow messages, but not flood the client every single frame
+		if (cl->active && cl->spawned && cl->fully_connected)
+		{
+			// During temporary unpause OR normal operation, check the timing
+			if (g_ktp_temporary_unpause || host_frametime + realtime >= cl->next_messagetime)
+				cl->send_message = TRUE;
+		}
 
 		if (cl->netchan.message.flags & SIZEBUF_OVERFLOWED)
 		{
@@ -8139,9 +8141,14 @@ void EXT_FUNC SV_Frame_Internal()
 	int wasPaused = g_psv.paused;
 	g_ktp_temporary_unpause = 0;  // Reset flag
 
+	// Store the restore decision NOW to prevent race condition
+	// If we check g_ktp_temporary_unpause later, a plugin could change it mid-frame
+	int shouldRestorePause = 0;
+
 	if (wasPaused) {
 		g_psv.paused = 0;  // Temporarily unpause for entire frame
 		g_ktp_temporary_unpause = 1;  // Mark that this is temporary
+		shouldRestorePause = 1;  // Capture restore decision before frame processing
 	}
 
 	if (shouldSimulate)
@@ -8165,13 +8172,14 @@ void EXT_FUNC SV_Frame_Internal()
 	SV_SendClientMessages();
 
 	// KTP Modification: Restore pause state AFTER message sending
-	// Only restore if temporary_unpause flag is still set
-	// If plugin called SetServerPause(), it will have cleared the flag
-	if (wasPaused && g_ktp_temporary_unpause) {
-		// Still marked as temporary, plugin didn't change pause state, restore it
+	// Use the stored decision (not the live flag) to prevent race condition
+	// If we checked g_ktp_temporary_unpause here, a plugin calling SetServerPause()
+	// from another thread could have changed it, corrupting the pause state
+	if (shouldRestorePause) {
+		// Restore the pause state that was active at frame start
 		g_psv.paused = wasPaused;
+		g_ktp_temporary_unpause = 0;  // Clear the temporary flag
 	}
-	// else: Plugin changed pause state (called SetServerPause), don't restore
 
 	SV_CheckMapDifferences();
 	SV_GatherStatistics();

@@ -273,8 +273,9 @@ Result: Professional experience, clear communication
 
 ## 📋 Version Information
 
-- **Based on**: ReHLDS 3.14.x (upstream)
-- **KTP Version**: 3.14-ktp
+- **Current Version**: KTP-ReHLDS 3.15.0.891-dev+m (2025-12-02)
+- **Previous Version**: 3.15.0.888-dev+m (2025-11-20) - See CHANGELOG for bug fixes
+- **Based on**: ReHLDS 3.14.0.857 (upstream)
 - **Platform Toolset**: Visual Studio 2022 (v143) for Windows
 - **Compiler**: GCC 4.9.2+ or Clang 6.0+ for Linux
 - **Compatible with**: ReAPI 5.26+, KTP-ReAPI 1.0+
@@ -338,7 +339,7 @@ Result: Professional experience, clear communication
 7. **Verify installation:**
    ```bash
    # Start server and check console
-   # Should see: ReHLDS version 3.14-ktp
+   # Should see: ReHLDS version 3.15.0.891-dev+m
 
    # In server console:
    meta version  # Check ReAPI loaded

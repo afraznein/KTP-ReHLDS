@@ -6,6 +6,45 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.15.0.891-dev+m`] - 2025-12-02
+
+**Bug Fix Release** - Critical stability and reliability improvements to pause system.
+
+### Fixed
+- **[CRITICAL] Race condition in pause state management** (`sv_main.cpp:8140-8180`)
+  - **Issue**: Mid-frame race condition when plugin calls `SetServerPause()` from another thread
+  - **Problem**: Checking `g_ktp_temporary_unpause` flag AFTER frame processing allowed plugins to modify it between setting and checking, causing pause state corruption
+  - **Fix**: Store pause restore decision (`shouldRestorePause`) at frame start before any processing
+  - **Impact**: Prevents pause state corruption where game stays unpaused when it should be paused
+  - **Result**: Thread-safe pause state restoration
+
+- **[CRITICAL] Network message flooding during pause** (`sv_main.cpp:5236-5243`)
+  - **Issue**: Temporary unpause bypassed message timing checks entirely, flooding clients
+  - **Problem**: Old logic sent messages EVERY frame during pause (60-100 Hz), overwhelming clients at high tick rates
+  - **Fix**: Respect normal message timing even during temporary unpause while still allowing messages through
+  - **Impact**: Prevents client message buffer overflow and network congestion
+  - **Result**: Controlled message flow during pause without flooding
+
+### Changed
+- **Version number consistency**: Added `VERSION_BUILD 888` to `version.h`
+  - Now matches CHANGELOG version format: `3.15.0.888-dev+m`
+
+### Documentation
+- Updated README.md version references from `3.14-ktp` to `3.15.0.888-dev+m`
+- Verified all implemented functionality is documented in README
+
+### Build Status
+- ✅ **Windows**: MSBuild (Visual Studio 2022) - 3/3 components successful
+- ✅ **Linux**: GCC 13.3.0 via WSL - All components successful (100%)
+- ✅ **0 errors, minor warnings only**
+
+### Technical Notes
+- Race condition fix uses local variable to capture restore decision before frame processing
+- Network throttle fix changes from bypass (`if (flag) send`) to controlled allow (`if (flag OR timing) send`)
+- Both fixes maintain backward compatibility with existing plugin behavior
+
+---
+
 ## [KTP-ReHLDS `3.15.0.888-dev+m`] - 2025-11-20
 
 **KTP-ReHLDS** is a custom fork of ReHLDS with enhanced pause functionality for competitive gameplay.

@@ -250,7 +250,8 @@ target_compile_definitions(engine PRIVATE
 	REHLDS_CHECKS
 	REHLDS_API
 	REHLDS_SELF
-	REHLDS_OPT_PEDANTIC
+	# KTP: Disabled REHLDS_OPT_PEDANTIC - causes DoD wall penetration to fail
+	# REHLDS_OPT_PEDANTIC
 	HAVE_OPT_STRTOOLS
 	USE_BREAKPAD_HANDLER
 	_LINUX
@@ -291,7 +292,7 @@ endif()
 
 set(LINK_FLAGS "${LINK_FLAGS} \
 	-Wl,-rpath,'$ORIGIN/.' \
-	-L${PROJECT_SOURCE_DIR}/lib/linux32")
+	-L\"${PROJECT_SOURCE_DIR}/lib/linux32\"")
 
 set_target_properties(engine PROPERTIES
 	OUTPUT_NAME engine_i486

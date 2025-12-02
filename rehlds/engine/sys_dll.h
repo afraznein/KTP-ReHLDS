@@ -127,6 +127,8 @@ FIELDIOFUNCTION GetIOFunction(char *pName);
 NOBODY void DLL_SetModKey(modinfo_t *pinfo, char *pkey, char *pvalue);
 void LoadEntityDLLs(const char *szBaseDir);
 void LoadThisDll(const char *szDllFilename);
+void LoadExtensionDLLs(void);
+void LoadExtensionDll(const char *szDllFilename);
 void ReleaseEntityDlls(void);
 void EngineFprintf(void *pfile, const char *szFmt, ...);
 void AlertMessage(ALERT_TYPE atype, const char *szFmt, ...);

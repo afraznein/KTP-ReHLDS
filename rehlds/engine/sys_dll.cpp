@@ -1027,6 +1027,190 @@ void LoadEntityDLLs(const char *szBaseDir)
 	}
 
 	Con_DPrintf("Dll loaded for %s %s\n", gmodinfo.bIsMod ? "mod" : "game", gEntityInterface.pfnGetGameDescription());
+
+	// KTP: Load extension DLLs after game DLL
+	LoadExtensionDLLs();
+}
+
+// KTP Custom: Load extension DLLs from config file
+// This allows loading modules like AMXX Lite without Metamod
+void LoadExtensionDLLs(void)
+{
+	FileHandle_t hExtFile;
+	char szExtListFile[260];
+	char szLine[512];
+	char szDllPath[512];
+	char szFullPath[512];
+
+	// Look for extension config file
+	Q_snprintf(szExtListFile, sizeof(szExtListFile), "%s/addons/extensions.ini", com_gamedir);
+
+	hExtFile = FS_Open(szExtListFile, "r");
+	if (!hExtFile)
+	{
+		// Try alternate location
+		Q_snprintf(szExtListFile, sizeof(szExtListFile), "addons/extensions.ini");
+		hExtFile = FS_Open(szExtListFile, "r");
+	}
+
+	if (!hExtFile)
+	{
+		// No extensions config - that's fine
+		return;
+	}
+
+	Con_Printf("KTP-REHLDS: Loading extension DLLs from %s\n", szExtListFile);
+
+	while (FS_ReadLine(szLine, sizeof(szLine) - 1, hExtFile))
+	{
+		// Skip empty lines and comments
+		char *pLine = szLine;
+
+		// Trim leading whitespace
+		while (*pLine == ' ' || *pLine == '\t')
+			pLine++;
+
+		// Skip comments and empty lines
+		if (*pLine == ';' || *pLine == '#' || *pLine == '/' || *pLine == '\0' || *pLine == '\n' || *pLine == '\r')
+			continue;
+
+		// Remove trailing whitespace/newlines
+		size_t len = Q_strlen(pLine);
+		while (len > 0 && (pLine[len - 1] == '\n' || pLine[len - 1] == '\r' || pLine[len - 1] == ' ' || pLine[len - 1] == '\t'))
+		{
+			pLine[--len] = '\0';
+		}
+
+		if (len == 0)
+			continue;
+
+		// Build full path
+		Q_strncpy(szDllPath, pLine, sizeof(szDllPath) - 1);
+		szDllPath[sizeof(szDllPath) - 1] = '\0';
+
+		// Check if path is relative or absolute
+		if (szDllPath[0] == '/' || (szDllPath[0] != '\0' && szDllPath[1] == ':'))
+		{
+			// Absolute path
+			Q_strncpy(szFullPath, szDllPath, sizeof(szFullPath) - 1);
+		}
+		else
+		{
+			// Relative to game directory
+			Q_snprintf(szFullPath, sizeof(szFullPath), "%s/%s", com_gamedir, szDllPath);
+		}
+
+		Con_Printf("KTP-REHLDS: Loading extension: %s\n", szFullPath);
+		LoadExtensionDll(szFullPath);
+	}
+
+	FS_Close(hExtFile);
+}
+
+// Load a single extension DLL
+void LoadExtensionDll(const char *szDllFilename)
+{
+#ifdef _WIN32
+	typedef void(__stdcall *PFN_GiveFnptrsToDll)(enginefuncs_t *, globalvars_t *);
+#else
+	typedef void(__cdecl *PFN_GiveFnptrsToDll)(enginefuncs_t *, globalvars_t *);
+#endif
+
+	PFN_GiveFnptrsToDll pfnGiveFnptrsToDll;
+	NEW_DLL_FUNCTIONS_FN pNewAPI;
+	extensiondll_t *pextdll;
+	int interface_version;
+
+#ifdef _WIN32
+	HMODULE hDLL = LoadWindowsDLL(szDllFilename);
+	if (!hDLL)
+	{
+		Con_Printf("KTP-REHLDS: LoadLibrary failed on extension %s (%d)\n", szDllFilename, GetLastError());
+		return;
+	}
+#else
+	void *hDLL = dlopen(szDllFilename, RTLD_NOW);
+	if (!hDLL)
+	{
+		Con_Printf("KTP-REHLDS: dlopen failed on extension %s: %s\n", szDllFilename, dlerror());
+		return;
+	}
+#endif
+
+	// Get GiveFnptrsToDll
+#ifdef _WIN32
+	pfnGiveFnptrsToDll = (PFN_GiveFnptrsToDll)GetProcAddress(hDLL, "GiveFnptrsToDll");
+#else
+	pfnGiveFnptrsToDll = (PFN_GiveFnptrsToDll)dlsym(hDLL, "GiveFnptrsToDll");
+#endif
+
+	if (!pfnGiveFnptrsToDll)
+	{
+		Con_Printf("KTP-REHLDS: Extension %s missing GiveFnptrsToDll export\n", szDllFilename);
+#ifdef _WIN32
+		FreeLibrary(hDLL);
+#else
+		dlclose(hDLL);
+#endif
+		return;
+	}
+
+	// Check if we have room
+	if (g_iextdllMac >= MAX_EXTENSION_DLL)
+	{
+		Con_Printf("KTP-REHLDS: Too many extension DLLs, ignoring %s\n", szDllFilename);
+#ifdef _WIN32
+		FreeLibrary(hDLL);
+#else
+		dlclose(hDLL);
+#endif
+		return;
+	}
+
+	// Call GiveFnptrsToDll
+	Con_Printf("KTP-REHLDS: Calling GiveFnptrsToDll for extension: %s\n", szDllFilename);
+	pfnGiveFnptrsToDll(&g_engfuncsExportedToDlls, &gGlobalVariables);
+
+	// Register extension
+	pextdll = &g_rgextdll[g_iextdllMac++];
+	Q_memset(pextdll, 0, sizeof(*pextdll));
+	pextdll->lDLLHandle = hDLL;
+
+	// Check for GetNewDLLFunctions
+#ifdef _WIN32
+	pNewAPI = (NEW_DLL_FUNCTIONS_FN)GetProcAddress((HMODULE)hDLL, "GetNewDLLFunctions");
+#else
+	pNewAPI = (NEW_DLL_FUNCTIONS_FN)dlsym(hDLL, "GetNewDLLFunctions");
+#endif
+
+	if (pNewAPI)
+	{
+		NEW_DLL_FUNCTIONS extNewFuncs;
+		Q_memset(&extNewFuncs, 0, sizeof(extNewFuncs));
+		interface_version = NEW_DLL_FUNCTIONS_VERSION;
+
+		if (pNewAPI(&extNewFuncs, &interface_version))
+		{
+			// Merge extension's NEW_DLL_FUNCTIONS with global
+			// Only override if extension provides the function
+			if (extNewFuncs.pfnOnFreeEntPrivateData && !gNewDLLFunctions.pfnOnFreeEntPrivateData)
+				gNewDLLFunctions.pfnOnFreeEntPrivateData = extNewFuncs.pfnOnFreeEntPrivateData;
+			if (extNewFuncs.pfnGameShutdown && !gNewDLLFunctions.pfnGameShutdown)
+				gNewDLLFunctions.pfnGameShutdown = extNewFuncs.pfnGameShutdown;
+			if (extNewFuncs.pfnShouldCollide && !gNewDLLFunctions.pfnShouldCollide)
+				gNewDLLFunctions.pfnShouldCollide = extNewFuncs.pfnShouldCollide;
+			if (extNewFuncs.pfnCvarValue && !gNewDLLFunctions.pfnCvarValue)
+				gNewDLLFunctions.pfnCvarValue = extNewFuncs.pfnCvarValue;
+			if (extNewFuncs.pfnCvarValue2 && !gNewDLLFunctions.pfnCvarValue2)
+				gNewDLLFunctions.pfnCvarValue2 = extNewFuncs.pfnCvarValue2;
+			if (extNewFuncs.pfnClientCvarChanged && !gNewDLLFunctions.pfnClientCvarChanged)
+				gNewDLLFunctions.pfnClientCvarChanged = extNewFuncs.pfnClientCvarChanged;
+
+			Con_Printf("KTP-REHLDS: Extension %s registered NEW_DLL_FUNCTIONS\n", szDllFilename);
+		}
+	}
+
+	Con_Printf("KTP-REHLDS: Extension loaded: %s\n", szDllFilename);
 }
 
 #ifdef _WIN32
@@ -1058,8 +1242,11 @@ void LoadThisDll(const char *szDllFilename)
 		goto IgnoreThisDLL;
 	}
 #else // _WIN32
+// KTP: Removed RTLD_DEEPBIND as it causes issues with Metamod function pointer passing
+// RTLD_DEEPBIND changes symbol resolution order which breaks DoD wall penetration when
+// using Metamod with ReHLDS
 #ifdef REHLDS_FIXES
-	void *hDLL = dlopen(szDllFilename, RTLD_NOW | RTLD_DEEPBIND | RTLD_LOCAL);
+	void *hDLL = dlopen(szDllFilename, RTLD_NOW | RTLD_LOCAL);
 #else // REHLDS_FIXES
 	void *hDLL = dlopen(szDllFilename, RTLD_NOW);
 #endif // REHLDS_FIXES

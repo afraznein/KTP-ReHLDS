@@ -145,7 +145,7 @@ endif()
 
 set(LINK_FLAGS "${LINK_FLAGS} \
 	-Wl,-rpath,'$ORIGIN/.' \
-	-L${PROJECT_SOURCE_DIR}/../../lib/linux32")
+	-L\"${PROJECT_SOURCE_DIR}/../../lib/linux32\"")
 
 set_target_properties(proxy PROPERTIES
 	OUTPUT_NAME proxy
