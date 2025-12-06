@@ -936,6 +936,31 @@ IRehldsHookRegistry_SV_SendResources* CRehldsHookchains::SV_SendResources() {
 	return &m_SV_SendResources;
 }
 
+// KTP: New hooks for KTPAMXX extension mode
+IRehldsHookRegistry_PF_changelevel_I* CRehldsHookchains::PF_changelevel_I() {
+	return &m_PF_changelevel_I;
+}
+
+IRehldsHookRegistry_PF_setmodel_I* CRehldsHookchains::PF_setmodel_I() {
+	return &m_PF_setmodel_I;
+}
+
+IRehldsHookRegistry_SV_ClientUserInfoChanged* CRehldsHookchains::SV_ClientUserInfoChanged() {
+	return &m_SV_ClientUserInfoChanged;
+}
+
+IRehldsHookRegistry_PF_RegUserMsg_I* CRehldsHookchains::PF_RegUserMsg_I() {
+	return &m_PF_RegUserMsg_I;
+}
+
+IRehldsHookRegistry_SV_ClientCommand* CRehldsHookchains::SV_ClientCommand() {
+	return &m_SV_ClientCommand;
+}
+
+IRehldsHookRegistry_SV_InactivateClients* CRehldsHookchains::SV_InactivateClients() {
+	return &m_SV_InactivateClients;
+}
+
 int EXT_FUNC CRehldsApi::GetMajorVersion()
 {
 	return REHLDS_API_VERSION_MAJOR;

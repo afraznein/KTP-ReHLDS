@@ -6,6 +6,75 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.16.0.892-dev+m`] - 2025-12-06
+
+**Extension Mode Support** - Major API additions for KTPAMXX extension mode compatibility.
+
+### Added
+
+#### New Hookchains for Extension Mode
+- **`SV_ClientCommand`** - Client command processing hook
+  - Enables `register_clcmd`, menu systems, and `client_command` forward in extension mode
+  - Called when clients send commands (chat, menuselect, etc.)
+  - Allows KTPAMXX to process chat commands (`/start`, `.start`) and menu selections
+
+- **`SV_InactivateClients`** - Map change deactivation hook
+  - Called at the START of map change sequence (before clients are inactivated)
+  - Enables KTPAMXX to fire `plugin_end` and `client_disconnect` forwards during map change
+  - Critical for proper plugin cleanup during map transitions
+
+- **`SV_ClientUserInfoChanged`** - Client info change hook
+  - Called when client userinfo is modified
+  - Enables `client_infochanged` forward in extension mode
+
+- **`PF_RegUserMsg_I`** - User message registration hook
+  - Allows intercepting message ID registration
+  - Used by KTPAMXX to capture message IDs for HUD drawing
+
+- **`PF_changelevel_I`** - Server changelevel hook
+  - Called when server changes level
+  - Enables `server_changelevel` forward
+
+- **`PF_setmodel_I`** - Entity setmodel hook
+  - Called when entity model is set
+  - Enables entity model tracking
+
+### Fixed
+
+- **`RegUserMsg_internal` now searches both message lists**
+  - **Issue**: Looking up existing message IDs via `REG_USER_MSG` created duplicates with IDs 130+
+  - **Problem**: `RegUserMsg_internal` only searched `sv_gpUserMsgs` (messages already sent to clients)
+  - **Fix**: Now also searches `sv_gpNewUserMsgs` (newly registered messages not yet sent)
+  - **Result**: KTPAMXX can correctly look up message IDs like `TextMsg`, `SayText`, etc. without creating duplicates
+
+### Technical Details
+
+#### Hook Chain Additions to `IRehldsHookchains`
+```cpp
+virtual IRehldsHookRegistry_PF_changelevel_I* PF_changelevel_I() = 0;
+virtual IRehldsHookRegistry_PF_setmodel_I* PF_setmodel_I() = 0;
+virtual IRehldsHookRegistry_SV_ClientUserInfoChanged* SV_ClientUserInfoChanged() = 0;
+virtual IRehldsHookRegistry_PF_RegUserMsg_I* PF_RegUserMsg_I() = 0;
+virtual IRehldsHookRegistry_SV_ClientCommand* SV_ClientCommand() = 0;
+virtual IRehldsHookRegistry_SV_InactivateClients* SV_InactivateClients() = 0;
+```
+
+#### Map Change Sequence Support
+The `SV_InactivateClients` hook enables KTPAMXX to handle map changes properly:
+1. `SV_InactivateClients()` → KTPAMXX fires `plugin_end`, `client_disconnect`
+2. `SV_ServerShutdown()` → Server shuts down
+3. `SV_SpawnServer()` → New map loads
+4. `SV_ActivateServer()` → KTPAMXX fires `plugin_init`, `plugin_cfg`
+5. `SV_Spawn_f()` → Clients reconnect, KTPAMXX fires `client_connect`, `client_putinserver`
+
+### Compatibility Notes
+
+- **Requires KTPAMXX 2.1.0+** for extension mode features
+- **Backwards compatible** with standard ReAPI/AMXX plugins
+- **API version unchanged** - existing extensions work without recompilation
+
+---
+
 ## [KTP-ReHLDS `3.15.0.891-dev+m`] - 2025-12-02
 
 **Bug Fix Release** - Critical stability and reliability improvements to pause system.

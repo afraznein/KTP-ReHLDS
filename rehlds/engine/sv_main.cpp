@@ -61,6 +61,20 @@ server_t g_psv;
 // KTP Modification: Flag to track temporary unpause for chat (not static, used in rehlds_api_impl.cpp)
 int g_ktp_temporary_unpause = 0;
 
+// KTP: Internal implementation for SV_ClientUserInfoChanged hook
+void SV_ClientUserInfoChanged_internal(IGameClient *pClient)
+{
+	client_t *cl = pClient->GetClient();
+	gEntityInterface.pfnClientUserInfoChanged(cl->edict, cl->userinfo);
+}
+
+// KTP: Wrapper to call ClientUserInfoChanged through the hook chain
+void SV_CallClientUserInfoChanged(client_t *cl)
+{
+	IGameClient *pClient = GetRehldsApiClient(cl);
+	g_RehldsHookchains.m_SV_ClientUserInfoChanged.callChain(SV_ClientUserInfoChanged_internal, pClient);
+}
+
 rehlds_server_t g_rehlds_sv;
 
 decalname_t sv_decalnames[MAX_BASE_DECALS];
@@ -5340,7 +5354,10 @@ void SV_ExtractFromUserinfo(client_t *cl)
 	// Check for duplicate names
 	SV_CheckForDuplicateNames(userinfo, TRUE, cl - g_psvs.clients);
 
-	gEntityInterface.pfnClientUserInfoChanged(cl->edict, userinfo);
+	// KTP: Call through hook chain for extension mode support
+	// TEMPORARILY DISABLED - investigating client kick issue
+	// SV_CallClientUserInfoChanged(cl);
+	gEntityInterface.pfnClientUserInfoChanged(cl->edict, cl->userinfo);
 
 	val = Info_ValueForKey(userinfo, "name");
 	Q_strncpy(cl->name, val, sizeof(cl->name) - 1);
@@ -6608,7 +6625,7 @@ void SV_ClearEntities(void)
 			ReleaseEntityDLLFields(pEdict);
 	}
 }
-int EXT_FUNC RegUserMsg(const char *pszName, int iSize)
+int RegUserMsg_internal(const char *pszName, int iSize)
 {
 	if (giNextUserMsg >= MAX_USERMESSAGES)
 		return 0;
@@ -6619,7 +6636,18 @@ int EXT_FUNC RegUserMsg(const char *pszName, int iSize)
 	if (!pszName || Q_strlen(pszName) >= MAX_USERMESSAGES_LENGTH - 1)
 		return 0;
 
+	// KTP: Search sv_gpUserMsgs (messages already sent to clients)
 	UserMsg *pUserMsgs = sv_gpUserMsgs;
+	while (pUserMsgs)
+	{
+		if (!Q_strcmp(pszName, pUserMsgs->szName))
+			return pUserMsgs->iMsg;
+
+		pUserMsgs = pUserMsgs->next;
+	}
+
+	// KTP: Also search sv_gpNewUserMsgs (newly registered messages not yet sent to clients)
+	pUserMsgs = sv_gpNewUserMsgs;
 	while (pUserMsgs)
 	{
 		if (!Q_strcmp(pszName, pUserMsgs->szName))
@@ -6636,6 +6664,11 @@ int EXT_FUNC RegUserMsg(const char *pszName, int iSize)
 	sv_gpNewUserMsgs = pNewMsg;
 
 	return pNewMsg->iMsg;
+}
+
+int EXT_FUNC RegUserMsg(const char *pszName, int iSize)
+{
+	return g_RehldsHookchains.m_PF_RegUserMsg_I.callChain(RegUserMsg_internal, pszName, iSize);
 }
 
 uint32_t CIDRToMask(int cidr)
@@ -7684,7 +7717,8 @@ void SV_KickPlayer(int nPlayerSlot, int nReason)
 	SV_DropClient(&g_psvs.clients[nPlayerSlot], FALSE, "Automatically dropped by cheat detector");
 }
 
-void SV_InactivateClients(void)
+// KTP: Internal implementation of SV_InactivateClients
+void SV_InactivateClients_internal(void)
 {
 	int i;
 	client_t *cl;
@@ -7711,6 +7745,12 @@ void SV_InactivateClients(void)
 			Q_memset(cl->physinfo, 0, MAX_PHYSINFO_STRING);
 		}
 	}
+}
+
+// KTP: Hook wrapper for SV_InactivateClients - allows extensions to run plugin_end before map change
+void SV_InactivateClients(void)
+{
+	g_RehldsHookchains.m_SV_InactivateClients.callChain(SV_InactivateClients_internal);
 }
 
 void SV_FailDownload(const char *filename)

@@ -1470,6 +1470,8 @@ void SV_RestoreMove(client_t *_host_client)
 	}
 }
 
+// KTP: Forward declaration for SV_ClientCommand
+void SV_ClientCommand(edict_t *pEdict);
 void SV_ParseStringCommand(client_t *pSenderClient)
 {
 	//check string commands rate for this player
@@ -1501,7 +1503,7 @@ void SV_ParseStringCommand(client_t *pSenderClient)
 		// KTP Modification: Commands during pause are handled by frame-wide unpause in SV_Frame()
 		// We no longer need to unpause here since SV_Frame() does it for the entire frame
 		// This ensures chat messages have time to be queued before pause is restored
-		gEntityInterface.pfnClientCommand(sv_player);
+		SV_ClientCommand(sv_player);
 		break;
 	case 1:
 		// KTP Modification: Also allow engine commands during pause
@@ -1522,6 +1524,16 @@ void SV_ParseStringCommand(client_t *pSenderClient)
 	}
 }
 
+// KTP: Wrapper for client command hookchain (for extension mode)
+void EXT_FUNC SV_ClientCommand_mod(edict_t *pEdict)
+{
+	gEntityInterface.pfnClientCommand(pEdict);
+}
+
+void SV_ClientCommand(edict_t *pEdict)
+{
+	g_RehldsHookchains.m_SV_ClientCommand.callChain(SV_ClientCommand_mod, pEdict);
+}
 void SV_ParseDelta(client_t *pSenderClient)
 {
 	host_client->delta_sequence = MSG_ReadByte();
@@ -2014,12 +2026,12 @@ void SV_FullUpdate_f(void)
 #ifdef REHLDS_FIXES
 		// it's not need until not active
 		SV_ForceFullClientsUpdate();
-		gEntityInterface.pfnClientCommand( sv_player );
+		SV_ClientCommand(sv_player);
 #endif // REHLDS_FIXES
 	}
 
 #ifndef REHLDS_FIXES
 	SV_ForceFullClientsUpdate();
-	gEntityInterface.pfnClientCommand(sv_player);
+	SV_ClientCommand(sv_player);
 #endif // REHLDS_FIXES
 }

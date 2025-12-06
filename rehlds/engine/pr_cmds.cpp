@@ -110,7 +110,8 @@ void EXT_FUNC PF_setsize_I(edict_t *e, const float *rgflMin, const float *rgflMa
 	SetMinMaxSize(e, rgflMin, rgflMax, 0);
 }
 
-void EXT_FUNC PF_setmodel_I(edict_t *e, const char *m)
+// KTP: Internal implementation for hook chain
+void PF_setmodel_I_internal(edict_t *e, const char *m)
 {
 	const char** check = &g_psv.model_precache[0];
 	int i = 0;
@@ -151,6 +152,12 @@ void EXT_FUNC PF_setmodel_I(edict_t *e, const char *m)
 	}
 
 	Host_Error("%s: no precache: %s\n", __func__, m);
+}
+
+// KTP: Hook wrapper for PF_setmodel_I
+void EXT_FUNC PF_setmodel_I(edict_t *e, const char *m)
+{
+	g_RehldsHookchains.m_PF_setmodel_I.callChain(PF_setmodel_I_internal, e, m);
 }
 
 int EXT_FUNC PF_modelindex(const char *pstr)
@@ -2377,7 +2384,8 @@ void EXT_FUNC PF_setspawnparms_I(edict_t *ent)
 		Host_Error("%s: Entity is not a client", __func__);
 }
 
-void EXT_FUNC PF_changelevel_I(const char *s1, const char *s2)
+// KTP: Internal implementation for hook chain
+void PF_changelevel_I_internal(const char *s1, const char *s2)
 {
 	static int last_spawncount;
 
@@ -2390,6 +2398,12 @@ void EXT_FUNC PF_changelevel_I(const char *s1, const char *s2)
 		else
 			Cbuf_AddText(va("changelevel %s\n", s1));
 	}
+}
+
+// KTP: Hook wrapper for PF_changelevel_I
+void EXT_FUNC PF_changelevel_I(const char *s1, const char *s2)
+{
+	g_RehldsHookchains.m_PF_changelevel_I.callChain(PF_changelevel_I_internal, s1, s2);
 }
 
 void SeedRandomNumberGenerator(void)

@@ -93,7 +93,7 @@ KTP-ReHLDS is the **engine foundation** of the KTP competitive stack:
 
 ### 🔌 ReAPI Integration
 
-**Custom Hook Exposed:**
+**Pause HUD Hook:**
 ```cpp
 // rehlds/public/rehlds/rehlds_api.h
 class IRehldsHook_SV_UpdatePausedHUD {
@@ -102,6 +102,23 @@ public:
     virtual void SV_UpdatePausedHUD() = 0;
 };
 ```
+
+### 🔗 KTPAMXX Extension Mode Support
+
+**New hooks for AMX Mod X extension mode (v3.16.0+):**
+
+| Hook | Purpose | Used By |
+|------|---------|---------|
+| `SV_ClientCommand` | Chat commands, menus | `register_clcmd`, `client_command` |
+| `SV_InactivateClients` | Map change cleanup | `plugin_end`, `client_disconnect` |
+| `SV_ClientUserInfoChanged` | Client info changes | `client_infochanged` |
+| `PF_RegUserMsg_I` | Message ID capture | HUD drawing, `client_print` |
+| `PF_changelevel_I` | Level change | `server_changelevel` |
+| `PF_setmodel_I` | Entity model tracking | Model monitoring |
+
+**Message Registration Fix:**
+- `RegUserMsg_internal` now searches BOTH `sv_gpUserMsgs` AND `sv_gpNewUserMsgs`
+- Prevents duplicate message IDs (130+) when KTPAMXX looks up existing messages
 
 **Called from Engine:**
 ```cpp
@@ -273,12 +290,12 @@ Result: Professional experience, clear communication
 
 ## 📋 Version Information
 
-- **Current Version**: KTP-ReHLDS 3.15.0.891-dev+m (2025-12-02)
-- **Previous Version**: 3.15.0.888-dev+m (2025-11-20) - See CHANGELOG for bug fixes
+- **Current Version**: KTP-ReHLDS 3.16.0.892-dev+m (2025-12-06)
+- **Previous Version**: 3.15.0.891-dev+m (2025-12-02) - Pause system bug fixes
 - **Based on**: ReHLDS 3.14.0.857 (upstream)
 - **Platform Toolset**: Visual Studio 2022 (v143) for Windows
 - **Compiler**: GCC 4.9.2+ or Clang 6.0+ for Linux
-- **Compatible with**: ReAPI 5.26+, KTP-ReAPI 1.0+
+- **Compatible with**: ReAPI 5.26+, KTP-ReAPI 1.0+, **KTPAMXX 2.1.0+**
 
 ---
 
@@ -339,7 +356,7 @@ Result: Professional experience, clear communication
 7. **Verify installation:**
    ```bash
    # Start server and check console
-   # Should see: ReHLDS version 3.15.0.891-dev+m
+   # Should see: ReHLDS version 3.16.0.892-dev+m
 
    # In server console:
    meta version  # Check ReAPI loaded

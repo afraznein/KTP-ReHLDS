@@ -262,6 +262,30 @@ typedef IHookChainRegistryImpl<bool, edict_t*, edict_t*> CRehldsHookRegistry_SV_
 typedef IVoidHookChainImpl<sizebuf_t *> CRehldsHook_SV_SendResources;
 typedef IVoidHookChainRegistryImpl<sizebuf_t *> CRehldsHookRegistry_SV_SendResources;
 
+//PF_changelevel_I hook (KTP)
+typedef IVoidHookChainImpl<const char *, const char *> CRehldsHook_PF_changelevel_I;
+typedef IVoidHookChainRegistryImpl<const char *, const char *> CRehldsHookRegistry_PF_changelevel_I;
+
+//PF_setmodel_I hook (KTP)
+typedef IVoidHookChainImpl<edict_t *, const char *> CRehldsHook_PF_setmodel_I;
+typedef IVoidHookChainRegistryImpl<edict_t *, const char *> CRehldsHookRegistry_PF_setmodel_I;
+
+//SV_ClientUserInfoChanged hook (KTP)
+typedef IVoidHookChainImpl<IGameClient *> CRehldsHook_SV_ClientUserInfoChanged;
+typedef IVoidHookChainRegistryImpl<IGameClient *> CRehldsHookRegistry_SV_ClientUserInfoChanged;
+
+//PF_RegUserMsg_I hook (KTP - for capturing message IDs in extension mode)
+typedef IHookChainImpl<int, const char *, int> CRehldsHook_PF_RegUserMsg_I;
+typedef IHookChainRegistryImpl<int, const char *, int> CRehldsHookRegistry_PF_RegUserMsg_I;
+
+//SV_ClientCommand hook (KTP - for client_command forward in extension mode)
+typedef IVoidHookChainImpl<edict_t *> CRehldsHook_SV_ClientCommand;
+typedef IVoidHookChainRegistryImpl<edict_t *> CRehldsHookRegistry_SV_ClientCommand;
+
+//SV_InactivateClients hook (KTP - for plugin_end forward before map change)
+typedef IVoidHookChainImpl<> CRehldsHook_SV_InactivateClients;
+typedef IVoidHookChainRegistryImpl<> CRehldsHookRegistry_SV_InactivateClients;
+
 class CRehldsHookchains : public IRehldsHookchains {
 public:
 	CRehldsHookRegistry_Steam_NotifyClientConnect m_Steam_NotifyClientConnect;
@@ -321,6 +345,12 @@ public:
 	CRehldsHookRegistry_SV_ClientPrintf m_SV_ClientPrintf;
 	CRehldsHookRegistry_SV_AllowPhysent m_SV_AllowPhysent;
 	CRehldsHookRegistry_SV_SendResources m_SV_SendResources;
+	CRehldsHookRegistry_PF_changelevel_I m_PF_changelevel_I;          // KTP
+	CRehldsHookRegistry_PF_setmodel_I m_PF_setmodel_I;                // KTP
+	CRehldsHookRegistry_SV_ClientUserInfoChanged m_SV_ClientUserInfoChanged;  // KTP
+	CRehldsHookRegistry_PF_RegUserMsg_I m_PF_RegUserMsg_I;  // KTP
+	CRehldsHookRegistry_SV_ClientCommand m_SV_ClientCommand;  // KTP
+	CRehldsHookRegistry_SV_InactivateClients m_SV_InactivateClients;  // KTP
 
 public:
 	EXT_FUNC virtual IRehldsHookRegistry_Steam_NotifyClientConnect* Steam_NotifyClientConnect();
@@ -380,6 +410,12 @@ public:
 	EXT_FUNC virtual IRehldsHookRegistry_SV_ClientPrintf* SV_ClientPrintf();
 	EXT_FUNC virtual IRehldsHookRegistry_SV_AllowPhysent* SV_AllowPhysent();
 	EXT_FUNC virtual IRehldsHookRegistry_SV_SendResources* SV_SendResources();
+	EXT_FUNC virtual IRehldsHookRegistry_PF_changelevel_I* PF_changelevel_I();          // KTP
+	EXT_FUNC virtual IRehldsHookRegistry_PF_setmodel_I* PF_setmodel_I();                // KTP
+	EXT_FUNC virtual IRehldsHookRegistry_SV_ClientUserInfoChanged* SV_ClientUserInfoChanged();  // KTP
+	EXT_FUNC virtual IRehldsHookRegistry_PF_RegUserMsg_I* PF_RegUserMsg_I();  // KTP
+	EXT_FUNC virtual IRehldsHookRegistry_SV_ClientCommand* SV_ClientCommand();  // KTP
+	EXT_FUNC virtual IRehldsHookRegistry_SV_InactivateClients* SV_InactivateClients();  // KTP
 };
 
 extern CRehldsHookchains g_RehldsHookchains;

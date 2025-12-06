@@ -268,6 +268,30 @@ typedef IHookChainRegistry<bool, edict_t*, edict_t*> IRehldsHookRegistry_SV_Allo
 typedef IVoidHookChain<sizebuf_t *> IRehldsHook_SV_SendResources;
 typedef IVoidHookChainRegistry<sizebuf_t *> IRehldsHookRegistry_SV_SendResources;
 
+//PF_changelevel_I hook (KTP - for server_changelevel forward)
+typedef IVoidHookChain<const char *, const char *> IRehldsHook_PF_changelevel_I;
+typedef IVoidHookChainRegistry<const char *, const char *> IRehldsHookRegistry_PF_changelevel_I;
+
+//PF_setmodel_I hook (KTP - for entity model tracking)
+typedef IVoidHookChain<edict_t *, const char *> IRehldsHook_PF_setmodel_I;
+typedef IVoidHookChainRegistry<edict_t *, const char *> IRehldsHookRegistry_PF_setmodel_I;
+
+//SV_ClientUserInfoChanged hook (KTP - for client_infochanged forward)
+typedef IVoidHookChain<IGameClient *> IRehldsHook_SV_ClientUserInfoChanged;
+typedef IVoidHookChainRegistry<IGameClient *> IRehldsHookRegistry_SV_ClientUserInfoChanged;
+
+//PF_RegUserMsg_I hook (KTP - for capturing message IDs in extension mode)
+typedef IHookChain<int, const char *, int> IRehldsHook_PF_RegUserMsg_I;
+typedef IHookChainRegistry<int, const char *, int> IRehldsHookRegistry_PF_RegUserMsg_I;
+
+//SV_ClientCommand hook (KTP - for client_command forward in extension mode)
+typedef IVoidHookChain<edict_t *> IRehldsHook_SV_ClientCommand;
+typedef IVoidHookChainRegistry<edict_t *> IRehldsHookRegistry_SV_ClientCommand;
+
+//SV_InactivateClients hook (KTP - for plugin_end forward before map change)
+typedef IVoidHookChain<> IRehldsHook_SV_InactivateClients;
+typedef IVoidHookChainRegistry<> IRehldsHookRegistry_SV_InactivateClients;
+
 class IRehldsHookchains {
 public:
 	virtual ~IRehldsHookchains() { }
@@ -329,6 +353,12 @@ public:
 	virtual IRehldsHookRegistry_SV_ClientPrintf* SV_ClientPrintf() = 0;
 	virtual IRehldsHookRegistry_SV_AllowPhysent* SV_AllowPhysent() = 0;
 	virtual IRehldsHookRegistry_SV_SendResources* SV_SendResources() = 0;
+	virtual IRehldsHookRegistry_PF_changelevel_I* PF_changelevel_I() = 0;          // KTP
+	virtual IRehldsHookRegistry_PF_setmodel_I* PF_setmodel_I() = 0;                // KTP
+	virtual IRehldsHookRegistry_SV_ClientUserInfoChanged* SV_ClientUserInfoChanged() = 0;  // KTP
+	virtual IRehldsHookRegistry_PF_RegUserMsg_I* PF_RegUserMsg_I() = 0;  // KTP
+	virtual IRehldsHookRegistry_SV_ClientCommand* SV_ClientCommand() = 0;  // KTP
+	virtual IRehldsHookRegistry_SV_InactivateClients* SV_InactivateClients() = 0;  // KTP
 };
 
 struct RehldsFuncs_t {
