@@ -105,7 +105,7 @@ public:
 
 ### 🔗 KTPAMXX Extension Mode Support
 
-**New hooks for AMX Mod X extension mode (v3.16.0+):**
+**New hooks for AMX Mod X extension mode (v3.16.0+, expanded in v3.17.0):**
 
 | Hook | Purpose | Used By |
 |------|---------|---------|
@@ -115,6 +115,9 @@ public:
 | `PF_RegUserMsg_I` | Message ID capture | HUD drawing, `client_print` |
 | `PF_changelevel_I` | Level change | `server_changelevel` |
 | `PF_setmodel_I` | Entity model tracking | Model monitoring |
+| `AlertMessage` | Engine log messages | `register_logevent` |
+| `PF_TraceLine` | TraceLine interception | DODX `TraceLine_Post` |
+| `PF_SetClientKeyValue` | Client key/value changes | DODX `SetClientKeyValue` |
 
 **Message Registration Fix:**
 - `RegUserMsg_internal` now searches BOTH `sv_gpUserMsgs` AND `sv_gpNewUserMsgs`
@@ -290,8 +293,8 @@ Result: Professional experience, clear communication
 
 ## 📋 Version Information
 
-- **Current Version**: KTP-ReHLDS 3.16.0.892-dev+m (2025-12-06)
-- **Previous Version**: 3.15.0.891-dev+m (2025-12-02) - Pause system bug fixes
+- **Current Version**: KTP-ReHLDS 3.17.0.893-dev+m (2025-12-08)
+- **Previous Version**: 3.16.0.892-dev+m (2025-12-06) - Extension mode hookchains
 - **Based on**: ReHLDS 3.14.0.857 (upstream)
 - **Platform Toolset**: Visual Studio 2022 (v143) for Windows
 - **Compiler**: GCC 4.9.2+ or Clang 6.0+ for Linux
@@ -356,7 +359,7 @@ Result: Professional experience, clear communication
 7. **Verify installation:**
    ```bash
    # Start server and check console
-   # Should see: ReHLDS version 3.16.0.892-dev+m
+   # Should see: ReHLDS version 3.17.0.893-dev+m
 
    # In server console:
    meta version  # Check ReAPI loaded

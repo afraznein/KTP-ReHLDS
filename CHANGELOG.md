@@ -6,6 +6,45 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.17.0.893-dev+m`] - 2025-12-08
+
+**Extension Mode Support** - Additional API hooks for KTPAMXX and DODX compatibility.
+
+### Added
+
+#### New Hookchains for Extension Mode
+- **`AlertMessage`** - Engine log message hook
+  - Enables `register_logevent` functionality in extension mode
+  - Intercepts all engine AlertMessage calls with formatted output
+  - Parameters: `ALERT_TYPE atype, const char *szOut`
+
+- **`PF_TraceLine`** - Engine TraceLine hook
+  - Enables DODX `TraceLine_Post` functionality in extension mode
+  - Called for all `PF_traceline_DLL` calls with full TraceResult
+  - Parameters: `const float *v1, const float *v2, int fNoMonsters, edict_t *pentToSkip, TraceResult *ptr`
+
+- **`PF_SetClientKeyValue`** - Client key/value hook
+  - Enables DODX `SetClientKeyValue` functionality in extension mode
+  - Called when client userinfo key/value pairs are modified
+  - Parameters: `int clientIndex, char *infobuffer, const char *key, const char *value`
+
+### Technical Details
+
+#### Hook Chain Additions to `IRehldsHookchains`
+```cpp
+virtual IRehldsHookRegistry_AlertMessage* AlertMessage() = 0;
+virtual IRehldsHookRegistry_PF_TraceLine* PF_TraceLine() = 0;
+virtual IRehldsHookRegistry_PF_SetClientKeyValue* PF_SetClientKeyValue() = 0;
+```
+
+### Compatibility Notes
+
+- **Requires KTPAMXX 2.1.0+** for extension mode features
+- **Backwards compatible** with standard ReAPI/AMXX plugins
+- **API version unchanged** - existing extensions work without recompilation
+
+---
+
 ## [KTP-ReHLDS `3.16.0.892-dev+m`] - 2025-12-06
 
 **Extension Mode Support** - Major API additions for KTPAMXX extension mode compatibility.

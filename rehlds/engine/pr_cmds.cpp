@@ -346,7 +346,8 @@ void EXT_FUNC PF_traceline_Shared(const float *v1, const float *v2, int nomonste
 	SV_SetGlobalTrace(&trace);
 }
 
-void EXT_FUNC PF_traceline_DLL(const float *v1, const float *v2, int fNoMonsters, edict_t *pentToSkip, TraceResult *ptr)
+// KTP: Internal PF_traceline_DLL implementation for hookchain
+void EXT_FUNC PF_traceline_DLL_internal(const float *v1, const float *v2, int fNoMonsters, edict_t *pentToSkip, TraceResult *ptr)
 {
 	PF_traceline_Shared(v1, v2, fNoMonsters, pentToSkip ? pentToSkip : &g_psv.edicts[0]);
 	ptr->fAllSolid = (int)gGlobalVariables.trace_allsolid;
@@ -363,6 +364,12 @@ void EXT_FUNC PF_traceline_DLL(const float *v1, const float *v2, int fNoMonsters
 	ptr->vecPlaneNormal[1] = gGlobalVariables.trace_plane_normal[1];
 	ptr->vecPlaneNormal[2] = gGlobalVariables.trace_plane_normal[2];
 	ptr->iHitgroup = gGlobalVariables.trace_hitgroup;
+}
+
+void EXT_FUNC PF_traceline_DLL(const float *v1, const float *v2, int fNoMonsters, edict_t *pentToSkip, TraceResult *ptr)
+{
+	// KTP: Call through hookchain to allow AMXX extension mode to intercept TraceLine
+	g_RehldsHookchains.m_PF_TraceLine.callChain(PF_traceline_DLL_internal, v1, v2, fNoMonsters, pentToSkip, ptr);
 }
 
 void EXT_FUNC TraceHull(const float *v1, const float *v2, int fNoMonsters, int hullNumber, edict_t *pentToSkip, TraceResult *ptr)
@@ -1652,7 +1659,8 @@ void EXT_FUNC PF_RemoveKey_I(char *s, const char *key)
 	Info_RemoveKey(s, key);
 }
 
-void EXT_FUNC PF_SetClientKeyValue_I(int clientIndex, char *infobuffer, const char *key, const char *value)
+// KTP: Internal PF_SetClientKeyValue_I implementation for hookchain
+void EXT_FUNC PF_SetClientKeyValue_I_internal(int clientIndex, char *infobuffer, const char *key, const char *value)
 {
 	client_t *pClient;
 
@@ -1671,6 +1679,12 @@ void EXT_FUNC PF_SetClientKeyValue_I(int clientIndex, char *infobuffer, const ch
 		pClient->sendinfo = TRUE;
 		pClient->sendinfo_time = 0.0f;
 	}
+}
+
+void EXT_FUNC PF_SetClientKeyValue_I(int clientIndex, char *infobuffer, const char *key, const char *value)
+{
+	// KTP: Call through hookchain to allow AMXX extension mode to intercept SetClientKeyValue
+	g_RehldsHookchains.m_PF_SetClientKeyValue.callChain(PF_SetClientKeyValue_I_internal, clientIndex, infobuffer, key, value);
 }
 
 int EXT_FUNC PF_walkmove_I(edict_t *ent, float yaw, float dist, int iMode)

@@ -6,6 +6,6 @@
 #pragma once
 
 #define VERSION_MAJOR		3
-#define VERSION_MINOR		15
+#define VERSION_MINOR		17
 #define VERSION_MAINTENANCE	0
-#define VERSION_BUILD		888
+#define VERSION_BUILD		893

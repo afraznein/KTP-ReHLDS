@@ -286,6 +286,18 @@ typedef IVoidHookChainRegistryImpl<edict_t *> CRehldsHookRegistry_SV_ClientComma
 typedef IVoidHookChainImpl<> CRehldsHook_SV_InactivateClients;
 typedef IVoidHookChainRegistryImpl<> CRehldsHookRegistry_SV_InactivateClients;
 
+//AlertMessage hook (KTP - for register_logevent in extension mode)
+typedef IVoidHookChainImpl<ALERT_TYPE, const char *> CRehldsHook_AlertMessage;
+typedef IVoidHookChainRegistryImpl<ALERT_TYPE, const char *> CRehldsHookRegistry_AlertMessage;
+
+//PF_TraceLine hook (KTP - for DODX TraceLine_Post)
+typedef IVoidHookChainImpl<const float *, const float *, int, edict_t *, TraceResult *> CRehldsHook_PF_TraceLine;
+typedef IVoidHookChainRegistryImpl<const float *, const float *, int, edict_t *, TraceResult *> CRehldsHookRegistry_PF_TraceLine;
+
+//PF_SetClientKeyValue hook (KTP - for DODX SetClientKeyValue)
+typedef IVoidHookChainImpl<int, char *, const char *, const char *> CRehldsHook_PF_SetClientKeyValue;
+typedef IVoidHookChainRegistryImpl<int, char *, const char *, const char *> CRehldsHookRegistry_PF_SetClientKeyValue;
+
 class CRehldsHookchains : public IRehldsHookchains {
 public:
 	CRehldsHookRegistry_Steam_NotifyClientConnect m_Steam_NotifyClientConnect;
@@ -351,6 +363,9 @@ public:
 	CRehldsHookRegistry_PF_RegUserMsg_I m_PF_RegUserMsg_I;  // KTP
 	CRehldsHookRegistry_SV_ClientCommand m_SV_ClientCommand;  // KTP
 	CRehldsHookRegistry_SV_InactivateClients m_SV_InactivateClients;  // KTP
+	CRehldsHookRegistry_AlertMessage m_AlertMessage;  // KTP
+	CRehldsHookRegistry_PF_TraceLine m_PF_TraceLine;  // KTP
+	CRehldsHookRegistry_PF_SetClientKeyValue m_PF_SetClientKeyValue;  // KTP
 
 public:
 	EXT_FUNC virtual IRehldsHookRegistry_Steam_NotifyClientConnect* Steam_NotifyClientConnect();
@@ -416,6 +431,9 @@ public:
 	EXT_FUNC virtual IRehldsHookRegistry_PF_RegUserMsg_I* PF_RegUserMsg_I();  // KTP
 	EXT_FUNC virtual IRehldsHookRegistry_SV_ClientCommand* SV_ClientCommand();  // KTP
 	EXT_FUNC virtual IRehldsHookRegistry_SV_InactivateClients* SV_InactivateClients();  // KTP
+	EXT_FUNC virtual IRehldsHookRegistry_AlertMessage* AlertMessage();  // KTP
+	EXT_FUNC virtual IRehldsHookRegistry_PF_TraceLine* PF_TraceLine();  // KTP
+	EXT_FUNC virtual IRehldsHookRegistry_PF_SetClientKeyValue* PF_SetClientKeyValue();  // KTP
 };
 
 extern CRehldsHookchains g_RehldsHookchains;

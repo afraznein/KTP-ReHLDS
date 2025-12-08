@@ -961,6 +961,18 @@ IRehldsHookRegistry_SV_InactivateClients* CRehldsHookchains::SV_InactivateClient
 	return &m_SV_InactivateClients;
 }
 
+IRehldsHookRegistry_AlertMessage* CRehldsHookchains::AlertMessage() {
+	return &m_AlertMessage;
+}
+
+IRehldsHookRegistry_PF_TraceLine* CRehldsHookchains::PF_TraceLine() {
+	return &m_PF_TraceLine;
+}
+
+IRehldsHookRegistry_PF_SetClientKeyValue* CRehldsHookchains::PF_SetClientKeyValue() {
+	return &m_PF_SetClientKeyValue;
+}
+
 int EXT_FUNC CRehldsApi::GetMajorVersion()
 {
 	return REHLDS_API_VERSION_MAJOR;

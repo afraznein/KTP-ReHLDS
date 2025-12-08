@@ -292,6 +292,18 @@ typedef IVoidHookChainRegistry<edict_t *> IRehldsHookRegistry_SV_ClientCommand;
 typedef IVoidHookChain<> IRehldsHook_SV_InactivateClients;
 typedef IVoidHookChainRegistry<> IRehldsHookRegistry_SV_InactivateClients;
 
+//AlertMessage hook (KTP - for register_logevent in extension mode)
+typedef IVoidHookChain<ALERT_TYPE, const char *> IRehldsHook_AlertMessage;
+typedef IVoidHookChainRegistry<ALERT_TYPE, const char *> IRehldsHookRegistry_AlertMessage;
+
+//PF_TraceLine hook (KTP - for DODX TraceLine_Post)
+typedef IVoidHookChain<const float *, const float *, int, edict_t *, TraceResult *> IRehldsHook_PF_TraceLine;
+typedef IVoidHookChainRegistry<const float *, const float *, int, edict_t *, TraceResult *> IRehldsHookRegistry_PF_TraceLine;
+
+//PF_SetClientKeyValue hook (KTP - for DODX SetClientKeyValue)
+typedef IVoidHookChain<int, char *, const char *, const char *> IRehldsHook_PF_SetClientKeyValue;
+typedef IVoidHookChainRegistry<int, char *, const char *, const char *> IRehldsHookRegistry_PF_SetClientKeyValue;
+
 class IRehldsHookchains {
 public:
 	virtual ~IRehldsHookchains() { }
@@ -359,6 +371,9 @@ public:
 	virtual IRehldsHookRegistry_PF_RegUserMsg_I* PF_RegUserMsg_I() = 0;  // KTP
 	virtual IRehldsHookRegistry_SV_ClientCommand* SV_ClientCommand() = 0;  // KTP
 	virtual IRehldsHookRegistry_SV_InactivateClients* SV_InactivateClients() = 0;  // KTP
+	virtual IRehldsHookRegistry_AlertMessage* AlertMessage() = 0;  // KTP
+	virtual IRehldsHookRegistry_PF_TraceLine* PF_TraceLine() = 0;  // KTP
+	virtual IRehldsHookRegistry_PF_SetClientKeyValue* PF_SetClientKeyValue() = 0;  // KTP
 };
 
 struct RehldsFuncs_t {

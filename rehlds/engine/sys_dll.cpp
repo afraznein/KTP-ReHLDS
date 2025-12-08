@@ -1339,17 +1339,11 @@ void EXT_FUNC EngineFprintf(void *pfile, const char *szFmt, ...)
 	AlertMessage(at_console, "EngineFprintf:  Obsolete API\n");
 }
 
-void EXT_FUNC AlertMessage(ALERT_TYPE atype, const char *szFmt, ...)
+// KTP: Internal AlertMessage implementation for hookchain
+void EXT_FUNC AlertMessage_internal(ALERT_TYPE atype, const char *szOut)
 {
-	char szOut[2048];
-	va_list argptr;
-
 	if (atype == at_logged && g_psvs.maxclients > 1)
 	{
-		va_start(argptr, szFmt);
-		Q_vsnprintf(szOut, sizeof(szOut), szFmt, argptr);
-		va_end(argptr);
-
 		Log_Printf("%s", szOut);
 		return;
 	}
@@ -1359,10 +1353,6 @@ void EXT_FUNC AlertMessage(ALERT_TYPE atype, const char *szFmt, ...)
 
 	if (atype == at_aiconsole && developer.value < 2)
 		return;
-
-	va_start(argptr, szFmt);
-	Q_vsnprintf(szOut, sizeof(szOut), szFmt, argptr);
-	va_end(argptr);
 
 	switch (atype)
 	{
@@ -1382,6 +1372,19 @@ void EXT_FUNC AlertMessage(ALERT_TYPE atype, const char *szFmt, ...)
 	default:
 		break;
 	}
+}
+
+void EXT_FUNC AlertMessage(ALERT_TYPE atype, const char *szFmt, ...)
+{
+	char szOut[2048];
+	va_list argptr;
+
+	va_start(argptr, szFmt);
+	Q_vsnprintf(szOut, sizeof(szOut), szFmt, argptr);
+	va_end(argptr);
+
+	// KTP: Call through hookchain to allow AMXX extension mode to intercept log messages
+	g_RehldsHookchains.m_AlertMessage.callChain(AlertMessage_internal, atype, szOut);
 }
 
 NOXREF void Sys_SplitPath(const char *path, char *drive, char *dir, char *fname, char *ext)
