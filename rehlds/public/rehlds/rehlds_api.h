@@ -304,6 +304,10 @@ typedef IVoidHookChainRegistry<const float *, const float *, int, edict_t *, Tra
 typedef IVoidHookChain<int, char *, const char *, const char *> IRehldsHook_PF_SetClientKeyValue;
 typedef IVoidHookChainRegistry<int, char *, const char *, const char *> IRehldsHookRegistry_PF_SetClientKeyValue;
 
+//SV_PlayerRunPreThink hook (KTP - for DODX PlayerPreThink_Post)
+typedef IVoidHookChain<edict_t *, float> IRehldsHook_SV_PlayerRunPreThink;
+typedef IVoidHookChainRegistry<edict_t *, float> IRehldsHookRegistry_SV_PlayerRunPreThink;
+
 class IRehldsHookchains {
 public:
 	virtual ~IRehldsHookchains() { }
@@ -374,6 +378,7 @@ public:
 	virtual IRehldsHookRegistry_AlertMessage* AlertMessage() = 0;  // KTP
 	virtual IRehldsHookRegistry_PF_TraceLine* PF_TraceLine() = 0;  // KTP
 	virtual IRehldsHookRegistry_PF_SetClientKeyValue* PF_SetClientKeyValue() = 0;  // KTP
+	virtual IRehldsHookRegistry_SV_PlayerRunPreThink* SV_PlayerRunPreThink() = 0;  // KTP
 };
 
 struct RehldsFuncs_t {

@@ -973,6 +973,10 @@ IRehldsHookRegistry_PF_SetClientKeyValue* CRehldsHookchains::PF_SetClientKeyValu
 	return &m_PF_SetClientKeyValue;
 }
 
+IRehldsHookRegistry_SV_PlayerRunPreThink* CRehldsHookchains::SV_PlayerRunPreThink() {
+	return &m_SV_PlayerRunPreThink;
+}
+
 int EXT_FUNC CRehldsApi::GetMajorVersion()
 {
 	return REHLDS_API_VERSION_MAJOR;

@@ -298,6 +298,10 @@ typedef IVoidHookChainRegistryImpl<const float *, const float *, int, edict_t *,
 typedef IVoidHookChainImpl<int, char *, const char *, const char *> CRehldsHook_PF_SetClientKeyValue;
 typedef IVoidHookChainRegistryImpl<int, char *, const char *, const char *> CRehldsHookRegistry_PF_SetClientKeyValue;
 
+//SV_PlayerRunPreThink hook (KTP - for DODX PlayerPreThink_Post)
+typedef IVoidHookChainImpl<edict_t *, float> CRehldsHook_SV_PlayerRunPreThink;
+typedef IVoidHookChainRegistryImpl<edict_t *, float> CRehldsHookRegistry_SV_PlayerRunPreThink;
+
 class CRehldsHookchains : public IRehldsHookchains {
 public:
 	CRehldsHookRegistry_Steam_NotifyClientConnect m_Steam_NotifyClientConnect;
@@ -366,6 +370,7 @@ public:
 	CRehldsHookRegistry_AlertMessage m_AlertMessage;  // KTP
 	CRehldsHookRegistry_PF_TraceLine m_PF_TraceLine;  // KTP
 	CRehldsHookRegistry_PF_SetClientKeyValue m_PF_SetClientKeyValue;  // KTP
+	CRehldsHookRegistry_SV_PlayerRunPreThink m_SV_PlayerRunPreThink;  // KTP
 
 public:
 	EXT_FUNC virtual IRehldsHookRegistry_Steam_NotifyClientConnect* Steam_NotifyClientConnect();
@@ -434,6 +439,7 @@ public:
 	EXT_FUNC virtual IRehldsHookRegistry_AlertMessage* AlertMessage();  // KTP
 	EXT_FUNC virtual IRehldsHookRegistry_PF_TraceLine* PF_TraceLine();  // KTP
 	EXT_FUNC virtual IRehldsHookRegistry_PF_SetClientKeyValue* PF_SetClientKeyValue();  // KTP
+	EXT_FUNC virtual IRehldsHookRegistry_SV_PlayerRunPreThink* SV_PlayerRunPreThink();  // KTP
 };
 
 extern CRehldsHookchains g_RehldsHookchains;

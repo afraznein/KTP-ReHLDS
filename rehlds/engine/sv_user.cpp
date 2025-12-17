@@ -659,10 +659,17 @@ void SV_AddLinksToPM(areanode_t *node, vec_t *origin)
 	SV_AddLinksToPM_(node, pmove_mins, pmove_maxs);
 }
 
-void SV_PlayerRunPreThink(edict_t *player, float time)
+// KTP: Internal function for PlayerPreThink hookchain
+void SV_PlayerRunPreThink_internal(edict_t *player, float time)
 {
 	gGlobalVariables.time = time;
 	gEntityInterface.pfnPlayerPreThink(player);
+}
+
+// KTP: Call through hookchain to allow AMXX extension mode to intercept PlayerPreThink
+void SV_PlayerRunPreThink(edict_t *player, float time)
+{
+	g_RehldsHookchains.m_SV_PlayerRunPreThink.callChain(SV_PlayerRunPreThink_internal, player, time);
 }
 
 qboolean SV_PlayerRunThink(edict_t *ent, float frametime, double clienttimebase)

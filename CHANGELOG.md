@@ -6,6 +6,39 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.18.0.894-dev+m`] - 2025-12-16
+
+**DODX Extension Mode Support** - PlayerPreThink hookchain for stats tracking.
+
+### Added
+
+#### New Hookchain for DODX Extension Mode
+- **`SV_PlayerRunPreThink`** - PlayerPreThink engine hook
+  - Enables DODX `FN_PlayerPreThink_Post` functionality in extension mode
+  - Called every frame for each connected player before player think
+  - Used by DODX for stats tracking loop, shot detection, and player initialization
+  - Parameters: `edict_t *player, float time`
+
+### Technical Details
+
+#### Hook Chain Addition to `IRehldsHookchains`
+```cpp
+virtual IRehldsHookRegistry_SV_PlayerRunPreThink* SV_PlayerRunPreThink() = 0;
+```
+
+#### Implementation
+- `SV_PlayerRunPreThink()` split into internal function and hookchain wrapper
+- Original engine logic preserved in `SV_PlayerRunPreThink_internal()`
+- Hookchain called in wrapper, allowing modules to intercept before/after
+
+### Compatibility Notes
+
+- **Requires KTPAMXX 2.4.0+** for full DODX extension mode support
+- **Backwards compatible** with existing extensions
+- **API version unchanged** - existing extensions work without recompilation
+
+---
+
 ## [KTP-ReHLDS `3.17.0.893-dev+m`] - 2025-12-08
 
 **Extension Mode Support** - Additional API hooks for KTPAMXX and DODX compatibility.
