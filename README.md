@@ -74,6 +74,15 @@ KTP-ReHLDS is the **engine foundation** of the KTP competitive stack:
 - ✅ Commands processed (`/cancel`, `/pause`, etc.)
 - ⚠️ Player chat (first message works, subsequent blocked by DoD DLL - use RCON as workaround)
 
+### 🔒 Blocked Kick/Ban Commands (v3.19.0+)
+
+**Audit-enforced player removal:**
+- `kick`, `banid`, `removeid`, `addip`, `removeip` commands blocked at engine level
+- Prevents untraceable RCON/console kicks and bans
+- Directs admins to use `.kick` and `.ban` in-game commands
+- Works with KTPAdminAudit for full audit logging
+- All blocked attempts logged for security review
+
 ### 🔧 Engine-Level Pause Control
 
 **Works with `pausable 0`:**
@@ -247,6 +256,7 @@ void SV_SendClientMessages() {
 | **HUD Updates During Pause** | ❌ Frozen | ✅ Real-time (60-100 Hz) |
 | **Server Messages During Pause** | ❌ Frozen | ✅ Works (`rcon say`, events) |
 | **Player Chat During Pause** | ❌ Frozen | ⚠️ WIP |
+| **Kick/Ban Command Blocking** | ❌ Not available | ✅ Blocked for audit trail |
 | **Custom Hook: SV_UpdatePausedHUD** | ❌ Not available | ✅ Available |
 | **ReAPI Integration** | ✅ Standard hooks | ✅ Standard + KTP hooks |
 | **Backward Compatibility** | ✅ N/A | ✅ Full compatibility |
@@ -294,12 +304,12 @@ Result: Professional experience, clear communication
 
 ## 📋 Version Information
 
-- **Current Version**: KTP-ReHLDS 3.18.0.894-dev+m (2025-12-16)
-- **Previous Version**: 3.17.0.893-dev+m (2025-12-08) - Extension mode hookchains
+- **Current Version**: KTP-ReHLDS 3.19.0.895-dev+m (2025-12-21)
+- **Previous Version**: 3.18.0.894-dev+m (2025-12-16) - PlayerPreThink hookchain
 - **Based on**: ReHLDS 3.14.0.857 (upstream)
 - **Platform Toolset**: Visual Studio 2022 (v143) for Windows
 - **Compiler**: GCC 4.9.2+ or Clang 6.0+ for Linux
-- **Compatible with**: ReAPI 5.26+, KTP-ReAPI 1.0+, **KTPAMXX 2.4.0+**
+- **Compatible with**: ReAPI 5.26+, KTP-ReAPI 1.0+, **KTPAMXX 2.6.0+**
 
 ---
 
@@ -360,7 +370,7 @@ Result: Professional experience, clear communication
 7. **Verify installation:**
    ```bash
    # Start server and check console
-   # Should see: ReHLDS version 3.18.0.894-dev+m
+   # Should see: ReHLDS version 3.19.0.895-dev+m
 
    # In server console:
    meta version  # Check ReAPI loaded

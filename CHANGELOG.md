@@ -6,6 +6,73 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.19.0.895-dev+m`] - 2025-12-21
+
+**Admin Command Blocking & Pause System Improvements** - Secure kick/ban enforcement and network stability.
+
+### Added
+
+#### Blocked Console Kick/Ban Commands
+All kick and ban console commands now blocked at engine level for audit trail enforcement:
+
+- **`Host_Kick_f`** - `kick` command blocked, directs to `.kick` in-game
+- **`SV_BanId_f`** - `banid` command blocked, directs to `.ban` in-game
+- **`SV_RemoveId_f`** - `removeid` command blocked
+- **`SV_AddIP_f`** - `addip` command blocked, directs to `.ban` in-game
+- **`SV_RemoveIP_f`** - `removeip` command blocked
+
+**Purpose:**
+- Prevents untraceable RCON/console kicks and bans
+- Forces all player removals through KTPAdminAudit plugin
+- Ensures full audit trail with admin name, SteamID, and timestamp
+- Logs all blocked attempts for security review
+
+**Console Output:**
+```
+Kick command disabled. Use .kick in-game (requires admin flag).
+Blocked kick attempt: kick #123
+```
+
+### Fixed
+
+#### Force Nodelta During Pause
+- **`SV_EmitPacketEntities`** now forces `sv_packet_nodelta` when `g_ktp_temporary_unpause` is active
+- **Issue:** During pause, delta sequences become stale causing `cl_flushentitypacket` warnings on clients
+- **Fix:** Use nodelta packet type during temporary unpause frames
+- **Result:** Cleaner network handling, no client-side warnings during pause HUD updates
+
+#### Pause State Restoration Logic
+- **`SV_Frame_Internal`** improved pause state restoration
+- **Issue:** Plugin pause state changes during frame could conflict with restoration logic
+- **Fix:** Check `g_ktp_temporary_unpause` flag when deciding to restore; if plugin cleared it, pause change was intentional
+- **Result:** Plugins can now reliably change pause state without race conditions
+
+### Technical Details
+
+```cpp
+// SV_EmitPacketEntities - Force nodelta during pause
+sv_delta_t deltaType;
+if (client->delta_sequence == -1 || g_ktp_temporary_unpause) {
+    deltaType = sv_packet_nodelta;
+} else {
+    deltaType = sv_packet_delta;
+}
+
+// SV_Frame_Internal - Improved restoration logic
+if (shouldRestorePause && g_ktp_temporary_unpause) {
+    g_psv.paused = wasPaused;
+}
+g_ktp_temporary_unpause = 0;  // Always clear at frame end
+```
+
+### Compatibility Notes
+
+- **Requires KTPAMXX 2.6.0+** with `ktp_drop_client` native for kick functionality
+- **Requires KTPAdminAudit 2.1.0+** for menu-based kick/ban
+- **Backwards compatible** with existing plugins
+
+---
+
 ## [KTP-ReHLDS `3.18.0.894-dev+m`] - 2025-12-16
 
 **DODX Extension Mode Support** - PlayerPreThink hookchain for stats tracking.

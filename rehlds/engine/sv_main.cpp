@@ -4740,7 +4740,15 @@ int SV_CreatePacketEntities_internal(sv_delta_t type, client_t *client, packet_e
 
 void SV_EmitPacketEntities(client_t *client, packet_entities_t *to, sizebuf_t *msg)
 {
-	SV_CreatePacketEntities(client->delta_sequence == -1 ? sv_packet_nodelta : sv_packet_delta, client, to, msg);
+	// KTP Modification: Force nodelta during pause to avoid cl_flushentitypacket warnings
+	// During pause, game time is frozen so delta sequences become stale
+	sv_delta_t deltaType;
+	if (client->delta_sequence == -1 || g_ktp_temporary_unpause) {
+		deltaType = sv_packet_nodelta;
+	} else {
+		deltaType = sv_packet_delta;
+	}
+	SV_CreatePacketEntities(deltaType, client, to, msg);
 }
 
 qboolean SV_ShouldUpdatePing(client_t *client)
@@ -6895,6 +6903,16 @@ void mapcyclefile_hook_callback(cvar_t *cvar)
 
 void SV_BanId_f(void)
 {
+	// KTP: Block banid command - require connected player via AMX plugin
+	// This prevents untraceable RCON/console bans. Use .ban in-game.
+	Con_Printf("Ban command disabled. Use .ban in-game (requires admin flag).\n");
+
+	// Log the blocked attempt
+	const char* blocked_args = Cmd_Args();
+	Con_Printf("Blocked ban attempt: banid %s\n", blocked_args ? blocked_args : "");
+	return;
+
+	// Original code follows (unreachable) ---
 	char szreason[256];
 	char idstring[64];
 
@@ -7105,6 +7123,16 @@ void ReplaceEscapeSequences(char *str)
 
 void Host_Kick_f(void)
 {
+	// KTP: Block kick command - require connected player via AMX plugin
+	// This prevents untraceable RCON/console kicks. Use .kick in-game.
+	Con_Printf("Kick command disabled. Use .kick in-game (requires admin flag).\n");
+
+	// Log the blocked attempt
+	const char* blocked_args = Cmd_Args();
+	Con_Printf("Blocked kick attempt: kick %s\n", blocked_args ? blocked_args : "");
+	return;
+
+	// Original code follows (unreachable) ---
 	const char *p;
 	char idstring[64];
 	int argsStartNum;
@@ -7276,6 +7304,16 @@ void Host_Kick_f(void)
 
 void SV_RemoveId_f(void)
 {
+	// KTP: Block removeid command - require connected player via AMX plugin
+	// This prevents untraceable RCON/console unbans.
+	Con_Printf("Removeid command disabled. Use an in-game admin command.\n");
+
+	// Log the blocked attempt
+	const char* blocked_args = Cmd_Args();
+	Con_Printf("Blocked removeid attempt: removeid %s\n", blocked_args ? blocked_args : "");
+	return;
+
+	// Original code follows (unreachable) ---
 	if (Cmd_Argc() != 2 && Cmd_Argc() != 6)
 	{
 		Con_Printf("Usage:  removeid <uniqueid | #slotnumber>\n");
@@ -7421,6 +7459,16 @@ void SV_ListId_f(void)
 
 void SV_AddIP_f(void)
 {
+	// KTP: Block addip command - require connected player via AMX plugin
+	// This prevents untraceable RCON/console IP bans.
+	Con_Printf("Addip command disabled. Use .ban in-game (requires admin flag).\n");
+
+	// Log the blocked attempt
+	const char* blocked_args = Cmd_Args();
+	Con_Printf("Blocked addip attempt: addip %s\n", blocked_args ? blocked_args : "");
+	return;
+
+	// Original code follows (unreachable) ---
 	if (Cmd_Argc() != 3)
 	{
 #ifdef REHLDS_FIXES
@@ -7521,6 +7569,16 @@ void SV_AddIP_f(void)
 
 void SV_RemoveIP_f(void)
 {
+	// KTP: Block removeip command - require connected player via AMX plugin
+	// This prevents untraceable RCON/console IP unbans.
+	Con_Printf("Removeip command disabled. Use an in-game admin command.\n");
+
+	// Log the blocked attempt
+	const char* blocked_args = Cmd_Args();
+	Con_Printf("Blocked removeip attempt: removeip %s\n", blocked_args ? blocked_args : "");
+	return;
+
+	// Original code follows (unreachable) ---
 #ifdef REHLDS_FIXES
 	int argCount = Cmd_Argc();
 	if (argCount != 2 && argCount != 3)
@@ -8212,14 +8270,15 @@ void EXT_FUNC SV_Frame_Internal()
 	SV_SendClientMessages();
 
 	// KTP Modification: Restore pause state AFTER message sending
-	// Use the stored decision (not the live flag) to prevent race condition
-	// If we checked g_ktp_temporary_unpause here, a plugin calling SetServerPause()
-	// from another thread could have changed it, corrupting the pause state
-	if (shouldRestorePause) {
+	// Only restore if the temporary unpause flag is still set, meaning the plugin
+	// did NOT explicitly change the pause state during this frame.
+	// If a plugin called SetServerPause(), it clears g_ktp_temporary_unpause,
+	// signaling that the pause state change was intentional and should persist.
+	if (shouldRestorePause && g_ktp_temporary_unpause) {
 		// Restore the pause state that was active at frame start
 		g_psv.paused = wasPaused;
-		g_ktp_temporary_unpause = 0;  // Clear the temporary flag
 	}
+	g_ktp_temporary_unpause = 0;  // Always clear the temporary flag at frame end
 
 	SV_CheckMapDifferences();
 	SV_GatherStatistics();
