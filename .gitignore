@@ -62,3 +62,4 @@ nul
 
 # Version tracking
 rehlds/version/appversion.h
+.claude/settings.local.json
