@@ -253,7 +253,7 @@ The `SV_InactivateClients` hook enables KTPAMXX to handle map changes properly:
 
 ---
 
-## [KTP-ReHLDS `3.15.0.888-dev+m`] - 2025-11-20
+## [KTP-ReHLDS `3.15.0.888-dev+m`] - 2025-11-22
 
 **KTP-ReHLDS** is a custom fork of ReHLDS with enhanced pause functionality for competitive gameplay.
 
