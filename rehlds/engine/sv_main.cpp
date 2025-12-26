@@ -61,6 +61,16 @@ server_t g_psv;
 // KTP Modification: Flag to track temporary unpause for chat (not static, used in rehlds_api_impl.cpp)
 int g_ktp_temporary_unpause = 0;
 
+// KTP: Flag to track if current command is from RCON (vs local console/LinuxGSM)
+// Used to block quit/restart via RCON while allowing local console
+int g_bRconCommand = 0;
+
+// KTP: Internal function for SV_Rcon hook (just notification, no processing needed)
+void SV_Rcon_hook_internal(const char *command, const char *from_ip, bool is_valid)
+{
+	// No-op: This hook is purely for notification/logging purposes
+}
+
 // KTP: Internal implementation for SV_ClientUserInfoChanged hook
 void SV_ClientUserInfoChanged_internal(IGameClient *pClient)
 {
@@ -3681,7 +3691,13 @@ void SV_Rcon(netadr_t *net_from_)
 			Q_strncpy(remaining, data, sizeof(remaining) - 1);
 			remaining[sizeof(remaining) - 1] = 0;
 
+			// KTP: Fire hook for RCON audit logging
+			g_RehldsHookchains.m_SV_Rcon.callChain(SV_Rcon_hook_internal, remaining, NET_AdrToString(*net_from_), true);
+
+			// KTP: Set flag so commands can detect they're from RCON
+			g_bRconCommand = 1;
 			Cmd_ExecuteString(remaining, src_command);
+			g_bRconCommand = 0;
 		}
 		else
 		{

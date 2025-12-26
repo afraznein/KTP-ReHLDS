@@ -308,6 +308,11 @@ typedef IVoidHookChainRegistry<int, char *, const char *, const char *> IRehldsH
 typedef IVoidHookChain<edict_t *, float> IRehldsHook_SV_PlayerRunPreThink;
 typedef IVoidHookChainRegistry<edict_t *, float> IRehldsHookRegistry_SV_PlayerRunPreThink;
 
+//SV_Rcon hook (KTP - for RCON audit logging)
+// Parameters: command (string), from_ip (string), is_valid (bool)
+typedef IVoidHookChain<const char *, const char *, bool> IRehldsHook_SV_Rcon;
+typedef IVoidHookChainRegistry<const char *, const char *, bool> IRehldsHookRegistry_SV_Rcon;
+
 class IRehldsHookchains {
 public:
 	virtual ~IRehldsHookchains() { }
@@ -379,6 +384,7 @@ public:
 	virtual IRehldsHookRegistry_PF_TraceLine* PF_TraceLine() = 0;  // KTP
 	virtual IRehldsHookRegistry_PF_SetClientKeyValue* PF_SetClientKeyValue() = 0;  // KTP
 	virtual IRehldsHookRegistry_SV_PlayerRunPreThink* SV_PlayerRunPreThink() = 0;  // KTP
+	virtual IRehldsHookRegistry_SV_Rcon* SV_Rcon() = 0;  // KTP - RCON audit logging
 };
 
 struct RehldsFuncs_t {

@@ -977,6 +977,10 @@ IRehldsHookRegistry_SV_PlayerRunPreThink* CRehldsHookchains::SV_PlayerRunPreThin
 	return &m_SV_PlayerRunPreThink;
 }
 
+IRehldsHookRegistry_SV_Rcon* CRehldsHookchains::SV_Rcon() {
+	return &m_SV_Rcon;
+}
+
 int EXT_FUNC CRehldsApi::GetMajorVersion()
 {
 	return REHLDS_API_VERSION_MAJOR;
