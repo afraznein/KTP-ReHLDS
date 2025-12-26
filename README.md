@@ -128,6 +128,7 @@ public:
 | `PF_TraceLine` | TraceLine interception | DODX `TraceLine_Post` |
 | `PF_SetClientKeyValue` | Client key/value changes | DODX `SetClientKeyValue` |
 | `SV_PlayerRunPreThink` | Player PreThink loop | DODX stats tracking, shot detection |
+| `SV_Rcon` | RCON command received | Audit logging (command, IP, validity) |
 
 **Message Registration Fix:**
 - `RegUserMsg_internal` now searches BOTH `sv_gpUserMsgs` AND `sv_gpNewUserMsgs`
@@ -304,8 +305,8 @@ Result: Professional experience, clear communication
 
 ## 📋 Version Information
 
-- **Current Version**: KTP-ReHLDS 3.19.0.895-dev+m (2025-12-21)
-- **Previous Version**: 3.18.0.894-dev+m (2025-12-16) - PlayerPreThink hookchain
+- **Current Version**: KTP-ReHLDS 3.20.0.896-dev+m (2025-12-26)
+- **Previous Version**: 3.19.0.895-dev+m (2025-12-21) - Admin command blocking
 - **Based on**: ReHLDS 3.14.0.857 (upstream)
 - **Platform Toolset**: Visual Studio 2022 (v143) for Windows
 - **Compiler**: GCC 4.9.2+ or Clang 6.0+ for Linux
