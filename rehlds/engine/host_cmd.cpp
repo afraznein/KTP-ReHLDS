@@ -1060,6 +1060,19 @@ void Host_Maps_f(void)
 	}
 }
 
+// KTP: Internal implementation for hookchain
+void Host_Changelevel_f_internal(const char *map, const char *startspot)
+{
+	SCR_BeginLoadingPlaque(FALSE);
+	S_StopAllSounds(1);
+	SV_InactivateClients();
+	SV_ServerShutdown();
+	SV_SpawnServer(FALSE, map, startspot);
+	SV_LoadEntities();
+	SV_ActivateServer(1);
+}
+
+// KTP: Console command handler with hookchain support
 void Host_Changelevel_f(void)
 {
 	char _level[64];
@@ -1097,13 +1110,8 @@ void Host_Changelevel_f(void)
 	else
 		_startspot[0] = 0;
 
-	SCR_BeginLoadingPlaque(FALSE);
-	S_StopAllSounds(1);
-	SV_InactivateClients();
-	SV_ServerShutdown();
-	SV_SpawnServer(FALSE, _level, startspot);
-	SV_LoadEntities();
-	SV_ActivateServer(1);
+	// KTP: Call through hookchain to allow interception
+	g_RehldsHookchains.m_Host_Changelevel_f.callChain(Host_Changelevel_f_internal, _level, startspot);
 }
 
 const char *Host_FindRecentSave(char *pNameBuf)

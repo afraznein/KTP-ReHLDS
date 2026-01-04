@@ -981,6 +981,10 @@ IRehldsHookRegistry_SV_Rcon* CRehldsHookchains::SV_Rcon() {
 	return &m_SV_Rcon;
 }
 
+IRehldsHookRegistry_Host_Changelevel_f* CRehldsHookchains::Host_Changelevel_f() {
+	return &m_Host_Changelevel_f;
+}
+
 int EXT_FUNC CRehldsApi::GetMajorVersion()
 {
 	return REHLDS_API_VERSION_MAJOR;

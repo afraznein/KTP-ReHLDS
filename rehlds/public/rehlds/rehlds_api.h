@@ -313,6 +313,11 @@ typedef IVoidHookChainRegistry<edict_t *, float> IRehldsHookRegistry_SV_PlayerRu
 typedef IVoidHookChain<const char *, const char *, bool> IRehldsHook_SV_Rcon;
 typedef IVoidHookChainRegistry<const char *, const char *, bool> IRehldsHookRegistry_SV_Rcon;
 
+//Host_Changelevel_f hook (KTP - for intercepting console changelevel command)
+// Parameters: map (string), startspot (string - can be null)
+typedef IVoidHookChain<const char *, const char *> IRehldsHook_Host_Changelevel_f;
+typedef IVoidHookChainRegistry<const char *, const char *> IRehldsHookRegistry_Host_Changelevel_f;
+
 class IRehldsHookchains {
 public:
 	virtual ~IRehldsHookchains() { }
@@ -385,6 +390,7 @@ public:
 	virtual IRehldsHookRegistry_PF_SetClientKeyValue* PF_SetClientKeyValue() = 0;  // KTP
 	virtual IRehldsHookRegistry_SV_PlayerRunPreThink* SV_PlayerRunPreThink() = 0;  // KTP
 	virtual IRehldsHookRegistry_SV_Rcon* SV_Rcon() = 0;  // KTP - RCON audit logging
+	virtual IRehldsHookRegistry_Host_Changelevel_f* Host_Changelevel_f() = 0;  // KTP - console changelevel interception
 };
 
 struct RehldsFuncs_t {

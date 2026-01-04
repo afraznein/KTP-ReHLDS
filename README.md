@@ -129,6 +129,7 @@ public:
 | `PF_SetClientKeyValue` | Client key/value changes | DODX `SetClientKeyValue` |
 | `SV_PlayerRunPreThink` | Player PreThink loop | DODX stats tracking, shot detection |
 | `SV_Rcon` | RCON command received | Audit logging (command, IP, validity) |
+| `Host_Changelevel_f` | Console changelevel command | OT continuation, match state persistence |
 
 **Message Registration Fix:**
 - `RegUserMsg_internal` now searches BOTH `sv_gpUserMsgs` AND `sv_gpNewUserMsgs`

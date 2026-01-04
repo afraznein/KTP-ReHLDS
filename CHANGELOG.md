@@ -6,6 +6,42 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.20.0.896-dev+m`] - 2026-01
+
+**Map Change Interception Hook** - Console changelevel command hookchain.
+
+### Added
+
+#### New Hookchain: Host_Changelevel_f
+- **`Host_Changelevel_f`** - Console changelevel command interception
+  - Called when `changelevel` command is executed (including `server_cmd("changelevel ...")`)
+  - Parameters: `map` (target map name), `startspot` (landmark, usually empty)
+  - Return `HC_SUPERCEDE` to cancel the map change
+  - Used by KTPMatchHandler for:
+    - Overtime continuation (stay on same map instead of rotating)
+    - Match state persistence across map changes
+    - Score carryover between halves
+
+### Technical Details
+
+```cpp
+// Host_Changelevel_f split into hookchain pattern
+void Host_Changelevel_f_internal(const char *map, const char *startspot);
+
+void Host_Changelevel_f(void) {
+    // ... validation and argument parsing ...
+    g_RehldsHookchains.m_Host_Changelevel_f.callChain(
+        Host_Changelevel_f_internal, _level, startspot);
+}
+```
+
+### Compatibility Notes
+
+- **Requires KTP-ReAPI 5.29.0.362-ktp+** for hook exposure
+- **Used by KTPMatchHandler 0.10.30+** for OT map handling
+
+---
+
 ## [KTP-ReHLDS `3.19.0.895-dev+m`] - 2025-12-21
 
 **Admin Command Blocking & Pause System Improvements** - Secure kick/ban enforcement and network stability.
