@@ -1,6 +1,6 @@
 # KTP-ReHLDS
 
-**Custom ReHLDS fork with selective pause system and real-time HUD updates**
+**Version 3.20.0.896-dev+m** - Custom ReHLDS fork with selective pause system and real-time HUD updates
 
 A specialized fork of [ReHLDS](https://github.com/rehlds/rehlds) that enables advanced competitive match features through engine-level pause control, HUD updates during pause, and selective subsystem operation.
 
@@ -306,7 +306,7 @@ Result: Professional experience, clear communication
 
 ## 📋 Version Information
 
-- **Current Version**: KTP-ReHLDS 3.20.0.896-dev+m (2025-12-26)
+- **Current Version**: KTP-ReHLDS 3.20.0.896-dev+m (2026-01)
 - **Previous Version**: 3.19.0.895-dev+m (2025-12-21) - Admin command blocking
 - **Based on**: ReHLDS 3.14.0.857 (upstream)
 - **Platform Toolset**: Visual Studio 2022 (v143) for Windows
@@ -372,7 +372,7 @@ Result: Professional experience, clear communication
 7. **Verify installation:**
    ```bash
    # Start server and check console
-   # Should see: ReHLDS version 3.19.0.895-dev+m
+   # Should see: ReHLDS version 3.20.0.896-dev+m
 
    # In server console:
    meta version  # Check ReAPI loaded
@@ -559,7 +559,7 @@ Result: Professional experience, clear communication
 
 **🌐 Supporting Services:**
 - **[KTP Discord Relay](https://github.com/afraznein/DiscordRelay)** - HTTP relay for Discord
-- **[KTP HLTV Kicker](https://github.com/afraznein/KTPHLTVKicker)** - HLTV spectator management
+- **[KTP HLTV Recorder](https://github.com/afraznein/KTPHLTVRecorder)** - Automatic HLTV demo recording
 
 ### **Upstream Projects:**
 - **[ReHLDS (Upstream)](https://github.com/rehlds/rehlds)** - Original ReHLDS project

@@ -8,7 +8,7 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ## [KTP-ReHLDS `3.20.0.896-dev+m`] - 2026-01
 
-**Map Change Interception Hook** - Console changelevel command hookchain.
+**Map Change Interception & RCON Audit Hooks** - Console changelevel and RCON command hookchains.
 
 ### Added
 
@@ -22,6 +22,14 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
     - Match state persistence across map changes
     - Score carryover between halves
 
+#### New Hookchain: SV_Rcon
+- **`SV_Rcon`** - RCON command audit logging
+  - Called when an RCON command is received by the server
+  - Parameters: `command` (string), `from_ip` (string), `is_valid` (bool)
+  - Enables security logging of all RCON attempts with source IP
+  - Used by KTPAdminAudit for comprehensive RCON audit trails
+  - Captures both successful and failed authentication attempts
+
 ### Technical Details
 
 ```cpp
@@ -33,12 +41,16 @@ void Host_Changelevel_f(void) {
     g_RehldsHookchains.m_Host_Changelevel_f.callChain(
         Host_Changelevel_f_internal, _level, startspot);
 }
+
+// SV_Rcon hookchain for audit logging
+void SV_Rcon_internal(const char *command, const char *from_ip, bool is_valid);
 ```
 
 ### Compatibility Notes
 
 - **Requires KTP-ReAPI 5.29.0.362-ktp+** for hook exposure
 - **Used by KTPMatchHandler 0.10.30+** for OT map handling
+- **Used by KTPAdminAudit 2.2.0+** for RCON audit logging
 
 ---
 
