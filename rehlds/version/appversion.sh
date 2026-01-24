@@ -2,10 +2,10 @@
 
 init()
 {
-	SOURCE_DIR=$@
-	GIT_DIR=$SOURCE_DIR
-	VERSION_FILE=$SOURCE_DIR/rehlds/version/version.h
-	APPVERSION_FILE=$SOURCE_DIR/rehlds/version/appversion.h
+	SOURCE_DIR="$@"
+	GIT_DIR="$SOURCE_DIR"
+	VERSION_FILE="$SOURCE_DIR/rehlds/version/version.h"
+	APPVERSION_FILE="$SOURCE_DIR/rehlds/version/appversion.h"
 
 	if test -z "`git --version`"; then
 		echo "Please install git client"
@@ -14,8 +14,8 @@ init()
 	fi
 
 	# Read old version
-	if [ -e $APPVERSION_FILE ]; then
-		OLD_VERSION=$(cat $APPVERSION_FILE | grep -wi '#define APP_VERSION' | sed -e 's/#define APP_VERSION[ \t\r\n\v\f]\+\(.*\)/\1/i' -e 's/\r//g')
+	if [ -e "$APPVERSION_FILE" ]; then
+		OLD_VERSION=$(cat "$APPVERSION_FILE" | grep -wi '#define APP_VERSION' | sed -e 's/#define APP_VERSION[ \t\r\n\v\f]\+\(.*\)/\1/i' -e 's/\r//g')
 		if [ $? -ne 0 ]; then
 			OLD_VERSION=""
 		else
@@ -25,17 +25,17 @@ init()
 	fi
 
 	# Get major, minor and maintenance information from gradle.properties
-	MAJOR=$(cat $VERSION_FILE | grep -wi 'VERSION_MAJOR' | sed -e 's/.*VERSION_MAJOR.*[^0-9]\([0-9][0-9]*\).*/\1/i' -e 's/\r//g')
+	MAJOR=$(cat "$VERSION_FILE" | grep -wi 'VERSION_MAJOR' | sed -e 's/.*VERSION_MAJOR.*[^0-9]\([0-9][0-9]*\).*/\1/i' -e 's/\r//g')
 	if [ $? -ne 0 -o "$MAJOR" = "" ]; then
 		MAJOR=0
 	fi
 
-	MINOR=$(cat $VERSION_FILE | grep -wi 'VERSION_MINOR' | sed -e 's/.*VERSION_MINOR.*[^0-9]\([0-9][0-9]*\).*/\1/i' -e 's/\r//g')
+	MINOR=$(cat "$VERSION_FILE" | grep -wi 'VERSION_MINOR' | sed -e 's/.*VERSION_MINOR.*[^0-9]\([0-9][0-9]*\).*/\1/i' -e 's/\r//g')
 	if [ $? -ne 0 -o "$MINOR" = "" ]; then
 		MINOR=0
 	fi
 
-	MAINTENANCE=$(cat $VERSION_FILE | grep -i 'VERSION_MAINTENANCE' | sed -e 's/.*VERSION_MAINTENANCE.*[^0-9]\([0-9][0-9]*\).*/\1/i' -e 's/\r//g')
+	MAINTENANCE=$(cat "$VERSION_FILE" | grep -i 'VERSION_MAINTENANCE' | sed -e 's/.*VERSION_MAINTENANCE.*[^0-9]\([0-9][0-9]*\).*/\1/i' -e 's/\r//g')
 	if [ $? -ne 0 -o "$MAINTENANCE" = "" ]; then
 		MAINTENANCE=0
 	fi

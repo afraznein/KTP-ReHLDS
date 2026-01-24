@@ -471,16 +471,27 @@ void EXT_FUNC SV_WriteMovevarsToClient_api(sizebuf_t *message)
 	SV_WriteMovevarsToClient(message, &sv_movevars);
 }
 
+// KTP: Silent pause cvar (defined in sv_main.cpp)
+extern cvar_t ktp_silent_pause;
+
 void EXT_FUNC SetServerPause(bool setPause)
 {
-	Con_Printf("[KTP] SetServerPause called: setPause=%d, old paused=%d, temp_flag=%d\n",
-		setPause, g_psv.paused, g_ktp_temporary_unpause);
+	Con_Printf("[KTP] SetServerPause called: setPause=%d, old paused=%d, temp_flag=%d, silent=%d\n",
+		setPause, g_psv.paused, g_ktp_temporary_unpause, (int)ktp_silent_pause.value);
 
 	g_psv.paused = setPause;
 
 	// KTP Modification: Clear temporary unpause flag
 	// This signals that the pause state was explicitly changed by plugin
 	g_ktp_temporary_unpause = 0;
+
+	// KTP: If silent pause is enabled, don't notify clients (no "PAUSED" overlay)
+	// WARNING: This may cause client prediction desync - use carefully
+	if (ktp_silent_pause.value != 0.0f)
+	{
+		Con_DPrintf("[KTP] Silent pause active - not sending svc_setpause to clients\n");
+		return;
+	}
 
 #ifdef REHLDS_FIXES
 	for (int i = 0; i < g_psvs.maxclients; i++)

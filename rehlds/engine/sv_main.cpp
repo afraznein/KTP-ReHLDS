@@ -160,9 +160,11 @@ cvar_t sv_wateramp = { "sv_wateramp", "0", 0, 0.0f, NULL };
 void sv_cheats_hook_callback(cvar_t *cvar);
 void mapcyclefile_hook_callback(cvar_t *cvar);
 void sv_movevars_hook_callback(cvar_t *cvar);
+void hostname_hook_callback(cvar_t *cvar);
 
 cvarhook_t sv_cheats_hook = { sv_cheats_hook_callback, NULL, NULL };
 cvarhook_t mapcyclefile_hook = { mapcyclefile_hook_callback, NULL, NULL };
+cvarhook_t hostname_hook = { hostname_hook_callback, NULL, NULL };
 
 //------------------------------------------------
 // Movevars cvarhook declares
@@ -6917,6 +6919,84 @@ void mapcyclefile_hook_callback(cvar_t *cvar)
 		Cvar_DirectSet(cvar, "mapcycle.txt");
 }
 
+// KTP: Hostname broadcast control
+// ktp_hostname_broadcast cvar controls whether hostname changes trigger client updates
+// 0 = just update serverinfo (safe, no disruption)
+// 1 = broadcast svc_serverinfo to all clients (updates scoreboard but respawns players)
+// AMXX plugins should only set this to 1 when safe (e.g., practice mode, not during match)
+cvar_t ktp_hostname_broadcast = { "ktp_hostname_broadcast", "0", 0, 0.0f, NULL };
+
+// KTP: Silent pause control
+// ktp_silent_pause cvar controls whether pause notification is sent to clients
+// 0 = normal pause behavior (clients see "PAUSED" overlay)
+// 1 = silent pause (physics frozen server-side, clients don't see overlay)
+// WARNING: Silent pause may cause client prediction desync - test carefully
+cvar_t ktp_silent_pause = { "ktp_silent_pause", "0", 0, 0.0f, NULL };
+
+// KTP: Helper function to broadcast pause state to clients
+// Respects ktp_silent_pause cvar - if enabled, skips sending svc_setpause
+void SV_BroadcastPauseState(qboolean paused)
+{
+	if (ktp_silent_pause.value != 0.0f)
+	{
+		Con_DPrintf("[KTP] Silent pause active - skipping svc_setpause broadcast (paused=%d)\n", paused);
+		return;
+	}
+
+#ifdef REHLDS_FIXES
+	for (int i = 0; i < g_psvs.maxclients; i++)
+	{
+		if (g_psvs.clients[i].fakeclient)
+			continue;
+		if (!g_psvs.clients[i].connected)
+			continue;
+
+		MSG_WriteByte(&g_psvs.clients[i].netchan.message, svc_setpause);
+		MSG_WriteByte(&g_psvs.clients[i].netchan.message, paused);
+	}
+#else // REHLDS_FIXES
+	MSG_WriteByte(&g_psv.reliable_datagram, svc_setpause);
+	MSG_WriteByte(&g_psv.reliable_datagram, paused);
+#endif // REHLDS_FIXES
+}
+
+void hostname_hook_callback(cvar_t *cvar)
+{
+	int i;
+	client_t *client = NULL;
+
+	if (!Host_IsServerActive())
+		return;
+
+	// Always update the serverinfo string (for new connections)
+	Info_SetValueForKey(Info_Serverinfo(), "hostname", cvar->string, MAX_INFO_STRING);
+
+	// Only broadcast if explicitly enabled by AMXX
+	if (ktp_hostname_broadcast.value == 0.0f)
+	{
+		Con_DPrintf("KTP: hostname changed to '%s' (no broadcast)\n", cvar->string);
+		return;
+	}
+
+	Con_DPrintf("KTP: hostname changed to '%s', broadcasting to all clients\n", cvar->string);
+
+	// Send full serverinfo to each connected client
+	for (i = 0; i < g_psvs.maxclients; i++)
+	{
+		client = &g_psvs.clients[i];
+
+		if (!client->fakeclient && (client->active || client->spawned || client->connected))
+		{
+			// This triggers full client reinitialization (respawn + MOTD)
+			// AMXX should block MOTD and restore player state
+			SV_SendServerinfo(&client->netchan.message, client);
+		}
+	}
+
+	// Auto-disable after broadcast (one-shot)
+	Cvar_DirectSet(&ktp_hostname_broadcast, "0");
+}
+
 void SV_BanId_f(void)
 {
 	// KTP: Block banid command - require connected player via AMX plugin
@@ -8537,6 +8617,12 @@ void SV_Init(void)
 	Cvar_RegisterVariable(&sv_usercmd_custom_random_seed);
 	Cvar_RegisterVariable(&sv_rehlds_allow_large_sprays);
 #endif
+
+	// KTP: Hostname broadcast control (AMXX sets to 1 when safe to broadcast)
+	Cvar_RegisterVariable(&ktp_hostname_broadcast);
+
+	// KTP: Silent pause control (no "PAUSED" overlay on clients)
+	Cvar_RegisterVariable(&ktp_silent_pause);
 
 	//------------------------------------------------
 	// Movevars cvarhook registers

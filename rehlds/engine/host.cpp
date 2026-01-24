@@ -60,6 +60,9 @@ cvar_t sys_ticrate = { "sys_ticrate", "100.0", 0, 0.0f, NULL };
 
 void sys_timescale_hook_callback(cvar_t *cvar);
 cvarhook_t sys_timescale_hook = { sys_timescale_hook_callback, NULL, NULL };
+
+// KTP: hostname hook defined in sv_main.cpp - broadcasts serverinfo on hostname change
+extern cvarhook_t hostname_hook;
 cvar_t sys_timescale = { "sys_timescale", "1.0", 0, 0.0f, NULL };
 
 cvar_t fps_max = { "fps_max", "100.0", FCVAR_ARCHIVE, 0.0f, NULL };
@@ -153,6 +156,7 @@ void Host_InitLocal(void)
 	Cvar_RegisterVariable(&fps_max);
 	Cvar_RegisterVariable(&fps_override);
 	Cvar_RegisterVariable(&host_name);
+	Cvar_HookVariable(host_name.name, &hostname_hook);  // KTP: Broadcast serverinfo on hostname change
 	Cvar_RegisterVariable(&host_limitlocal);
 
 	sys_timescale.value = 1.0f;
@@ -1154,9 +1158,9 @@ int Host_Init(quakeparms_t *parms)
 
 	// KTP Modification: Identify custom build
 	Con_Printf("========================================\n");
-	Con_Printf("  KTP ReHLDS - Selective Pause Build\n");
-	Con_Printf("  Chat & HUD enabled during pause\n");
-	Con_Printf("  Build: %s\n", __DATE__);
+	Con_Printf("  KTP ReHLDS - Custom Pause Build\n");
+	Con_Printf("  HUD enabled during pause\n");
+	Con_Printf("  Version: %s (%s)\n", APP_VERSION, __DATE__);
 	Con_Printf("========================================\n");
 
 	Con_DPrintf("%4.1f Mb heap\n", (double)parms->memsize / (1024.0f * 1024.0f));

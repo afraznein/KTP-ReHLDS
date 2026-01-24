@@ -572,6 +572,7 @@ void SV_WriteVoiceCodec(sizebuf_t *pBuf);
 void SV_WriteVoiceCodec_internal(sizebuf_t *pBuf);
 void SV_CreateBaseline(void);
 void SV_BroadcastCommand(char *fmt, ...);
+void SV_BroadcastPauseState(qboolean paused);  // KTP: Respects ktp_silent_pause cvar
 void SV_BuildReconnect(sizebuf_t *msg);
 NOXREF void SV_ReconnectAllClients(void);
 void SetCStrikeFlags(void);

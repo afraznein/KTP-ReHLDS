@@ -1,6 +1,6 @@
 # KTP-ReHLDS
 
-**Version 3.20.0.896-dev+m** - Custom ReHLDS fork with selective pause system and real-time HUD updates
+**Version 3.22.0.903-dev+m** - Custom ReHLDS fork with selective pause system and real-time HUD updates
 
 A specialized fork of [ReHLDS](https://github.com/rehlds/rehlds) that enables advanced competitive match features through engine-level pause control, HUD updates during pause, and selective subsystem operation.
 
@@ -90,6 +90,16 @@ KTP-ReHLDS is the **engine foundation** of the KTP competitive stack:
 - Only KTP pause system works (via ReAPI `rh_set_server_pause()`)
 - Prevents abuse of engine pause command
 - Full control from AMX plugins
+
+### 🔇 Silent Pause Mode (v3.22.0+)
+
+**New Cvar: `ktp_silent_pause`**
+- Controls whether clients receive `svc_setpause` messages
+- `0` (default): Normal behavior - clients see "PAUSED" overlay
+- `1`: Silent mode - no overlay, custom HUD still works
+- Prevents blocky client pause overlay from appearing
+- Physics remain frozen server-side
+- Used by KTPMatchHandler for professional pause experience
 
 ### 📊 Real-Time HUD Updates During Pause
 
@@ -306,8 +316,8 @@ Result: Professional experience, clear communication
 
 ## 📋 Version Information
 
-- **Current Version**: KTP-ReHLDS 3.20.0.896-dev+m (2026-01)
-- **Previous Version**: 3.19.0.895-dev+m (2025-12-21) - Admin command blocking
+- **Current Version**: KTP-ReHLDS 3.22.0.903-dev+m (2026-01)
+- **Previous Version**: 3.21.0.902-dev+m (2026-01) - Hostname broadcast infrastructure
 - **Based on**: ReHLDS 3.14.0.857 (upstream)
 - **Platform Toolset**: Visual Studio 2022 (v143) for Windows
 - **Compiler**: GCC 4.9.2+ or Clang 6.0+ for Linux

@@ -6,6 +6,110 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.903-dev+m`] - 2026-01
+
+**Silent Pause Mode** - Hide client pause overlay while maintaining custom HUD functionality.
+
+### Added
+
+#### New Cvar: ktp_silent_pause
+- **`ktp_silent_pause`** - Controls whether clients receive `svc_setpause` messages
+  - `0` (default): Normal behavior - clients receive pause notification and show overlay
+  - `1`: Silent mode - server is paused but clients don't receive `svc_setpause`
+  - Prevents the blocky "PAUSED" client overlay from appearing
+  - Custom HUD updates via `RH_SV_UpdatePausedHUD` still work normally
+  - Physics remain frozen server-side
+
+#### New Function: SV_BroadcastPauseState()
+- Centralized function for broadcasting pause state to clients
+- Respects `ktp_silent_pause` cvar setting
+- Used by all pause-related functions:
+  - `SetServerPause()` (ReAPI native)
+  - `Host_TogglePause_f()` (pause command)
+  - `Host_Pause_f()` (setpause command)
+  - `Host_Unpause_f()` (unpause command)
+
+### Technical Details
+
+```cpp
+// Silent pause prevents svc_setpause broadcast to clients
+extern cvar_t ktp_silent_pause;
+
+void SV_BroadcastPauseState(qboolean paused) {
+    if (ktp_silent_pause.value != 0.0f) {
+        // Skip broadcast - clients won't see pause overlay
+        return;
+    }
+    // Normal broadcast to all connected clients
+}
+```
+
+### Use Case
+
+- KTPMatchHandler sets `ktp_silent_pause 1` before pausing
+- Server physics freeze, game is paused
+- Clients do NOT receive `svc_setpause` message
+- No blocky "PAUSED" overlay appears on client screens
+- Custom HUD countdown (via `RH_SV_UpdatePausedHUD`) displays instead
+- Professional pause experience for competitive matches
+
+### Compatibility Notes
+
+- **Requires KTPMatchHandler 0.10.65+** for automatic silent pause integration
+- **Backwards compatible** - default behavior unchanged (`ktp_silent_pause 0`)
+- Works with existing `RH_SV_UpdatePausedHUD` hook
+
+---
+
+## [KTP-ReHLDS `3.21.0.902-dev+m`] - 2026-01
+
+**Hostname Broadcast Infrastructure** - Cvar hook for hostname changes with optional client broadcast.
+
+### Added
+
+#### New Cvar Hook: hostname
+- **`hostname_hook`** - Cvar hook triggered when `hostname` cvar changes
+  - Always updates serverinfo string (visible to new connections)
+  - Optional client broadcast via `ktp_hostname_broadcast` cvar
+  - Enables plugins to update server name dynamically
+
+#### New Cvar: ktp_hostname_broadcast
+- **`ktp_hostname_broadcast`** - Controls hostname change broadcast behavior
+  - `0` (default): Only update serverinfo, no client broadcast (safe)
+  - `1`: Broadcast `svc_serverinfo` to all connected clients (updates scoreboard)
+  - Auto-resets to 0 after broadcast (one-shot mode)
+
+### Technical Details
+
+```cpp
+// hostname cvar hook registered in Host_InitLocal()
+Cvar_HookVariable(host_name.name, &hostname_hook);
+
+// Callback updates serverinfo and optionally broadcasts
+void hostname_hook_callback(cvar_t *cvar) {
+    Info_SetValueForKey(Info_Serverinfo(), "hostname", cvar->string, MAX_INFO_STRING);
+
+    if (ktp_hostname_broadcast.value == 1.0f) {
+        // Send SV_SendServerinfo to all connected clients
+        // Auto-disable after broadcast
+    }
+}
+```
+
+### Known Limitations
+
+- **Broadcast causes client reinitialization** - `SV_SendServerinfo` triggers full client reinit (respawn + MOTD + team/class menus)
+- **NOT RECOMMENDED for mid-match use** - Client disruption makes this unsuitable for live matches
+- **Use cases**: Practice mode, empty server, between matches
+- **Workaround**: Hostname changes without broadcast only visible to new connections and on map change
+
+### Compatibility Notes
+
+- **Safe by default** - `ktp_hostname_broadcast 0` causes no disruption
+- **AMXX plugin control** - Set `ktp_hostname_broadcast 1` only when safe (e.g., practice mode)
+
+---
+
 ## [KTP-ReHLDS `3.20.0.896-dev+m`] - 2026-01
 
 **Map Change Interception & RCON Audit Hooks** - Console changelevel and RCON command hookchains.
