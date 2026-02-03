@@ -6,6 +6,62 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.904-dev+m`] - 2026-02
+
+**Frame Profiling & FPS Precision** - Built-in performance analysis and true 1000 fps support.
+
+### Added
+
+#### Frame Profiling System
+- **`ktp_profile_frame`** - Enable/disable frame time profiling
+  - `0` (default): Disabled
+  - `1`: Enabled - logs summary every interval
+- **`ktp_profile_interval`** - Seconds between profile log outputs (default: 10)
+
+**Output format:**
+```
+[KTP_PROFILE] frames=9764 fps=976.4 edicts_max=176
+[KTP_PROFILE] avg: read=0.006ms phys=0.019ms send=0.020ms total=0.045ms
+[KTP_PROFILE] peak: read=0.160ms phys=0.056ms send=0.122ms total=0.230ms
+```
+
+**Metrics tracked:**
+- `read` - SV_ReadPackets() time (network input)
+- `phys` - SV_Physics() time (game simulation)
+- `send` - SV_SendClientMessages() time (network output)
+- `edicts_max` - Peak entity count during interval
+
+**Design:** Accumulates per-frame (3 additions, ~nanoseconds overhead), logs summary every N seconds. Minimal FPS impact when enabled.
+
+### Fixed
+
+#### Host_FilterTime FPS Precision
+- **Issue:** Artificial FPS cap limited servers to sys_ticrate - 1
+- **Original:** `1.0f / (fps + 1.0f)` - At sys_ticrate 1000, capped at ~999 fps
+- **Fixed:** `1.0 / fps` - Allows true 1000 fps at sys_ticrate 1000
+- **Also:** Changed `fps` variable from `float` to `double` for precision consistency with `realtime`/`oldrealtime`
+
+### Technical Details
+
+```cpp
+// Frame profiling - minimal overhead
+static double g_profile_read_total = 0.0;
+static double g_profile_phys_total = 0.0;
+static double g_profile_send_total = 0.0;
+static int g_profile_frame_count = 0;
+static int g_profile_edicts_max = 0;
+
+// Accumulate per frame, log summary every ktp_profile_interval seconds
+```
+
+### Compatibility Notes
+
+- **No API changes** - backwards compatible with existing plugins
+- **Production safe** - minimal overhead when profiling disabled
+- **Diagnostic tool** - helps identify performance bottlenecks
+
+---
+
 ## [KTP-ReHLDS `3.22.0.903-dev+m`] - 2026-01
 
 **Silent Pause Mode** - Hide client pause overlay while maintaining custom HUD functionality.

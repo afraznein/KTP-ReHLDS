@@ -666,7 +666,8 @@ void Host_ClearMemory(qboolean bQuiet)
 
 qboolean Host_FilterTime(float time)
 {
-	float fps;
+	// KTP: Changed from float to double for precision consistency with realtime/oldrealtime
+	double fps;
 	static int command_line_ticrate = -1;
 
 	if (host_framerate.value > 0.0f)
@@ -690,9 +691,12 @@ qboolean Host_FilterTime(float time)
 		else
 			fps = sys_ticrate.value;
 
-		if (fps > 0.0f)
+		// KTP: Removed "+ 1.0f" which artificially capped fps at (sys_ticrate - 1)
+		// Original: 1.0f / (fps + 1.0f) - at 1000 ticrate, this capped at ~999 fps
+		// Fixed: 1.0 / fps - allows true 1000 fps at sys_ticrate 1000
+		if (fps > 0.0)
 		{
-			if (1.0f / (fps + 1.0f) > realtime - oldrealtime)
+			if (1.0 / fps > realtime - oldrealtime)
 				return FALSE;
 		}
 	}

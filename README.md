@@ -1,6 +1,6 @@
 # KTP-ReHLDS
 
-**Version 3.22.0.903-dev+m** - Custom ReHLDS fork with selective pause system and real-time HUD updates
+**Version 3.22.0.904-dev+m** - Custom ReHLDS fork with selective pause system and real-time HUD updates
 
 A specialized fork of [ReHLDS](https://github.com/rehlds/rehlds) that enables advanced competitive match features through engine-level pause control, HUD updates during pause, and selective subsystem operation.
 

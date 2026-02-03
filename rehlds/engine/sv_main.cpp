@@ -6933,6 +6933,27 @@ cvar_t ktp_hostname_broadcast = { "ktp_hostname_broadcast", "0", 0, 0.0f, NULL }
 // WARNING: Silent pause may cause client prediction desync - test carefully
 cvar_t ktp_silent_pause = { "ktp_silent_pause", "0", 0, 0.0f, NULL };
 
+// KTP: Frame profiling system
+// ktp_profile_frame: 0 = disabled, 1 = enabled
+// ktp_profile_interval: seconds between summary logs (default 10)
+cvar_t ktp_profile_frame = { "ktp_profile_frame", "0", 0, 0.0f, NULL };
+cvar_t ktp_profile_interval = { "ktp_profile_interval", "10", 0, 0.0f, NULL };
+
+// KTP: Profiling accumulators (static to preserve across frames)
+static double g_ktp_profile_acc_readpackets = 0.0;
+static double g_ktp_profile_acc_physics = 0.0;
+static double g_ktp_profile_acc_sendmessages = 0.0;
+static double g_ktp_profile_acc_total = 0.0;
+static int g_ktp_profile_acc_frames = 0;
+static int g_ktp_profile_acc_edicts_max = 0;
+static double g_ktp_profile_last_log_time = 0.0;
+
+// KTP: Peak tracking for worst-case analysis
+static double g_ktp_profile_peak_readpackets = 0.0;
+static double g_ktp_profile_peak_physics = 0.0;
+static double g_ktp_profile_peak_sendmessages = 0.0;
+static double g_ktp_profile_peak_total = 0.0;
+
 // KTP: Helper function to broadcast pause state to clients
 // Respects ktp_silent_pause cvar - if enabled, skips sending svc_setpause
 void SV_BroadcastPauseState(qboolean paused)
@@ -8320,10 +8341,25 @@ void EXT_FUNC SV_Frame_Internal()
 	if (!g_psv.active)
 		return;
 
+	// KTP: Frame profiling - capture start time if enabled
+	double ktp_t_frame_start = 0.0, ktp_t_readpackets = 0.0, ktp_t_physics = 0.0, ktp_t_sendmessages = 0.0;
+	qboolean ktp_profiling = (ktp_profile_frame.value != 0.0f);
+
+	if (ktp_profiling)
+		ktp_t_frame_start = Sys_FloatTime();
+
 	gGlobalVariables.frametime = host_frametime;
 	g_psv.oldtime = g_psv.time;
 	SV_CheckCmdTimes();
 	SV_ReadPackets();
+
+	// KTP: Profile - capture time after ReadPackets
+	if (ktp_profiling)
+	{
+		double now = Sys_FloatTime();
+		ktp_t_readpackets = now - ktp_t_frame_start;
+		ktp_t_frame_start = now;
+	}
 
 	// KTP Modification: Check simulation state BEFORE any pause manipulation
 	// We need to know if we should run physics or not based on the REAL pause state
@@ -8361,9 +8397,25 @@ void EXT_FUNC SV_Frame_Internal()
 		gEntityInterface.pfnStartFrame();
 		SV_UpdatePausedHUD();
 	}
+
+	// KTP: Profile - capture time after Physics
+	if (ktp_profiling)
+	{
+		double now = Sys_FloatTime();
+		ktp_t_physics = now - ktp_t_frame_start;
+		ktp_t_frame_start = now;
+	}
+
 	SV_RequestMissingResourcesFromClients();
 	SV_CheckTimeouts();
 	SV_SendClientMessages();
+
+	// KTP: Profile - capture time after SendClientMessages
+	if (ktp_profiling)
+	{
+		double now = Sys_FloatTime();
+		ktp_t_sendmessages = now - ktp_t_frame_start;
+	}
 
 	// KTP Modification: Restore pause state AFTER message sending
 	// Only restore if the temporary unpause flag is still set, meaning the plugin
@@ -8379,6 +8431,78 @@ void EXT_FUNC SV_Frame_Internal()
 	SV_CheckMapDifferences();
 	SV_GatherStatistics();
 	Steam_RunFrame();
+
+	// KTP: Frame profiling - accumulate stats and periodically log
+	if (ktp_profiling)
+	{
+		double total_frame_time = ktp_t_readpackets + ktp_t_physics + ktp_t_sendmessages;
+
+		// Accumulate for averaging
+		g_ktp_profile_acc_readpackets += ktp_t_readpackets;
+		g_ktp_profile_acc_physics += ktp_t_physics;
+		g_ktp_profile_acc_sendmessages += ktp_t_sendmessages;
+		g_ktp_profile_acc_total += total_frame_time;
+		g_ktp_profile_acc_frames++;
+
+		// Track peak entity count
+		if (g_psv.num_edicts > g_ktp_profile_acc_edicts_max)
+			g_ktp_profile_acc_edicts_max = g_psv.num_edicts;
+
+		// Track peak times for worst-case analysis
+		if (ktp_t_readpackets > g_ktp_profile_peak_readpackets)
+			g_ktp_profile_peak_readpackets = ktp_t_readpackets;
+		if (ktp_t_physics > g_ktp_profile_peak_physics)
+			g_ktp_profile_peak_physics = ktp_t_physics;
+		if (ktp_t_sendmessages > g_ktp_profile_peak_sendmessages)
+			g_ktp_profile_peak_sendmessages = ktp_t_sendmessages;
+		if (total_frame_time > g_ktp_profile_peak_total)
+			g_ktp_profile_peak_total = total_frame_time;
+
+		// Check if it's time to log summary
+		double current_time = realtime;
+		if (g_ktp_profile_last_log_time == 0.0)
+			g_ktp_profile_last_log_time = current_time;
+
+		double interval = ktp_profile_interval.value;
+		if (interval < 1.0) interval = 10.0;  // Minimum 1 second, default 10
+
+		if (current_time - g_ktp_profile_last_log_time >= interval && g_ktp_profile_acc_frames > 0)
+		{
+			// Calculate averages (in milliseconds)
+			double avg_read = (g_ktp_profile_acc_readpackets / g_ktp_profile_acc_frames) * 1000.0;
+			double avg_phys = (g_ktp_profile_acc_physics / g_ktp_profile_acc_frames) * 1000.0;
+			double avg_send = (g_ktp_profile_acc_sendmessages / g_ktp_profile_acc_frames) * 1000.0;
+			double avg_total = (g_ktp_profile_acc_total / g_ktp_profile_acc_frames) * 1000.0;
+			double avg_fps = (g_ktp_profile_acc_frames / (current_time - g_ktp_profile_last_log_time));
+
+			// Peaks in milliseconds
+			double peak_read = g_ktp_profile_peak_readpackets * 1000.0;
+			double peak_phys = g_ktp_profile_peak_physics * 1000.0;
+			double peak_send = g_ktp_profile_peak_sendmessages * 1000.0;
+			double peak_total = g_ktp_profile_peak_total * 1000.0;
+
+			// Log to server log file
+			Log_Printf("[KTP_PROFILE] frames=%d fps=%.1f edicts_max=%d\n",
+				g_ktp_profile_acc_frames, avg_fps, g_ktp_profile_acc_edicts_max);
+			Log_Printf("[KTP_PROFILE] avg: read=%.3fms phys=%.3fms send=%.3fms total=%.3fms\n",
+				avg_read, avg_phys, avg_send, avg_total);
+			Log_Printf("[KTP_PROFILE] peak: read=%.3fms phys=%.3fms send=%.3fms total=%.3fms\n",
+				peak_read, peak_phys, peak_send, peak_total);
+
+			// Reset accumulators
+			g_ktp_profile_acc_readpackets = 0.0;
+			g_ktp_profile_acc_physics = 0.0;
+			g_ktp_profile_acc_sendmessages = 0.0;
+			g_ktp_profile_acc_total = 0.0;
+			g_ktp_profile_acc_frames = 0;
+			g_ktp_profile_acc_edicts_max = 0;
+			g_ktp_profile_peak_readpackets = 0.0;
+			g_ktp_profile_peak_physics = 0.0;
+			g_ktp_profile_peak_sendmessages = 0.0;
+			g_ktp_profile_peak_total = 0.0;
+			g_ktp_profile_last_log_time = current_time;
+		}
+	}
 }
 
 void SV_Drop_f(void)
@@ -8623,6 +8747,10 @@ void SV_Init(void)
 
 	// KTP: Silent pause control (no "PAUSED" overlay on clients)
 	Cvar_RegisterVariable(&ktp_silent_pause);
+
+	// KTP: Frame profiling system
+	Cvar_RegisterVariable(&ktp_profile_frame);
+	Cvar_RegisterVariable(&ktp_profile_interval);
 
 	//------------------------------------------------
 	// Movevars cvarhook registers
