@@ -6,59 +6,85 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
-## [KTP-ReHLDS `3.22.0.904-dev+m`] - 2026-02
+## [KTP-ReHLDS `3.22.0.904+`] - 2026-02
 
-**Frame Profiling & FPS Precision** - Built-in performance analysis and true 1000 fps support.
+**Full Frame Profiling, Netcode Limits, CPU-Time Instrumentation**
 
 ### Added
 
-#### Frame Profiling System
-- **`ktp_profile_frame`** - Enable/disable frame time profiling
-  - `0` (default): Disabled
-  - `1`: Enabled - logs summary every interval
-- **`ktp_profile_interval`** - Seconds between profile log outputs (default: 10)
+#### 6-Phase Frame Profiling System
+- **`ktp_profile_frame`** - Enable/disable frame time profiling (0/1)
+- **`ktp_profile_interval`** - Seconds between summary logs (default: 10)
+- **`ktp_profile_spike_threshold`** - Immediate `[KTP_SPIKE]` alert when any frame exceeds N ms (0 = disabled)
+- **`ktp_profile_steam_detail`** - Granular `[KTP_PROFILE_STEAM]` sub-timing when Steam_RunFrame > 1ms
 
-**Output format:**
+**Summary output (every N seconds):**
 ```
-[KTP_PROFILE] frames=9764 fps=976.4 edicts_max=176
-[KTP_PROFILE] avg: read=0.006ms phys=0.019ms send=0.020ms total=0.045ms
-[KTP_PROFILE] peak: read=0.160ms phys=0.056ms send=0.122ms total=0.230ms
+[KTP_PROFILE] frames=9823 fps=982.3 edicts_max=156
+[KTP_PROFILE] avg: read=0.120ms phys=0.450ms misc1=0.005ms send=0.080ms post=0.003ms steam=0.010ms full=0.680ms
+[KTP_PROFILE] peak: read=0.450ms phys=1.200ms misc1=0.020ms send=0.300ms post=0.010ms steam=0.050ms full=2.100ms
+[KTP_PROFILE] gap=0.012ms (full - sum of phases)
 ```
 
-**Metrics tracked:**
-- `read` - SV_ReadPackets() time (network input)
-- `phys` - SV_Physics() time (game simulation)
-- `send` - SV_SendClientMessages() time (network output)
-- `edicts_max` - Peak entity count during interval
+**Spike alert output (immediate, rate-limited to 1/sec):**
+```
+[KTP_SPIKE] full=12.340ms read=0.150ms phys=0.500ms misc1=0.010ms send=0.100ms post=0.005ms steam=11.500ms gap=0.075ms
+[KTP_SPIKE_READ] pkts=5(cl=3,conn=1,frag=2) recv=0.010ms proc=3.200ms worst=2.800ms
+```
 
-**Design:** Accumulates per-frame (3 additions, ~nanoseconds overhead), logs summary every N seconds. Minimal FPS impact when enabled.
+**Steam detail output (when ktp_profile_steam_detail=1, only when >1ms):**
+```
+[KTP_PROFILE_STEAM] callbacks=5.200ms sendpackets=0.030ms fragupdate=0.100ms
+```
+
+**Phases tracked:**
+- `read` - SV_CheckCmdTimes() + SV_ReadPackets() (network input)
+- `phys` - Pause logic + SV_Physics() (game simulation)
+- `misc1` - SV_RequestMissingResourcesFromClients() + SV_CheckTimeouts()
+- `send` - SV_SendClientMessages() (network output)
+- `post` - Pause restore + SV_CheckMapDifferences() + SV_GatherStatistics()
+- `steam` - Steam_RunFrame() (callbacks, packet send, frag updates)
+- `full` - Wall clock for entire SV_Frame_Internal()
+- `gap` - `full` minus sum of all phases (unmeasured overhead)
+
+#### SV_ReadPackets Detail Profiling
+Per-packet timing inside the read loop: recv vs process time, packet type counts (client/connectionless/fragment), worst single packet time. Results stored per-frame, logged on spike alerts.
+
+#### SV_ParseMove / SV_RunCmd Sub-Phase Instrumentation
+- `[KTP_PARSEMOVE]` logged when any client's ParseMove > 1ms, with CPU-time breakdown:
+  - `setup` - viewangles, cmd decompression, time base
+  - `runcmd` - total SV_RunCmd phase, broken into:
+    - `prethink` - pfnCmdStart + PreThink + Think
+    - `pmove` - player movement setup + pfnPM_Move + movevars sync
+    - `postthink` - result copyback + touches + PostThink + CmdEnd
+  - `cpu` - CLOCK_THREAD_CPUTIME_ID (distinguishes CPU work from OS scheduling stalls)
+
+#### Per-Opcode Client Message Timing
+- `[KTP_OPCODE]` logged when any client opcode handler > 1ms (clc_move, clc_stringcmd, etc.)
+
+#### Sys_ThreadCpuTime()
+- New function using `CLOCK_THREAD_CPUTIME_ID` for CPU-only timing (excludes kernel descheduling)
+- Falls back to `Sys_FloatTime()` on Windows
+
+### Changed
+
+#### Rate Limits Raised
+- **MAX_RATE** raised 100,000 → 1,000,000 (net.h) — allows `rate 1000000` for LAN/high-bandwidth clients
+- **HLTV MAX_PROXY_RATE** raised 100,000 → 1,000,000 (Proxy.h)
+- **HLTV MAX_PROXY_UPDATERATE** raised 100 → 200 (Proxy.h)
+- **HLTV interp buffer** reduced from 50ms to 15ms (Proxy.cpp: `ex_interp` formula changed from `+0.05f` to `+0.015f`)
 
 ### Fixed
 
 #### Host_FilterTime FPS Precision
-- **Issue:** Artificial FPS cap limited servers to sys_ticrate - 1
-- **Original:** `1.0f / (fps + 1.0f)` - At sys_ticrate 1000, capped at ~999 fps
-- **Fixed:** `1.0 / fps` - Allows true 1000 fps at sys_ticrate 1000
-- **Also:** Changed `fps` variable from `float` to `double` for precision consistency with `realtime`/`oldrealtime`
-
-### Technical Details
-
-```cpp
-// Frame profiling - minimal overhead
-static double g_profile_read_total = 0.0;
-static double g_profile_phys_total = 0.0;
-static double g_profile_send_total = 0.0;
-static int g_profile_frame_count = 0;
-static int g_profile_edicts_max = 0;
-
-// Accumulate per frame, log summary every ktp_profile_interval seconds
-```
+- **Original:** `1.0f / (fps + 1.0f)` — at sys_ticrate 1000, capped at ~999 fps
+- **Fixed:** `1.0 / fps` — allows true 1000 fps at sys_ticrate 1000
+- Changed `fps` variable from `float` to `double` for precision consistency
 
 ### Compatibility Notes
 
 - **No API changes** - backwards compatible with existing plugins
-- **Production safe** - minimal overhead when profiling disabled
-- **Diagnostic tool** - helps identify performance bottlenecks
+- **Production safe** - profiling overhead negligible when cvars disabled
 
 ---
 

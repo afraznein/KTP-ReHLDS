@@ -746,7 +746,7 @@ bool Proxy::WriteSignonData(int type, BitBuffer *stream)
 		stream->WriteString(COM_VarArgs("%s\n", m_SignonCommands));
 	}
 
-	float ex_interp = (1.0f / GetMaxUpdateRate()) + 0.05f;
+	float ex_interp = (1.0f / GetMaxUpdateRate()) + 0.015f;
 	stream->WriteByte(svc_stufftext);
 	stream->WriteString(COM_VarArgs("ex_interp %.2f\n", ex_interp));
 

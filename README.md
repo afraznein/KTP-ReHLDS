@@ -1,6 +1,6 @@
 # KTP-ReHLDS
 
-**Version 3.22.0.904-dev+m** | Custom ReHLDS fork for KTP competitive Day of Defeat infrastructure
+**Version 3.22.0.904+** | Custom ReHLDS fork for KTP competitive Day of Defeat infrastructure
 
 A specialized fork of [ReHLDS](https://github.com/rehlds/rehlds) that enables advanced competitive match features through engine-level pause control, real-time HUD updates during pause, and selective subsystem operation.
 

@@ -47,8 +47,8 @@ class IBaseSystem;
 #define MAX_NAME				32
 
 #ifdef HLTV_FIXES
-const int MAX_PROXY_RATE        = 100000;
-const int MAX_PROXY_UPDATERATE  = 100;
+const int MAX_PROXY_RATE        = 1000000;
+const int MAX_PROXY_UPDATERATE  = 200;
 #else
 const int MAX_PROXY_RATE        = 20000;
 const int MAX_PROXY_UPDATERATE  = 40;

@@ -105,7 +105,7 @@ enum
 };
 
 // Flow control bytes per second limits
-const float MAX_RATE		= 100000.0f;
+const float MAX_RATE		= 1000000.0f;
 const float MIN_RATE		= 1000.0f;
 
 // Default data rate

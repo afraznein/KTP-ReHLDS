@@ -28,6 +28,10 @@
 
 #include "precompiled.h"
 
+// KTP: Access profiling cvars from sv_main.cpp
+extern cvar_t ktp_profile_frame;
+extern cvar_t ktp_profile_steam_detail;
+
 void CSteam3Server::OnGSPolicyResponse(GSPolicyResponse_t *pPolicyResponse)
 {
 	if (CRehldsPlatformHolder::get()->SteamGameServer()->BSecure())
@@ -423,9 +427,17 @@ void CSteam3Server::RunFrame()
 	if (g_psvs.maxclients <= 1)
 		return;
 
+	// KTP: Steam detail profiling state
+	qboolean ktp_steam_detail = (ktp_profile_frame.value != 0.0f && ktp_profile_steam_detail.value != 0.0f);
+	double ktp_t_frag = 0.0, ktp_t_callbacks = 0.0, ktp_t_sendpkt = 0.0;
+
 	fCurTime = Sys_FloatTime();
 	if (fCurTime - s_fLastRunFragsUpdate > 1.0)
 	{
+		double ktp_t_frag_start = 0.0;
+		if (ktp_steam_detail)
+			ktp_t_frag_start = Sys_FloatTime();
+
 		s_fLastRunFragsUpdate = fCurTime;
 		bHasPlayers = false;
 		for (int i = 0; i < g_psvs.maxclients; i++)
@@ -474,16 +486,30 @@ void CSteam3Server::RunFrame()
 				Con_Printf("Your server is out of date.  Please update and restart.\n");
 			}
 		}
+
+		if (ktp_steam_detail)
+			ktp_t_frag = Sys_FloatTime() - ktp_t_frag_start;
 	}
 
 	if (fCurTime - s_fLastRunCallback > 0.1)
 	{
+		double ktp_t_cb_start = 0.0;
+		if (ktp_steam_detail)
+			ktp_t_cb_start = Sys_FloatTime();
+
 		CRehldsPlatformHolder::get()->SteamGameServer_RunCallbacks();
 		s_fLastRunCallback = fCurTime;
+
+		if (ktp_steam_detail)
+			ktp_t_callbacks = Sys_FloatTime() - ktp_t_cb_start;
 	}
 
 	if (fCurTime - s_fLastRunSendPackets > 0.01)
 	{
+		double ktp_t_sp_start = 0.0;
+		if (ktp_steam_detail)
+			ktp_t_sp_start = Sys_FloatTime();
+
 		s_fLastRunSendPackets = fCurTime;
 
 		uint16 port;
@@ -499,6 +525,22 @@ void CSteam3Server::RunFrame()
 			NET_SendPacket(NS_SERVER, iLen, szOutBuf, netAdr);
 
 			iLen = CRehldsPlatformHolder::get()->SteamGameServer()->GetNextOutgoingPacket(szOutBuf, sizeof(szOutBuf), &ip, &port);
+		}
+
+		if (ktp_steam_detail)
+			ktp_t_sendpkt = Sys_FloatTime() - ktp_t_sp_start;
+	}
+
+	// KTP: Log steam detail when any sub-operation exceeded 1ms
+	if (ktp_steam_detail)
+	{
+		double total_ms = (ktp_t_frag + ktp_t_callbacks + ktp_t_sendpkt) * 1000.0;
+		if (total_ms > 1.0)
+		{
+			Log_Printf("[KTP_PROFILE_STEAM] callbacks=%.3fms sendpackets=%.3fms fragupdate=%.3fms\n",
+				ktp_t_callbacks * 1000.0,
+				ktp_t_sendpkt * 1000.0,
+				ktp_t_frag * 1000.0);
 		}
 	}
 }

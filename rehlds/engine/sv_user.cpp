@@ -31,6 +31,14 @@
 // KTP Modification: External flag from sv_main.cpp to track temporary unpause
 extern int g_ktp_temporary_unpause;
 
+// KTP: Frame profiling cvar from sv_main.cpp (reused for opcode/parsemove instrumentation)
+extern cvar_t ktp_profile_frame;
+
+// KTP: SV_RunCmd sub-phase accumulators (zeroed per SV_ParseMove call)
+double g_ktp_runcmd_acc_prethink = 0.0;  // pfnCmdStart + PreThink + Think
+double g_ktp_runcmd_acc_pmove = 0.0;     // PM setup + pfnPM_Move + movevars sync
+double g_ktp_runcmd_acc_postthink = 0.0; // result copyback + touches + PostThink + CmdEnd
+
 sv_adjusted_positions_t truepositions[MAX_CLIENTS];
 qboolean g_balreadymoved;
 
@@ -804,6 +812,13 @@ void SV_RunCmd(usercmd_t *ucmd, int random_seed)
 	}
 #endif
 
+	// KTP: Sub-phase timing for SV_RunCmd
+	bool ktp_rc_prof = (ktp_profile_frame.value != 0.0f);
+	double ktp_rc_t0 = 0.0;
+
+	// --- PRETHINK PHASE ---
+	if (ktp_rc_prof) ktp_rc_t0 = Sys_FloatTime();
+
 	gEntityInterface.pfnCmdStart(sv_player, ucmd, random_seed);
 	frametime = float(ucmd->msec * 0.001);
 	host_client->svtimebase = frametime + host_client->svtimebase;
@@ -837,6 +852,13 @@ void SV_RunCmd(usercmd_t *ucmd, int random_seed)
 	}
 	SV_PlayerRunPreThink(sv_player, (float)host_client->svtimebase);
 	SV_PlayerRunThink(sv_player, frametime, host_client->svtimebase);
+
+	if (ktp_rc_prof) {
+		g_ktp_runcmd_acc_prethink += Sys_FloatTime() - ktp_rc_t0;
+		ktp_rc_t0 = Sys_FloatTime();
+	}
+
+	// --- PMOVE PHASE ---
 	if (Length(sv_player->v.basevelocity) > 0.0)
 	{
 		sv_player->v.clbasevelocity[0] = sv_player->v.basevelocity[0];
@@ -950,6 +972,12 @@ void SV_RunCmd(usercmd_t *ucmd, int random_seed)
 	if (!host_client->fakeclient && Q_memcmp(&movevars, pmove->movevars, sizeof(movevars)) != 0)
 		SV_WriteMovevarsToClient(&host_client->netchan.message, pmove->movevars); // sync movevars for the client
 
+	if (ktp_rc_prof) {
+		g_ktp_runcmd_acc_pmove += Sys_FloatTime() - ktp_rc_t0;
+		ktp_rc_t0 = Sys_FloatTime();
+	}
+
+	// --- POSTTHINK PHASE ---
 	sv_player->v.deadflag = pmove->deadflag;
 	sv_player->v.effects = pmove->effects;
 	sv_player->v.teleport_time = pmove->waterjumptime;
@@ -1068,6 +1096,10 @@ void SV_RunCmd(usercmd_t *ucmd, int random_seed)
 
 	if (!host_client->fakeclient)
 		SV_RestoreMove(host_client);
+
+	if (ktp_rc_prof) {
+		g_ktp_runcmd_acc_postthink += Sys_FloatTime() - ktp_rc_t0;
+	}
 }
 
 int SV_ValidateClientCommand(char *pszCommand)
@@ -1679,6 +1711,13 @@ void SV_ParseMove(client_t *pSenderClient)
 	}
 
 	host_client->packet_loss = packet_loss;
+
+	// KTP: Sub-phase timing for SV_ParseMove
+	double ktp_pm_t0 = 0.0;
+	bool ktp_pm_prof = (ktp_profile_frame.value != 0.0f);
+	if (ktp_pm_prof)
+		ktp_pm_t0 = Sys_FloatTime();
+
 	if (!g_psv.paused && (g_psvs.maxclients > 1 || !key_dest) && !(sv_player->v.flags & FL_FROZEN))
 	{
 		sv_player->v.v_angle[0] = cmds[0].viewangles[0];
@@ -1726,6 +1765,19 @@ void SV_ParseMove(client_t *pSenderClient)
 	sv_player->v.light_level = cmds[0].lightlevel;
 #endif
 	SV_EstablishTimeBase(host_client, cmds, net_drop, numbackup, numcmds);
+
+	// KTP: Checkpoint between setup and SV_RunCmd phase
+	double ktp_pm_t1 = 0.0;
+	double ktp_pm_cpu0 = 0.0;
+	if (ktp_pm_prof)
+	{
+		ktp_pm_t1 = Sys_FloatTime();
+		ktp_pm_cpu0 = Sys_ThreadCpuTime();
+		g_ktp_runcmd_acc_prethink = 0.0;
+		g_ktp_runcmd_acc_pmove = 0.0;
+		g_ktp_runcmd_acc_postthink = 0.0;
+	}
+
 	if (net_drop < 24)
 	{
 		while (net_drop > numbackup)
@@ -1745,6 +1797,26 @@ void SV_ParseMove(client_t *pSenderClient)
 	for (int i = numcmds - 1; i >= 0; i--)
 	{
 		SV_RunCmd(&cmds[i], host_client->netchan.incoming_sequence - i);
+	}
+
+	// KTP: Log if SV_ParseMove total > 1ms (with CPU time + sub-phase breakdown)
+	if (ktp_pm_prof)
+	{
+		double ktp_pm_total = (Sys_FloatTime() - ktp_pm_t0) * 1000.0;
+		if (ktp_pm_total > 1.0)
+		{
+			double ktp_pm_setup = (ktp_pm_t1 - ktp_pm_t0) * 1000.0;
+			double ktp_pm_runcmd = ktp_pm_total - ktp_pm_setup;
+			double ktp_pm_cpu = (Sys_ThreadCpuTime() - ktp_pm_cpu0) * 1000.0;
+			Log_Printf("[KTP_PARSEMOVE] client=%d(%s) total=%.3fms setup=%.3fms runcmd=%.3fms cmds=%d drop=%d cpu=%.3fms prethink=%.3fms pmove=%.3fms postthink=%.3fms\n",
+				host_client - g_psvs.clients, host_client->name,
+				ktp_pm_total, ktp_pm_setup, ktp_pm_runcmd,
+				numcmds, net_drop,
+				ktp_pm_cpu,
+				g_ktp_runcmd_acc_prethink * 1000.0,
+				g_ktp_runcmd_acc_pmove * 1000.0,
+				g_ktp_runcmd_acc_postthink * 1000.0);
+		}
 	}
 
 #ifdef REHLDS_FIXES
@@ -1862,7 +1934,26 @@ void EXT_FUNC SV_HandleClientMessage_api(IGameClient* client, uint8 opcode) {
 
 	void(*func)(client_t *) = sv_clcfuncs[opcode].pfnParse;
 	if (func)
+	{
+		// KTP: Per-opcode timing — only log spikes > 1ms
+		double ktp_op_t0 = 0.0;
+		bool ktp_op_prof = (ktp_profile_frame.value != 0.0f);
+		if (ktp_op_prof)
+			ktp_op_t0 = Sys_FloatTime();
+
 		func(cl);
+
+		if (ktp_op_prof)
+		{
+			double ktp_op_ms = (Sys_FloatTime() - ktp_op_t0) * 1000.0;
+			if (ktp_op_ms > 1.0)
+			{
+				Log_Printf("[KTP_OPCODE] client=%d(%s) opcode=%s time=%.3fms\n",
+					cl - g_psvs.clients, cl->name,
+					sv_clcfuncs[opcode].pszname, ktp_op_ms);
+			}
+		}
+	}
 
 #ifdef REHLDS_FIXES
 	if (msg_badread)

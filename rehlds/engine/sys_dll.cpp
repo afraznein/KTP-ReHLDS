@@ -614,6 +614,27 @@ double Sys_FloatTime(void)
 
 #endif //_WIN32
 
+// KTP: CLOCK_THREAD_CPUTIME_ID — measures CPU time for THIS thread only.
+// If cpu << wall, the kernel descheduled the process. If cpu ≈ wall, actual work.
+double Sys_ThreadCpuTime(void)
+{
+#ifndef _WIN32
+	static struct timespec start_cpu;
+	static bool bInitialized = false;
+	struct timespec now;
+
+	if (!bInitialized)
+	{
+		bInitialized = true;
+		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start_cpu);
+	}
+	clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now);
+	return (now.tv_sec - start_cpu.tv_sec) + now.tv_nsec * 0.000000001;
+#else
+	return Sys_FloatTime();
+#endif
+}
+
 void Dispatch_Substate(int iSubState)
 {
 	giSubState = iSubState;
