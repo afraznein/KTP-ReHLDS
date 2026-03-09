@@ -40,14 +40,14 @@ class NetPacket;
 class INetSocket;
 
 #ifdef HLTV_FIXES
-const int MAX_SERVER_RATE       = 100000;
+const int MAX_SERVER_RATE       = 1000000;
+const int MAX_SERVER_UPDATERATE = 200;
 #else
 const int MAX_SERVER_RATE       = 20000;
+const int MAX_SERVER_UPDATERATE = 100;
 #endif
 
 const int MIN_SERVER_RATE       = 1000;
-
-const int MAX_SERVER_UPDATERATE = 100;
 const int MIN_SERVER_UPDATERATE = 1;
 
 #define TE_MAX					128

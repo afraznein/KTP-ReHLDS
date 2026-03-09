@@ -122,8 +122,8 @@ bool DemoClient::Connect(INetSocket *socket, NetAddress *adr, char *userinfo)
 	}
 
 	m_DemoChannel.Create(m_System);
-	m_DemoChannel.SetUpdateRate(40);
-	m_DemoChannel.SetRate(20000);
+	m_DemoChannel.SetUpdateRate(200);
+	m_DemoChannel.SetRate(1000000);
 
 	m_LastFrameSeqNr = 0;
 	m_ClientDelta = 0;

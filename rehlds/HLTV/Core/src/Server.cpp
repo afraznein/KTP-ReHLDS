@@ -103,8 +103,8 @@ bool Server::Init(IBaseSystem *system, int serial, char *name)
 	}
 
 	m_FileSystem = m_System->GetFileSystem();
-	m_Rate = 10000;
-	m_UpdateRate = 20;
+	m_Rate = 1000000;
+	m_UpdateRate = 200;
 	m_NextAutoRetry = 0;
 	m_DelayReconnect = true;
 	m_Protocol = PROTOCOL_VERSION;

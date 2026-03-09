@@ -137,8 +137,8 @@ bool BaseClient::Connect(INetSocket *socket, NetAddress *adr, char *userinfo)
 	}
 
 	SetState(CLIENT_CONNECTING);
-	m_ClientChannel.SetUpdateRate(20);
-	m_ClientChannel.SetRate(20000);
+	m_ClientChannel.SetUpdateRate(200);
+	m_ClientChannel.SetRate(1000000);
 	m_ClientChannel.SetConnected(1);
 
 	UpdateUserInfo(userinfo);

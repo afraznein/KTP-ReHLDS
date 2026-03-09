@@ -93,8 +93,8 @@ bool Proxy::Init(IBaseSystem *system, int serial, char *name)
 		SetName(PROXY_INTERFACE_VERSION);
 	}
 
-	m_MaxRate = 20000;
-	m_MaxUpdateRate = 20;
+	m_MaxRate = 1000000;
+	m_MaxUpdateRate = 200;
 	m_IsMaster = false;
 
 	for (auto& cmd : m_LocalCmdReg) {

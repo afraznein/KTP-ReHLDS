@@ -171,8 +171,8 @@ void NetChannel::Reset()
 	m_connect_time = m_System->GetTime();
 
 	SetTimeOut(30);
-	SetRate(10000);
-	SetUpdateRate(20);
+	SetRate(1000000);
+	SetUpdateRate(200);
 
 	m_incoming_sequence = 0;
 	m_incoming_acknowledged = 0;
@@ -1115,8 +1115,8 @@ void NetChannel::FreePacket(NetPacket *packet)
 void NetChannel::SetUpdateRate(int newupdaterate)
 {
 	m_updaterate = newupdaterate;
-	if (newupdaterate > 100) {
-		m_updaterate = 100;
+	if (newupdaterate > MAX_NETCHAN_UPDATERATE) {
+		m_updaterate = MAX_NETCHAN_UPDATERATE;
 	} else if (newupdaterate < 0) {
 		m_updaterate = 1;
 	}

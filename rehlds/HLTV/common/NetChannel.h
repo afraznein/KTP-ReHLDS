@@ -53,9 +53,11 @@ enum
 
 // Flow control bytes per second limits
 #ifdef HLTV_FIXES
-const int MAX_NETCHAN_RATE             = 100000.0f;
+const int MAX_NETCHAN_RATE             = 1000000.0f;
+const int MAX_NETCHAN_UPDATERATE       = 200;
 #else
 const int MAX_NETCHAN_RATE             = 20000.0f;
+const int MAX_NETCHAN_UPDATERATE       = 100;
 #endif
 
 const int MIN_NETCHAN_RATE             = 1000.0f;
