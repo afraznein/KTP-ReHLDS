@@ -6,6 +6,17 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.909`] - 2026-03-13
+- Added `[KTP_SPAWN]` sub-phase profiling to `SV_Spawn_f_internal` — breaks down spawn time into: signon copy, WriteSpawn, voice codec, fragment creation, fragment send. Includes `hltv=` flag and signon buffer size.
+- Added `[KTP_WRITESPAWN]` sub-phase profiling to `SV_WriteSpawn` — breaks down into: game DLL init (`pfnClientPutInServer`), client update loop (`SV_FullClientUpdate`), lightstyles + client data, finalization. Both log lines fire when total > 1ms, controlled by `ktp_profile_frame` cvar.
+
+---
+
+## [KTP-ReHLDS `3.22.0.908`] - 2026-03-11
+- Added command string to `[KTP_OPCODE]` log for `clc_stringcmd` opcodes — logs the actual command (e.g., `fullupdate`, `status`) when processing takes >1ms, enabling diagnosis of 80-169ms stalls
+
+---
+
 ## [KTP-ReHLDS `3.22.0.904+`] - 2026-02
 
 **Full Frame Profiling, Netcode Limits, CPU-Time Instrumentation**

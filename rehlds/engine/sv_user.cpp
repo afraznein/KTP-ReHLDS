@@ -71,6 +71,9 @@ cvar_t sv_unlagsamples = { "sv_unlagsamples", "1", 0, 0.0f, NULL };
 cvar_t mp_consistency = { "mp_consistency", "1", FCVAR_SERVER, 0.0f, NULL };
 cvar_t sv_voiceenable = { "sv_voiceenable", "1", FCVAR_SERVER | FCVAR_ARCHIVE, 0.0f, NULL };
 
+// KTP: Captured stringcmd text for opcode spike logging
+char g_ktp_last_stringcmd[128];
+
 clc_func_t sv_clcfuncs[] = {
 	{ clc_bad,             "clc_bad",             nullptr                      },
 	{ clc_nop,             "clc_nop",             nullptr                      },
@@ -1527,6 +1530,10 @@ void SV_ParseStringCommand(client_t *pSenderClient)
 #endif
 
 	char *s = MSG_ReadString();
+
+	// KTP: Capture command string for opcode spike logging
+	Q_strlcpy(g_ktp_last_stringcmd, s, sizeof(g_ktp_last_stringcmd));
+
 	int ret = SV_ValidateClientCommand(s);
 	switch (ret)
 	{
@@ -1941,6 +1948,9 @@ void EXT_FUNC SV_HandleClientMessage_api(IGameClient* client, uint8 opcode) {
 		if (ktp_op_prof)
 			ktp_op_t0 = Sys_FloatTime();
 
+		// KTP: Clear stringcmd capture before dispatch
+		g_ktp_last_stringcmd[0] = '\0';
+
 		func(cl);
 
 		if (ktp_op_prof)
@@ -1948,9 +1958,18 @@ void EXT_FUNC SV_HandleClientMessage_api(IGameClient* client, uint8 opcode) {
 			double ktp_op_ms = (Sys_FloatTime() - ktp_op_t0) * 1000.0;
 			if (ktp_op_ms > 1.0)
 			{
-				Log_Printf("[KTP_OPCODE] client=%d(%s) opcode=%s time=%.3fms\n",
-					cl - g_psvs.clients, cl->name,
-					sv_clcfuncs[opcode].pszname, ktp_op_ms);
+				if (opcode == clc_stringcmd && g_ktp_last_stringcmd[0])
+				{
+					Log_Printf("[KTP_OPCODE] client=%d(%s) opcode=%s time=%.3fms cmd=\"%s\"\n",
+						cl - g_psvs.clients, cl->name,
+						sv_clcfuncs[opcode].pszname, ktp_op_ms, g_ktp_last_stringcmd);
+				}
+				else
+				{
+					Log_Printf("[KTP_OPCODE] client=%d(%s) opcode=%s time=%.3fms\n",
+						cl - g_psvs.clients, cl->name,
+						sv_clcfuncs[opcode].pszname, ktp_op_ms);
+				}
 			}
 		}
 	}

@@ -28,6 +28,9 @@
 
 #include "precompiled.h"
 
+// KTP: Forward declaration for spawn sub-phase profiling (defined later in this file)
+extern cvar_t ktp_profile_frame;
+
 typedef struct full_packet_entities_s
 {
 	int num_entities;
@@ -1411,6 +1414,13 @@ void SV_WriteSpawn(sizebuf_t *msg)
 	int i = 0;
 	client_t *client = g_psvs.clients;
 
+	// KTP: Sub-phase profiling within SV_WriteSpawn
+	bool ktp_ws_prof = (ktp_profile_frame.value != 0.0f);
+	double ktp_ws_t0 = 0.0, ktp_ws_t1 = 0.0, ktp_ws_t2 = 0.0, ktp_ws_t3 = 0.0, ktp_ws_t4 = 0.0;
+	bool ktp_ws_hltv = (host_client->proxy != 0);
+
+	if (ktp_ws_prof) ktp_ws_t0 = Sys_FloatTime();
+
 #ifdef REHLDS_FIXES
 	// do it before PutInServer to allow mods send messages from forward
 	SZ_Clear(&host_client->netchan.message);
@@ -1451,6 +1461,8 @@ void SV_WriteSpawn(sizebuf_t *msg)
 #endif // REHLDS_FIXES
 	}
 
+	if (ktp_ws_prof) ktp_ws_t1 = Sys_FloatTime(); // After game DLL init
+
 #ifndef REHLDS_FIXES
 	SZ_Clear(&host_client->netchan.message);
 	SZ_Clear(&host_client->datagram);
@@ -1476,6 +1488,8 @@ void SV_WriteSpawn(sizebuf_t *msg)
 			SV_FullClientUpdate(client, msg);
 	}
 
+	if (ktp_ws_prof) ktp_ws_t2 = Sys_FloatTime(); // After client updates
+
 	for (i = 0; i < ARRAYSIZE( g_psv.lightstyles ); i++)
 	{
 		MSG_WriteByte(msg, svc_lightstyle);
@@ -1498,6 +1512,8 @@ void SV_WriteSpawn(sizebuf_t *msg)
 #endif // SWDS
 	}
 
+	if (ktp_ws_prof) ktp_ws_t3 = Sys_FloatTime(); // After lightstyles + clientdata
+
 	MSG_WriteByte(msg, svc_signonnum);
 	MSG_WriteByte(msg, 1);
 
@@ -1514,6 +1530,26 @@ void SV_WriteSpawn(sizebuf_t *msg)
 #endif // REHLDS_FIXES
 
 	NotifyDedicatedServerUI("UpdatePlayers");
+
+	if (ktp_ws_prof) ktp_ws_t4 = Sys_FloatTime(); // End
+
+	// KTP: Log WriteSpawn sub-phases when total > 1ms
+	if (ktp_ws_prof)
+	{
+		double ws_total_ms = (ktp_ws_t4 - ktp_ws_t0) * 1000.0;
+		if (ws_total_ms > 1.0)
+		{
+			double gamedll_ms   = (ktp_ws_t1 - ktp_ws_t0) * 1000.0;
+			double clients_ms   = (ktp_ws_t2 - ktp_ws_t1) * 1000.0;
+			double lightstyl_ms = (ktp_ws_t3 - ktp_ws_t2) * 1000.0;
+			double finalize_ms  = (ktp_ws_t4 - ktp_ws_t3) * 1000.0;
+
+			Log_Printf("[KTP_WRITESPAWN] client=%d(%s) hltv=%d total=%.3fms gamedll=%.3fms clients=%.3fms light+data=%.3fms finalize=%.3fms\n",
+				host_client - g_psvs.clients, host_client->name,
+				ktp_ws_hltv ? 1 : 0,
+				ws_total_ms, gamedll_ms, clients_ms, lightstyl_ms, finalize_ms);
+		}
+	}
 }
 
 void EXT_FUNC SV_SendUserReg(sizebuf_t *msg)
@@ -1698,8 +1734,20 @@ void EXT_FUNC SV_Spawn_f_internal(void)
 		}
 #endif // REHLDS_FIXES
 
+		// KTP: Sub-phase profiling for spawn handler
+		bool ktp_spawn_prof = (ktp_profile_frame.value != 0.0f);
+		double ktp_t0 = 0.0, ktp_t1 = 0.0, ktp_t2 = 0.0, ktp_t3 = 0.0, ktp_t4 = 0.0, ktp_t5 = 0.0;
+		bool ktp_is_hltv = (host_client->proxy != 0);
+
+		if (ktp_spawn_prof) ktp_t0 = Sys_FloatTime();
+
 		SZ_Write(&msg, g_psv.signon.data, g_psv.signon.cursize);
+
+		if (ktp_spawn_prof) ktp_t1 = Sys_FloatTime();
+
 		SV_WriteSpawn(&msg);
+
+		if (ktp_spawn_prof) ktp_t2 = Sys_FloatTime();
 
 #ifdef REHLDS_FIXES
 		// Client was kicked in ClientPutInServer
@@ -1708,8 +1756,36 @@ void EXT_FUNC SV_Spawn_f_internal(void)
 #endif // REHLDS_FIXES
 
 		SV_WriteVoiceCodec(&msg);
+
+		if (ktp_spawn_prof) ktp_t3 = Sys_FloatTime();
+
 		Netchan_CreateFragments(TRUE, &host_client->netchan, &msg);
+
+		if (ktp_spawn_prof) ktp_t4 = Sys_FloatTime();
+
 		Netchan_FragSend(&host_client->netchan);
+
+		if (ktp_spawn_prof) ktp_t5 = Sys_FloatTime();
+
+		// KTP: Log spawn sub-phases when total > 1ms
+		if (ktp_spawn_prof)
+		{
+			double total_ms = (ktp_t5 - ktp_t0) * 1000.0;
+			if (total_ms > 1.0)
+			{
+				double signon_ms  = (ktp_t1 - ktp_t0) * 1000.0;
+				double wspawn_ms  = (ktp_t2 - ktp_t1) * 1000.0;
+				double voice_ms   = (ktp_t3 - ktp_t2) * 1000.0;
+				double frag_ms    = (ktp_t4 - ktp_t3) * 1000.0;
+				double send_ms    = (ktp_t5 - ktp_t4) * 1000.0;
+
+				Log_Printf("[KTP_SPAWN] client=%d(%s) hltv=%d total=%.3fms signon=%.3fms writespawn=%.3fms voice=%.3fms frag=%.3fms send=%.3fms sigonsize=%d\n",
+					host_client - g_psvs.clients, host_client->name,
+					ktp_is_hltv ? 1 : 0,
+					total_ms, signon_ms, wspawn_ms, voice_ms, frag_ms, send_ms,
+					g_psv.signon.cursize);
+			}
+		}
 	}
 	else
 	{
