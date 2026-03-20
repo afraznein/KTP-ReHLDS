@@ -1135,8 +1135,11 @@ float SV_CalcClientTime(client_t *cl)
 	if (backtrack < 1)
 		backtrack = 1;
 
-	if (backtrack >= (SV_UPDATE_BACKUP <= 16 ? SV_UPDATE_BACKUP : 16))
-		backtrack = (SV_UPDATE_BACKUP <= 16 ? SV_UPDATE_BACKUP : 16);
+	// KTP: Raised cap from 16 to SV_UPDATE_BACKUP (64 for multiplayer).
+	// At 1000Hz tickrate, 16 samples = only 16ms of ping history — insufficient
+	// for smoothing. 64 samples = 64ms window, suitable for high-tickrate servers.
+	if (backtrack >= SV_UPDATE_BACKUP)
+		backtrack = SV_UPDATE_BACKUP;
 
 	if (backtrack <= 0)
 		return 0.0f;
@@ -1158,7 +1161,13 @@ float SV_CalcClientTime(client_t *cl)
 	maxping = -9999.0;
 	ping /= count;
 
-	for (int i = 0; i < (SV_UPDATE_BACKUP <= 4 ? SV_UPDATE_BACKUP : 4); i++)
+	// KTP: Scale jitter detection window with backtrack instead of hardcoded 4.
+	// At 100Hz, 4 frames = 40ms — reasonable jitter window.
+	// At 1000Hz, 4 frames = 4ms — far too small, nearly every player triggers it.
+	// Use the same window as the averaging (backtrack) so the sanity check covers
+	// the same time span being sampled.
+	int jitterWindow = backtrack < SV_UPDATE_BACKUP ? backtrack : SV_UPDATE_BACKUP;
+	for (int i = 0; i < jitterWindow; i++)
 	{
 		client_frame_t *frame = &cl->frames[SV_UPDATE_MASK & (cl->netchan.incoming_acknowledged - i)];
 		if (frame->ping_time <= 0.0f)

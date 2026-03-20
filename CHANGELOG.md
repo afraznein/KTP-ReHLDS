@@ -6,6 +6,12 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.910`] - 2026-03-19
+- Raised `sv_unlagsamples` cap from 16 to 64 (full `SV_UPDATE_BACKUP` frame buffer). At 1000Hz tickrate, the old cap of 16 only covered 16ms of ping history — insufficient for meaningful smoothing. Now allows up to 64ms averaging window, tunable via cvar without engine rebuilds.
+- Scaled jitter detection window in `SV_CalcClientTime()` to match the averaging window. The hardcoded 4-frame min/max check (4ms at 1000Hz) was too narrow, causing the 200ms jitter safety valve to trigger on normal ping variance. Now uses the same window as `sv_unlagsamples`.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.909`] - 2026-03-13
 - Added `[KTP_SPAWN]` sub-phase profiling to `SV_Spawn_f_internal` — breaks down spawn time into: signon copy, WriteSpawn, voice codec, fragment creation, fragment send. Includes `hltv=` flag and signon buffer size.
 - Added `[KTP_WRITESPAWN]` sub-phase profiling to `SV_WriteSpawn` — breaks down into: game DLL init (`pfnClientPutInServer`), client update loop (`SV_FullClientUpdate`), lightstyles + client data, finalization. Both log lines fire when total > 1ms, controlled by `ktp_profile_frame` cvar.
