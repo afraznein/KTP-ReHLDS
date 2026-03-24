@@ -436,7 +436,7 @@ void CSteam3Server::RunFrame()
 	{
 		double ktp_t_frag_start = 0.0;
 		if (ktp_steam_detail)
-			ktp_t_frag_start = Sys_FloatTime();
+			ktp_t_frag_start = fCurTime;  // reuse already-captured timestamp
 
 		s_fLastRunFragsUpdate = fCurTime;
 		bHasPlayers = false;
@@ -495,7 +495,7 @@ void CSteam3Server::RunFrame()
 	{
 		double ktp_t_cb_start = 0.0;
 		if (ktp_steam_detail)
-			ktp_t_cb_start = Sys_FloatTime();
+			ktp_t_cb_start = fCurTime;  // reuse already-captured timestamp
 
 		CRehldsPlatformHolder::get()->SteamGameServer_RunCallbacks();
 		s_fLastRunCallback = fCurTime;
@@ -508,7 +508,7 @@ void CSteam3Server::RunFrame()
 	{
 		double ktp_t_sp_start = 0.0;
 		if (ktp_steam_detail)
-			ktp_t_sp_start = Sys_FloatTime();
+			ktp_t_sp_start = fCurTime;  // reuse already-captured timestamp
 
 		s_fLastRunSendPackets = fCurTime;
 

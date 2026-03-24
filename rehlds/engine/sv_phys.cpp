@@ -1469,11 +1469,28 @@ void SV_Physics_Step(edict_t *ent)
 	SV_CheckWaterTransition(ent);
 }
 
+// KTP: Physics sub-phase timing globals (read by SV_Frame_Internal profiler)
+double g_ktp_phys_startframe = 0.0;  // pfnStartFrame time (AMXX plugins + game DLL)
+double g_ktp_phys_entloop = 0.0;     // Entity physics loop time
+
+extern bool g_ktp_profiling_enabled;
+
 void SV_Physics()
 {
+	// KTP: Sub-phase profiling (uses global set by SV_Frame_Internal)
+	double ktp_t0 = 0.0;
+	qboolean ktp_prof = g_ktp_profiling_enabled;
+	if (ktp_prof) ktp_t0 = Sys_FloatTime();
+
 	// let the progs know that a new frame has started
 	gGlobalVariables.time = g_psv.time;
 	gEntityInterface.pfnStartFrame();
+
+	if (ktp_prof) {
+		double now = Sys_FloatTime();
+		g_ktp_phys_startframe = now - ktp_t0;
+		ktp_t0 = now;
+	}
 
 	// treat each object in turn
 	for (int i = 0; i < g_psv.num_edicts; i++)
@@ -1532,6 +1549,9 @@ void SV_Physics()
 
 	if (gGlobalVariables.force_retouch != 0.0f)
 		gGlobalVariables.force_retouch = gGlobalVariables.force_retouch - 1.0f;
+
+	if (ktp_prof)
+		g_ktp_phys_entloop = Sys_FloatTime() - ktp_t0;
 }
 
 trace_t SV_Trace_Toss(edict_t *ent, edict_t *ignore)

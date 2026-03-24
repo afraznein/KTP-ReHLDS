@@ -6,6 +6,45 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.912`] - 2026-03-24
+
+**Physics sub-phase profiling, per-client send profiling, profiler overhead optimization**
+
+### Added
+- **Physics sub-phase timing** — `SV_Physics` now reports `pfnStartFrame` time (AMXX plugins + game DLL) separately from the entity physics loop. New periodic log line: `[KTP_PROFILE] phys_detail: startframe=Xms entloop=Xms`. Identifies whether match-time physics overhead is from plugin hooks or engine entity simulation.
+- **Per-client send timing** — `SV_SendClientMessages` now tracks the worst (slowest) client each frame. New periodic log line: `[KTP_PROFILE] send_detail: worst_client=N(name) time=Xms clients_sent=N`. Identifies whether HLTV's large signon buffer or specific player connections are the send bottleneck.
+
+### Fixed
+- **Double `Sys_FloatTime()` in SV_RunCmd boundaries** — Called `clock_gettime` twice at both prethink and pmove/postthink boundaries per cmd per player (thousands/sec with profiling on). Now captures once and reuses at both boundaries.
+- **Unconditional global writes gated on profiling** — 7 read-detail globals in `SV_ReadPackets` and 3 send-detail globals in `SV_SendClientMessages` were zeroed every frame even when profiling was disabled. Now only written when profiling is active, eliminating 10,000 cache-dirtying writes/sec on production servers.
+- **Cvar dereference consolidated into single global** — `ktp_profile_frame.value` was independently read in `SV_RunCmd`, `SV_ParseMove`, per-opcode dispatch, and `SV_Physics` (10,000+ reads/sec across all sites). Now set once per frame in `SV_Frame_Internal` via `g_ktp_profiling_enabled` global, eliminating all downstream cvar dereferences.
+- **Per-client send cvar read hoisted outside loop** — Was reading `ktp_profile_frame.value` per client iteration (13x/frame). Now read once before the loop.
+- **Gap/spike alert timestamps reused** — `Sys_FloatTime()` calls in rate limiters replaced with already-captured `ktp_t_full_start` / `ktp_t_frame_end` values.
+- **Steam/frame-end profiling blocks merged** — Two back-to-back `if (ktp_profiling)` blocks with separate `Sys_FloatTime()` calls merged into one, eliminating a redundant syscall per frame.
+- **Steam detail start timestamps reuse `fCurTime`** — Three `Sys_FloatTime()` calls in `Steam_RunFrame` detail profiling (frag, callback, sendpacket start points) replaced with the already-captured `fCurTime` value.
+
+---
+
+## [KTP-ReHLDS `3.22.0.911`] - 2026-03-24
+
+**Profiling accuracy, pause network efficiency, rate limiter correctness**
+
+### Fixed
+- **`SetServerPause` debug log demoted to developer-only** — `Con_Printf` in `SetServerPause()` was synchronous console output on every pause/unpause transition. Changed to `Con_DPrintf` to avoid production log noise.
+- **Double `Sys_FloatTime()` calls eliminated in SV_ReadPackets** — Per-packet profiling blocks called `Sys_FloatTime()` twice (once to measure, once to reset). Now reuses the captured timestamp, eliminating ~780 redundant clock reads/sec with 12 players.
+- **Pause force-send limited to clients with pending data** — During temporary unpause (for chat), `send_message = TRUE` was set for ALL clients every frame at 1000Hz, bypassing rate limiting. Now only forces send when the client's reliable message buffer has data (`cursize > 0`).
+- **`netchan.cleartime` fudge removed** — Replaced `realtime - 0.001` magic offset with exact `realtime` reset. Changed comparison from `>=` to `>` to match `Netchan_CanPacket` semantics cleanly.
+- **Rate limiter clock source unified** — Spike and gap alert rate limiters used `realtime` while measurements used `Sys_FloatTime()`. Under load spikes `realtime` can lag, causing over-suppression. Both now use `Sys_FloatTime()` consistently.
+- **Profile interval minimum corrected** — Comment said "minimum 1 second" but code fell back to 10.0 when value < 1.0. Now correctly falls back to 1.0.
+- **String command rate limiter bypass scoped to current client** — During temporary unpause, rate limiter was bypassed for ALL clients. Now only bypasses for the client whose packet is being processed (`host_client`).
+- **Interframe average uses dedicated frame counter** — Was dividing accumulated interframe time by total frames, but only frames with `ktp_t_interframe > 0` contributed. Now tracks a separate `g_ktp_profile_acc_interframe_count` for accurate averaging.
+- **Stale read-detail globals cleared unconditionally** — `g_ktp_read_pkt_count` etc. were only written when profiling was enabled. If profiling was toggled mid-session, spike logger could print stale values. Now reset at the top of every `SV_ReadPackets()` call.
+- **Engine command frametime check uses `g_ktp_temporary_unpause`** — `SV_ParseStringCommand` case 1 checked `g_psv.paused` to decide whether to save/restore `frametime`, but `g_psv.paused` is always 0 during the temporary unpause window. Now checks `g_ktp_temporary_unpause` to correctly detect paused-server frames.
+- **Force-send `else if` braces added** — Misleading indentation on the `else if` branch in `SV_SendClientMessages` could cause future misreads. Added explicit braces for safety.
+- **Ordering-critical comment on `SV_IsSimulating` call** — `SV_IsSimulating()` must be called before `g_psv.paused = 0` to capture the real pause state. Added `ORDERING CRITICAL` comment to prevent accidental reordering.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.910`] - 2026-03-19
 - Raised `sv_unlagsamples` cap from 16 to 64 (full `SV_UPDATE_BACKUP` frame buffer). At 1000Hz tickrate, the old cap of 16 only covered 16ms of ping history — insufficient for meaningful smoothing. Now allows up to 64ms averaging window, tunable via cvar without engine rebuilds.
 - Scaled jitter detection window in `SV_CalcClientTime()` to match the averaging window. The hardcoded 4-frame min/max check (4ms at 1000Hz) was too narrow, causing the 200ms jitter safety valve to trigger on normal ping variance. Now uses the same window as `sv_unlagsamples`.

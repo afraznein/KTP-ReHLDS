@@ -4009,9 +4009,12 @@ bool EXT_FUNC NET_GetPacketPreprocessor(uint8* data, unsigned int len, const net
 	return true;
 }
 
-// KTP: Forward declarations for read phase detail profiling
-// (cvar and statics are defined later in this file, after SV_Frame_Internal)
+// KTP: Forward declarations for profiling variables
+// (defined later in this file, after SV_Frame_Internal)
 extern cvar_t ktp_profile_frame;
+extern double g_ktp_send_worst_client_time;
+extern int g_ktp_send_worst_client_slot;
+extern int g_ktp_send_client_count;
 extern int g_ktp_read_pkt_count;
 extern int g_ktp_read_pkt_connectionless;
 extern int g_ktp_read_pkt_client;
@@ -4024,6 +4027,18 @@ void SV_ReadPackets(void)
 {
 	// KTP: Read phase detail profiling
 	qboolean ktp_rp = (ktp_profile_frame.value != 0.0f);
+
+	// Reset read-detail globals only when profiling (spike logger only fires when profiling)
+	if (ktp_rp) {
+		g_ktp_read_pkt_count = 0;
+		g_ktp_read_pkt_connectionless = 0;
+		g_ktp_read_pkt_client = 0;
+		g_ktp_read_pkt_fragment = 0;
+		g_ktp_read_time_recv = 0.0;
+		g_ktp_read_time_process = 0.0;
+		g_ktp_read_worst_pkt = 0.0;
+	}
+
 	int ktp_pkt_total = 0, ktp_pkt_connless = 0, ktp_pkt_client = 0, ktp_pkt_frag = 0;
 	double ktp_recv_acc = 0.0, ktp_proc_acc = 0.0, ktp_worst = 0.0;
 	double ktp_t0 = 0.0, ktp_t1 = 0.0;
@@ -4079,10 +4094,11 @@ void SV_ReadPackets(void)
 
 			if (ktp_rp)
 			{
-				double elapsed = Sys_FloatTime() - ktp_t0;
+				ktp_t1 = Sys_FloatTime();
+				double elapsed = ktp_t1 - ktp_t0;
 				ktp_proc_acc += elapsed;
 				if (elapsed > ktp_worst) ktp_worst = elapsed;
-				ktp_t0 = Sys_FloatTime();
+				ktp_t0 = ktp_t1;
 			}
 			continue;
 		}
@@ -4132,10 +4148,11 @@ void SV_ReadPackets(void)
 
 		if (ktp_rp)
 		{
-			double elapsed = Sys_FloatTime() - ktp_t0;
+			ktp_t1 = Sys_FloatTime();
+			double elapsed = ktp_t1 - ktp_t0;
 			ktp_proc_acc += elapsed;
 			if (elapsed > ktp_worst) ktp_worst = elapsed;
-			ktp_t0 = Sys_FloatTime();
+			ktp_t0 = ktp_t1;
 		}
 	}
 
@@ -5401,6 +5418,14 @@ void SV_SendClientMessages(void)
 {
 	SV_UpdateToReliableMessages();
 
+	// KTP: Hoist profiling check outside client loop
+	qboolean ktp_send_prof = (ktp_profile_frame.value != 0.0f);
+	if (ktp_send_prof) {
+		g_ktp_send_worst_client_time = 0.0;
+		g_ktp_send_worst_client_slot = -1;
+		g_ktp_send_client_count = 0;
+	}
+
 	for (int i = 0; i < g_psvs.maxclients; i++)
 	{
 		client_t *cl = &g_psvs.clients[i];
@@ -5422,9 +5447,16 @@ void SV_SendClientMessages(void)
 		// We want to allow messages, but not flood the client every single frame
 		if (cl->active && cl->spawned && cl->fully_connected)
 		{
-			// During temporary unpause OR normal operation, check the timing
-			if (g_ktp_temporary_unpause || host_frametime + realtime >= cl->next_messagetime)
+			// During temporary unpause, only force-send if client has pending reliable data
+			// (avoids flooding all clients at 1000Hz during pause when only chat needs to flush)
+			if (g_ktp_temporary_unpause && cl->netchan.message.cursize > 0)
+			{
 				cl->send_message = TRUE;
+			}
+			else if (host_frametime + realtime >= cl->next_messagetime)
+			{
+				cl->send_message = TRUE;
+			}
 		}
 
 		if (cl->netchan.message.flags & SIZEBUF_OVERFLOWED)
@@ -5451,8 +5483,8 @@ void SV_SendClientMessages(void)
 			{
 				// Only reset if netchan would otherwise block (cleartime > realtime)
 				// This prevents flooding while still allowing messages through
-				if (cl->netchan.cleartime >= realtime)
-					cl->netchan.cleartime = realtime - 0.001; // Slightly in past to pass check
+				if (cl->netchan.cleartime > realtime)
+					cl->netchan.cleartime = realtime; // Reset throttle to allow send
 			}
 
 			if (!Netchan_CanPacket(&cl->netchan))
@@ -5464,7 +5496,22 @@ void SV_SendClientMessages(void)
 			host_client->send_message = FALSE;
 			cl->next_messagetime = host_frametime + cl->next_messageinterval + realtime;
 			if (cl->active && cl->spawned && cl->fully_connected)
+			{
+				// KTP: Per-client send timing
+				double ktp_cl_t0 = 0.0;
+				if (ktp_send_prof) ktp_cl_t0 = Sys_FloatTime();
+
 				SV_SendClientDatagram(cl);
+
+				if (ktp_send_prof) {
+					double elapsed = Sys_FloatTime() - ktp_cl_t0;
+					g_ktp_send_client_count++;
+					if (elapsed > g_ktp_send_worst_client_time) {
+						g_ktp_send_worst_client_time = elapsed;
+						g_ktp_send_worst_client_slot = i;
+					}
+				}
+			}
 			else
 				Netchan_Transmit(&cl->netchan, 0, NULL);
 		}
@@ -7107,8 +7154,18 @@ static double g_ktp_profile_peak_post = 0.0;
 static double g_ktp_profile_peak_steam = 0.0;
 static double g_ktp_profile_peak_full = 0.0;
 
+// KTP: Global profiling enable flag (set once per frame, read by all sub-functions)
+bool g_ktp_profiling_enabled = false;
+
 // KTP: Spike alert rate limiter
 static double g_ktp_profile_last_spike_time = 0.0;
+
+// KTP: Inter-frame gap tracking (time between end of one SV_Frame_Internal and start of next)
+static double g_ktp_profile_prev_frame_end = 0.0;   // timestamp of previous frame's end
+static double g_ktp_profile_acc_interframe = 0.0;    // accumulated inter-frame gap time
+static double g_ktp_profile_peak_interframe = 0.0;   // worst inter-frame gap
+static int g_ktp_profile_acc_interframe_count = 0;    // frames contributing to interframe avg
+static double g_ktp_profile_last_gap_spike_time = 0.0; // rate limiter for gap spike alerts
 
 // KTP: SV_ReadPackets detail (populated per frame, read by spike logger)
 // Not static — forward-declared before SV_ReadPackets() for visibility
@@ -7119,6 +7176,15 @@ int g_ktp_read_pkt_fragment = 0;          // fragment reassemblies
 double g_ktp_read_time_recv = 0.0;        // time in NET_GetPacket calls
 double g_ktp_read_time_process = 0.0;     // time processing packets
 double g_ktp_read_worst_pkt = 0.0;        // worst single packet processing time
+
+// KTP: Physics sub-phase timing (populated by SV_Physics in sv_phys.cpp)
+extern double g_ktp_phys_startframe;
+extern double g_ktp_phys_entloop;
+
+// KTP: Per-client send timing (non-static — forward-declared before SV_SendClientMessages)
+double g_ktp_send_worst_client_time = 0.0;
+int g_ktp_send_worst_client_slot = -1;
+int g_ktp_send_client_count = 0;
 
 // KTP: Helper function to broadcast pause state to clients
 // Respects ktp_silent_pause cvar - if enabled, skips sending svc_setpause
@@ -8511,12 +8577,20 @@ void EXT_FUNC SV_Frame_Internal()
 	double ktp_t_frame_start = 0.0, ktp_t_readpackets = 0.0, ktp_t_physics = 0.0;
 	double ktp_t_misc1 = 0.0, ktp_t_sendmessages = 0.0, ktp_t_post = 0.0, ktp_t_steam = 0.0;
 	double ktp_t_full_start = 0.0;
+	double ktp_t_interframe = 0.0;
 	qboolean ktp_profiling = (ktp_profile_frame.value != 0.0f);
+	g_ktp_profiling_enabled = (ktp_profiling != 0);  // Set global for sub-functions
 
 	if (ktp_profiling)
 	{
 		ktp_t_full_start = Sys_FloatTime();
 		ktp_t_frame_start = ktp_t_full_start;
+
+		// Measure inter-frame gap (time since previous SV_Frame_Internal ended)
+		if (g_ktp_profile_prev_frame_end > 0.0)
+		{
+			ktp_t_interframe = ktp_t_full_start - g_ktp_profile_prev_frame_end;
+		}
 	}
 
 	gGlobalVariables.frametime = host_frametime;
@@ -8532,8 +8606,9 @@ void EXT_FUNC SV_Frame_Internal()
 		ktp_t_frame_start = now;
 	}
 
-	// KTP Modification: Check simulation state BEFORE any pause manipulation
-	// We need to know if we should run physics or not based on the REAL pause state
+	// ORDERING CRITICAL: Capture simulation state BEFORE clearing g_psv.paused below.
+	// SV_IsSimulating() reads g_psv.paused — if called after the clear, physics would
+	// run on every paused frame. Do not reorder this block.
 	qboolean shouldSimulate = SV_IsSimulating();
 
 	// Track whether we're doing a temporary unpause
@@ -8622,19 +8697,17 @@ void EXT_FUNC SV_Frame_Internal()
 
 	Steam_RunFrame();
 
-	// KTP: Profile - capture time after Steam_RunFrame
+	// KTP: Profile - capture time after Steam_RunFrame + accumulate stats
 	if (ktp_profiling)
 	{
-		double now = Sys_FloatTime();
-		ktp_t_steam = now - ktp_t_frame_start;
-	}
-
-	// KTP: Frame profiling - accumulate stats and periodically log
-	if (ktp_profiling)
-	{
-		double full_frame_time = Sys_FloatTime() - ktp_t_full_start;
+		double ktp_t_frame_end = Sys_FloatTime();
+		ktp_t_steam = ktp_t_frame_end - ktp_t_frame_start;
+		double full_frame_time = ktp_t_frame_end - ktp_t_full_start;
 		double sum_phases = ktp_t_readpackets + ktp_t_physics + ktp_t_misc1 + ktp_t_sendmessages + ktp_t_post + ktp_t_steam;
 		double gap = full_frame_time - sum_phases;
+
+		// Record frame end time for inter-frame gap measurement
+		g_ktp_profile_prev_frame_end = ktp_t_frame_end;
 
 		// Accumulate for averaging
 		g_ktp_profile_acc_readpackets += ktp_t_readpackets;
@@ -8644,6 +8717,27 @@ void EXT_FUNC SV_Frame_Internal()
 		g_ktp_profile_acc_post += ktp_t_post;
 		g_ktp_profile_acc_steam += ktp_t_steam;
 		g_ktp_profile_acc_full += full_frame_time;
+
+		// Accumulate inter-frame gap
+		if (ktp_t_interframe > 0.0)
+		{
+			g_ktp_profile_acc_interframe += ktp_t_interframe;
+			g_ktp_profile_acc_interframe_count++;
+			if (ktp_t_interframe > g_ktp_profile_peak_interframe)
+				g_ktp_profile_peak_interframe = ktp_t_interframe;
+
+			// Alert on large inter-frame gaps (rate-limited to 1/sec, separate from spike alerts)
+			if (ktp_t_interframe * 1000.0 > 3.0)
+			{
+				double current_gap_time = ktp_t_full_start;  // reuse already-captured timestamp
+				if (current_gap_time - g_ktp_profile_last_gap_spike_time >= 1.0)
+				{
+					g_ktp_profile_last_gap_spike_time = current_gap_time;
+					Log_Printf("[KTP_GAP] interframe=%.3fms (time between SV_Frame_Internal calls)\n",
+						ktp_t_interframe * 1000.0);
+				}
+			}
+		}
 		g_ktp_profile_acc_frames++;
 
 		// Track peak entity count
@@ -8670,7 +8764,7 @@ void EXT_FUNC SV_Frame_Internal()
 		double spike_threshold_ms = ktp_profile_spike_threshold.value;
 		if (spike_threshold_ms > 0.0 && full_frame_time * 1000.0 > spike_threshold_ms)
 		{
-			double current_spike_time = realtime;
+			double current_spike_time = ktp_t_frame_end;  // reuse already-captured timestamp
 			// Rate limit: at most 1 spike log per second
 			if (current_spike_time - g_ktp_profile_last_spike_time >= 1.0)
 			{
@@ -8702,7 +8796,7 @@ void EXT_FUNC SV_Frame_Internal()
 			g_ktp_profile_last_log_time = current_time;
 
 		double interval = ktp_profile_interval.value;
-		if (interval < 1.0) interval = 10.0;  // Minimum 1 second, default 10
+		if (interval < 1.0) interval = 1.0;  // Minimum 1 second
 
 		if (current_time - g_ktp_profile_last_log_time >= interval && g_ktp_profile_acc_frames > 0)
 		{
@@ -8739,6 +8833,24 @@ void EXT_FUNC SV_Frame_Internal()
 			Log_Printf("[KTP_PROFILE] gap=%.3fms (full - sum of phases)\n",
 				avg_gap);
 
+			// Physics sub-phase detail (from SV_Physics)
+			Log_Printf("[KTP_PROFILE] phys_detail: startframe=%.3fms entloop=%.3fms\n",
+				g_ktp_phys_startframe * 1000.0, g_ktp_phys_entloop * 1000.0);
+			// Per-client send detail
+			if (g_ktp_send_worst_client_slot >= 0) {
+				client_t *worst_cl = &g_psvs.clients[g_ktp_send_worst_client_slot];
+				Log_Printf("[KTP_PROFILE] send_detail: worst_client=%d(%s) time=%.3fms clients_sent=%d\n",
+					g_ktp_send_worst_client_slot, worst_cl->name,
+					g_ktp_send_worst_client_time * 1000.0, g_ktp_send_client_count);
+			}
+
+			// Inter-frame gap stats
+			double avg_interframe = (g_ktp_profile_acc_interframe_count > 0) ?
+				(g_ktp_profile_acc_interframe / g_ktp_profile_acc_interframe_count) * 1000.0 : 0.0;
+			double peak_interframe = g_ktp_profile_peak_interframe * 1000.0;
+			Log_Printf("[KTP_PROFILE] interframe: avg=%.3fms peak=%.3fms\n",
+				avg_interframe, peak_interframe);
+
 			// Reset accumulators
 			g_ktp_profile_acc_readpackets = 0.0;
 			g_ktp_profile_acc_physics = 0.0;
@@ -8747,6 +8859,8 @@ void EXT_FUNC SV_Frame_Internal()
 			g_ktp_profile_acc_post = 0.0;
 			g_ktp_profile_acc_steam = 0.0;
 			g_ktp_profile_acc_full = 0.0;
+			g_ktp_profile_acc_interframe = 0.0;
+			g_ktp_profile_acc_interframe_count = 0;
 			g_ktp_profile_acc_frames = 0;
 			g_ktp_profile_acc_edicts_max = 0;
 			g_ktp_profile_peak_readpackets = 0.0;
@@ -8756,6 +8870,7 @@ void EXT_FUNC SV_Frame_Internal()
 			g_ktp_profile_peak_post = 0.0;
 			g_ktp_profile_peak_steam = 0.0;
 			g_ktp_profile_peak_full = 0.0;
+			g_ktp_profile_peak_interframe = 0.0;
 			g_ktp_profile_last_log_time = current_time;
 		}
 	}

@@ -33,6 +33,7 @@ extern int g_ktp_temporary_unpause;
 
 // KTP: Frame profiling cvar from sv_main.cpp (reused for opcode/parsemove instrumentation)
 extern cvar_t ktp_profile_frame;
+extern bool g_ktp_profiling_enabled;  // Set by SV_Frame_Internal each frame
 
 // KTP: SV_RunCmd sub-phase accumulators (zeroed per SV_ParseMove call)
 double g_ktp_runcmd_acc_prethink = 0.0;  // pfnCmdStart + PreThink + Think
@@ -815,8 +816,8 @@ void SV_RunCmd(usercmd_t *ucmd, int random_seed)
 	}
 #endif
 
-	// KTP: Sub-phase timing for SV_RunCmd
-	bool ktp_rc_prof = (ktp_profile_frame.value != 0.0f);
+	// KTP: Sub-phase timing for SV_RunCmd (uses global set by SV_Frame_Internal)
+	bool ktp_rc_prof = g_ktp_profiling_enabled;
 	double ktp_rc_t0 = 0.0;
 
 	// --- PRETHINK PHASE ---
@@ -857,8 +858,9 @@ void SV_RunCmd(usercmd_t *ucmd, int random_seed)
 	SV_PlayerRunThink(sv_player, frametime, host_client->svtimebase);
 
 	if (ktp_rc_prof) {
-		g_ktp_runcmd_acc_prethink += Sys_FloatTime() - ktp_rc_t0;
-		ktp_rc_t0 = Sys_FloatTime();
+		double now = Sys_FloatTime();
+		g_ktp_runcmd_acc_prethink += now - ktp_rc_t0;
+		ktp_rc_t0 = now;
 	}
 
 	// --- PMOVE PHASE ---
@@ -976,8 +978,9 @@ void SV_RunCmd(usercmd_t *ucmd, int random_seed)
 		SV_WriteMovevarsToClient(&host_client->netchan.message, pmove->movevars); // sync movevars for the client
 
 	if (ktp_rc_prof) {
-		g_ktp_runcmd_acc_pmove += Sys_FloatTime() - ktp_rc_t0;
-		ktp_rc_t0 = Sys_FloatTime();
+		double now = Sys_FloatTime();
+		g_ktp_runcmd_acc_pmove += now - ktp_rc_t0;
+		ktp_rc_t0 = now;
 	}
 
 	// --- POSTTHINK PHASE ---
@@ -1527,9 +1530,10 @@ void SV_ParseStringCommand(client_t *pSenderClient)
 {
 	//check string commands rate for this player
 #ifdef REHLDS_FIXES
-	// KTP Modification: Skip rate limiting during temporary unpause for chat/commands during pause
-	// Rate limiter uses realtime which continues during pause, causing false positives
-	if (!g_ktp_temporary_unpause) {
+	// KTP Modification: Skip rate limiting during temporary unpause ONLY for the client
+	// whose packet is being processed. Rate limiter uses realtime which continues during
+	// pause, causing false positives for the chatting client. Other clients keep rate limiting.
+	if (!g_ktp_temporary_unpause || pSenderClient != host_client) {
 		g_StringCommandsRateLimiter.StringCommandIssued(pSenderClient - g_psvs.clients);
 
 		if (!pSenderClient->connected) {
@@ -1562,7 +1566,9 @@ void SV_ParseStringCommand(client_t *pSenderClient)
 		break;
 	case 1:
 		// KTP Modification: Also allow engine commands during pause
-		if (g_psv.paused) {
+		// Check g_ktp_temporary_unpause instead of g_psv.paused because
+		// SV_Frame_Internal clears g_psv.paused for the entire frame
+		if (g_ktp_temporary_unpause) {
 			float savedFrametime = gGlobalVariables.frametime;
 			gGlobalVariables.frametime = host_frametime;
 
@@ -1728,9 +1734,9 @@ void SV_ParseMove(client_t *pSenderClient)
 
 	host_client->packet_loss = packet_loss;
 
-	// KTP: Sub-phase timing for SV_ParseMove
+	// KTP: Sub-phase timing for SV_ParseMove (uses global set by SV_Frame_Internal)
 	double ktp_pm_t0 = 0.0;
-	bool ktp_pm_prof = (ktp_profile_frame.value != 0.0f);
+	bool ktp_pm_prof = g_ktp_profiling_enabled;
 	if (ktp_pm_prof)
 		ktp_pm_t0 = Sys_FloatTime();
 
@@ -1951,9 +1957,9 @@ void EXT_FUNC SV_HandleClientMessage_api(IGameClient* client, uint8 opcode) {
 	void(*func)(client_t *) = sv_clcfuncs[opcode].pfnParse;
 	if (func)
 	{
-		// KTP: Per-opcode timing — only log spikes > 1ms
+		// KTP: Per-opcode timing (uses global set by SV_Frame_Internal)
 		double ktp_op_t0 = 0.0;
-		bool ktp_op_prof = (ktp_profile_frame.value != 0.0f);
+		bool ktp_op_prof = g_ktp_profiling_enabled;
 		if (ktp_op_prof)
 			ktp_op_t0 = Sys_FloatTime();
 

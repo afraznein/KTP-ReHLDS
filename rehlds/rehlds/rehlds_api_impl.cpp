@@ -476,7 +476,7 @@ extern cvar_t ktp_silent_pause;
 
 void EXT_FUNC SetServerPause(bool setPause)
 {
-	Con_Printf("[KTP] SetServerPause called: setPause=%d, old paused=%d, temp_flag=%d, silent=%d\n",
+	Con_DPrintf("[KTP] SetServerPause called: setPause=%d, old paused=%d, temp_flag=%d, silent=%d\n",
 		setPause, g_psv.paused, g_ktp_temporary_unpause, (int)ktp_silent_pause.value);
 
 	g_psv.paused = setPause;
