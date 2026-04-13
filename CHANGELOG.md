@@ -6,6 +6,18 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.913`] - 2026-04-13
+
+**Background Steam callback thread — eliminates 3-13ms frame spikes**
+
+### Added
+- **Background Steam thread** — `SteamGameServer_RunCallbacks()` and `GetNextOutgoingPacket()` / `NET_SendPacket()` now run on a dedicated background thread (50ms interval) instead of blocking the main game thread. Callback results are queued via a lock-free SPSC ring buffer and processed on the main thread during `RunFrame()`. The IPC pipe read (3-13ms) and outgoing packet loop (1-3ms) that previously caused frame spikes now have zero impact on game frame timing. Steam auth, VAC, and heartbeat functionality is unchanged — all game state access (SV_DropClient, client iteration) remains on the main thread via deferred Process* functions. UDP `sendto()` is atomic on Linux, safe for concurrent calls from game and Steam threads.
+
+### Changed
+- **Frag update interval increased from 1.0s to 5.0s** — `SendUpdatedServerDetails()` and per-client `BUpdateUserData()` calls reduced from every 1 second to every 5 seconds. Negligible impact on Steam scoreboard accuracy, reduces a secondary source of frame time variance.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.912`] - 2026-03-24
 
 **Physics sub-phase profiling, per-client send profiling, profiler overhead optimization**

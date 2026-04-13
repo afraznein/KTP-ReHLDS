@@ -27,35 +27,113 @@
 */
 
 #include "precompiled.h"
+#include <thread>
+#include <chrono>
+#include <atomic>
 
 // KTP: Access profiling cvars from sv_main.cpp
 extern cvar_t ktp_profile_frame;
 extern cvar_t ktp_profile_steam_detail;
 
+// ============================================================
+// KTP: Background Steam Callback Thread
+// Moves SteamGameServer_RunCallbacks() IPC blocking off the main
+// game thread. Callbacks are queued and processed on the main
+// thread during RunFrame() — all game state access stays safe.
+// ============================================================
+
+enum SteamCallbackType {
+	CB_GSClientApprove,
+	CB_GSClientDeny,
+	CB_GSClientKick,
+	CB_GSPolicyResponse,
+	CB_LogonSuccess,
+	CB_LogonFailure
+};
+
+struct QueuedCallback {
+	SteamCallbackType type;
+	// Raw storage for callback data — avoids non-trivial union member issues.
+	// Largest struct is GSClientDeny_t at ~140 bytes.
+	char data[256];
+
+	template<typename T>
+	void Store(SteamCallbackType t, const T *src) {
+		type = t;
+		static_assert(sizeof(T) <= sizeof(data), "Callback struct too large for queue storage");
+		Q_memcpy(data, src, sizeof(T));
+	}
+
+	template<typename T>
+	T* Get() { return reinterpret_cast<T*>(data); }
+};
+
+static const int CALLBACK_QUEUE_SIZE = 256;
+static QueuedCallback s_callbackQueue[CALLBACK_QUEUE_SIZE];
+static std::atomic<int> s_queueHead{0};
+static std::atomic<int> s_queueTail{0};
+static std::thread* s_steamThread = nullptr;
+static std::atomic<bool> s_steamThreadRunning{false};
+
+static void SteamCallbackQueue_Push(const QueuedCallback &cb)
+{
+	int head = s_queueHead.load(std::memory_order_relaxed);
+	int next = (head + 1) % CALLBACK_QUEUE_SIZE;
+	if (next == s_queueTail.load(std::memory_order_acquire))
+		return; // Queue full — drop callback (should never happen)
+	s_callbackQueue[head] = cb;
+	s_queueHead.store(next, std::memory_order_release);
+}
+
+static void Steam_ThreadFunc()
+{
+	char szOutBuf[4096];
+
+	while (s_steamThreadRunning.load(std::memory_order_relaxed))
+	{
+		// IPC callbacks — this is the main blocking call (3-13ms)
+		CRehldsPlatformHolder::get()->SteamGameServer_RunCallbacks();
+
+		// Drain outgoing Steam packets (master server heartbeats, auth responses)
+		// NET_SendPacket uses sendto() which is atomic on Linux UDP sockets —
+		// safe to call from background thread concurrently with game traffic.
+		uint16 port;
+		uint32 ip;
+		int iLen = CRehldsPlatformHolder::get()->SteamGameServer()->GetNextOutgoingPacket(szOutBuf, sizeof(szOutBuf), &ip, &port);
+		while (iLen > 0)
+		{
+			netadr_t netAdr;
+			*((uint32*)&netAdr.ip[0]) = htonl(ip);
+			netAdr.port = htons(port);
+			netAdr.type = NA_IP;
+
+			NET_SendPacket(NS_SERVER, iLen, szOutBuf, netAdr);
+
+			iLen = CRehldsPlatformHolder::get()->SteamGameServer()->GetNextOutgoingPacket(szOutBuf, sizeof(szOutBuf), &ip, &port);
+		}
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	}
+}
+
+// ============================================================
+// Callback handlers — called from background thread via Steam API.
+// They only enqueue the callback data for main thread processing.
+// ============================================================
+
+// KTP: Callback handlers — enqueue only, no game state access
 void CSteam3Server::OnGSPolicyResponse(GSPolicyResponse_t *pPolicyResponse)
 {
-	if (CRehldsPlatformHolder::get()->SteamGameServer()->BSecure())
-		Con_Printf("   VAC secure mode is activated.\n");
-	else
-		Con_Printf("   VAC secure mode disabled.\n");
+	QueuedCallback cb;
+	cb.Store(CB_GSPolicyResponse, pPolicyResponse);
+	SteamCallbackQueue_Push(cb);
 }
 
 void CSteam3Server::OnLogonSuccess(SteamServersConnected_t *pLogonSuccess)
 {
-	if (m_bLogOnResult)
-	{
-		if (!m_bLanOnly)
-			Con_Printf("Reconnected to Steam servers.\n");
-	}
-	else
-	{
-		m_bLogOnResult = true;
-		if (!m_bLanOnly)
-			Con_Printf("Connection to Steam servers successful.\n");
-	}
-
-	m_SteamIDGS = CRehldsPlatformHolder::get()->SteamGameServer()->GetSteamID();
-	CSteam3Server::SendUpdatedServerDetails();
+	QueuedCallback cb;
+	cb.Store(CB_LogonSuccess, pLogonSuccess);
+	SteamCallbackQueue_Push(cb);
 }
 
 uint64 CSteam3Server::GetSteamID()
@@ -68,36 +146,16 @@ uint64 CSteam3Server::GetSteamID()
 
 void CSteam3Server::OnLogonFailure(SteamServerConnectFailure_t *pLogonFailure)
 {
-	if (!m_bLogOnResult)
-	{
-		if (pLogonFailure->m_eResult == k_EResultServiceUnavailable)
-		{
-			if (!m_bLanOnly)
-			{
-				Con_Printf("Connection to Steam servers successful (SU).\n");
-				if (m_bWantToBeSecure)
-				{
-					Con_Printf("   VAC secure mode not available.\n");
-					m_bLogOnResult = true;
-					return;
-				}
-			}
-		}
-		else
-		{
-			if (!m_bLanOnly)
-				Con_Printf("Could not establish connection to Steam servers.\n");
-		}
-	}
-
-	m_bLogOnResult = true;
+	QueuedCallback cb;
+	cb.Store(CB_LogonFailure, pLogonFailure);
+	SteamCallbackQueue_Push(cb);
 }
 
 void CSteam3Server::OnGSClientDeny(GSClientDeny_t *pGSClientDeny)
 {
-	client_t* cl = CSteam3Server::ClientFindFromSteamID(pGSClientDeny->m_SteamID);
-	if (cl)
-		OnGSClientDenyHelper(cl, pGSClientDeny->m_eDenyReason, pGSClientDeny->m_rgchOptionalText);
+	QueuedCallback cb;
+	cb.Store(CB_GSClientDeny, pGSClientDeny);
+	SteamCallbackQueue_Push(cb);
 }
 
 void CSteam3Server::OnGSClientDenyHelper(client_t *cl, EDenyReason eDenyReason, const char *pchOptionalText)
@@ -172,7 +230,104 @@ void CSteam3Server::OnGSClientDenyHelper(client_t *cl, EDenyReason eDenyReason, 
 
 void CSteam3Server::OnGSClientApprove(GSClientApprove_t *pGSClientSteam2Accept)
 {
-	client_t* cl = ClientFindFromSteamID(pGSClientSteam2Accept->m_SteamID);
+	QueuedCallback cb;
+	cb.Store(CB_GSClientApprove, pGSClientSteam2Accept);
+	SteamCallbackQueue_Push(cb);
+}
+
+void CSteam3Server::OnGSClientKick(GSClientKick_t *pGSClientKick)
+{
+	QueuedCallback cb;
+	cb.Store(CB_GSClientKick, pGSClientKick);
+	SteamCallbackQueue_Push(cb);
+}
+
+client_t *CSteam3Server::ClientFindFromSteamID(CSteamID &steamIDFind)
+{
+	for (int i = 0; i < g_psvs.maxclients; i++)
+	{
+		auto cl = &g_psvs.clients[i];
+		if (!cl->connected && !cl->active && !cl->spawned)
+			continue;
+
+		if (cl->network_userid.idtype != AUTH_IDTYPE_STEAM)
+			continue;
+
+		if (steamIDFind == cl->network_userid.m_SteamID)
+			return cl;
+	}
+
+	return NULL;
+}
+
+// ============================================================
+// KTP: Main-thread callback processing (dequeued from background thread)
+// These contain the ORIGINAL callback handler logic that touches game state.
+// ============================================================
+
+void CSteam3Server::ProcessGSPolicyResponse(GSPolicyResponse_t *p)
+{
+	if (CRehldsPlatformHolder::get()->SteamGameServer()->BSecure())
+		Con_Printf("   VAC secure mode is activated.\n");
+	else
+		Con_Printf("   VAC secure mode disabled.\n");
+}
+
+void CSteam3Server::ProcessLogonSuccess(SteamServersConnected_t *p)
+{
+	if (m_bLogOnResult)
+	{
+		if (!m_bLanOnly)
+			Con_Printf("Reconnected to Steam servers.\n");
+	}
+	else
+	{
+		m_bLogOnResult = true;
+		if (!m_bLanOnly)
+			Con_Printf("Connection to Steam servers successful.\n");
+	}
+
+	m_SteamIDGS = CRehldsPlatformHolder::get()->SteamGameServer()->GetSteamID();
+	CSteam3Server::SendUpdatedServerDetails();
+}
+
+void CSteam3Server::ProcessLogonFailure(SteamServerConnectFailure_t *p)
+{
+	if (!m_bLogOnResult)
+	{
+		if (p->m_eResult == k_EResultServiceUnavailable)
+		{
+			if (!m_bLanOnly)
+			{
+				Con_Printf("Connection to Steam servers successful (SU).\n");
+				if (m_bWantToBeSecure)
+				{
+					Con_Printf("   VAC secure mode not available.\n");
+					m_bLogOnResult = true;
+					return;
+				}
+			}
+		}
+		else
+		{
+			if (!m_bLanOnly)
+				Con_Printf("Could not establish connection to Steam servers.\n");
+		}
+	}
+
+	m_bLogOnResult = true;
+}
+
+void CSteam3Server::ProcessGSClientDeny(GSClientDeny_t *p)
+{
+	client_t* cl = CSteam3Server::ClientFindFromSteamID(p->m_SteamID);
+	if (cl)
+		OnGSClientDenyHelper(cl, p->m_eDenyReason, p->m_rgchOptionalText);
+}
+
+void CSteam3Server::ProcessGSClientApprove(GSClientApprove_t *p)
+{
+	client_t* cl = ClientFindFromSteamID(p->m_SteamID);
 	if (!cl)
 		return;
 
@@ -202,29 +357,33 @@ void CSteam3Server::OnGSClientApprove(GSClientApprove_t *pGSClientSteam2Accept)
 	}
 }
 
-void CSteam3Server::OnGSClientKick(GSClientKick_t *pGSClientKick)
+void CSteam3Server::ProcessGSClientKick(GSClientKick_t *p)
 {
-	client_t* cl = CSteam3Server::ClientFindFromSteamID(pGSClientKick->m_SteamID);
+	client_t* cl = CSteam3Server::ClientFindFromSteamID(p->m_SteamID);
 	if (cl)
-		CSteam3Server::OnGSClientDenyHelper(cl, pGSClientKick->m_eDenyReason, 0);
+		CSteam3Server::OnGSClientDenyHelper(cl, p->m_eDenyReason, 0);
 }
 
-client_t *CSteam3Server::ClientFindFromSteamID(CSteamID &steamIDFind)
+void CSteam3Server::DrainCallbackQueue()
 {
-	for (int i = 0; i < g_psvs.maxclients; i++)
+	int tail = s_queueTail.load(std::memory_order_relaxed);
+	int head = s_queueHead.load(std::memory_order_acquire);
+
+	while (tail != head)
 	{
-		auto cl = &g_psvs.clients[i];
-		if (!cl->connected && !cl->active && !cl->spawned)
-			continue;
-
-		if (cl->network_userid.idtype != AUTH_IDTYPE_STEAM)
-			continue;
-
-		if (steamIDFind == cl->network_userid.m_SteamID)
-			return cl;
+		QueuedCallback &cb = s_callbackQueue[tail];
+		switch (cb.type)
+		{
+		case CB_GSClientApprove:  ProcessGSClientApprove(cb.Get<GSClientApprove_t>()); break;
+		case CB_GSClientDeny:     ProcessGSClientDeny(cb.Get<GSClientDeny_t>()); break;
+		case CB_GSClientKick:     ProcessGSClientKick(cb.Get<GSClientKick_t>()); break;
+		case CB_GSPolicyResponse: ProcessGSPolicyResponse(cb.Get<GSPolicyResponse_t>()); break;
+		case CB_LogonSuccess:     ProcessLogonSuccess(cb.Get<SteamServersConnected_t>()); break;
+		case CB_LogonFailure:     ProcessLogonFailure(cb.Get<SteamServerConnectFailure_t>()); break;
+		}
+		tail = (tail + 1) % CALLBACK_QUEUE_SIZE;
 	}
-
-	return NULL;
+	s_queueTail.store(tail, std::memory_order_release);
 }
 
 CSteam3Server::CSteam3Server() :
@@ -417,22 +576,19 @@ void CSteam3Server::NotifyOfLevelChange(bool bForce)
 void CSteam3Server::RunFrame()
 {
 	bool bHasPlayers;
-	char szOutBuf[4096];
 	double fCurTime;
 
 	static double s_fLastRunFragsUpdate;
-	static double s_fLastRunCallback;
-	static double s_fLastRunSendPackets;
 
 	if (g_psvs.maxclients <= 1)
 		return;
 
 	// KTP: Steam detail profiling state
 	qboolean ktp_steam_detail = (ktp_profile_frame.value != 0.0f && ktp_profile_steam_detail.value != 0.0f);
-	double ktp_t_frag = 0.0, ktp_t_callbacks = 0.0, ktp_t_sendpkt = 0.0;
+	double ktp_t_frag = 0.0, ktp_t_callbacks = 0.0;
 
 	fCurTime = Sys_FloatTime();
-	if (fCurTime - s_fLastRunFragsUpdate > 1.0)
+	if (fCurTime - s_fLastRunFragsUpdate > 5.0)  // KTP: Reduced from 1.0s to 5.0s
 	{
 		double ktp_t_frag_start = 0.0;
 		if (ktp_steam_detail)
@@ -491,55 +647,33 @@ void CSteam3Server::RunFrame()
 			ktp_t_frag = Sys_FloatTime() - ktp_t_frag_start;
 	}
 
-	if (fCurTime - s_fLastRunCallback > 0.1)
+	// KTP: Drain queued callbacks from background thread (replaces direct RunCallbacks)
+	// The IPC-blocking SteamGameServer_RunCallbacks() now runs on a background thread.
+	// This just processes the queued results — microseconds, not milliseconds.
 	{
 		double ktp_t_cb_start = 0.0;
 		if (ktp_steam_detail)
-			ktp_t_cb_start = fCurTime;  // reuse already-captured timestamp
+			ktp_t_cb_start = Sys_FloatTime();
 
-		CRehldsPlatformHolder::get()->SteamGameServer_RunCallbacks();
-		s_fLastRunCallback = fCurTime;
+		DrainCallbackQueue();
 
 		if (ktp_steam_detail)
 			ktp_t_callbacks = Sys_FloatTime() - ktp_t_cb_start;
 	}
 
-	if (fCurTime - s_fLastRunSendPackets > 0.01)
-	{
-		double ktp_t_sp_start = 0.0;
-		if (ktp_steam_detail)
-			ktp_t_sp_start = fCurTime;  // reuse already-captured timestamp
-
-		s_fLastRunSendPackets = fCurTime;
-
-		uint16 port;
-		uint32 ip;
-		int iLen = CRehldsPlatformHolder::get()->SteamGameServer()->GetNextOutgoingPacket(szOutBuf, sizeof(szOutBuf), &ip, &port);
-		while (iLen > 0)
-		{
-			netadr_t netAdr;
-			*((uint32*)&netAdr.ip[0]) = htonl(ip);
-			netAdr.port = htons(port);
-			netAdr.type = NA_IP;
-
-			NET_SendPacket(NS_SERVER, iLen, szOutBuf, netAdr);
-
-			iLen = CRehldsPlatformHolder::get()->SteamGameServer()->GetNextOutgoingPacket(szOutBuf, sizeof(szOutBuf), &ip, &port);
-		}
-
-		if (ktp_steam_detail)
-			ktp_t_sendpkt = Sys_FloatTime() - ktp_t_sp_start;
-	}
+	// KTP: SendPackets moved to background thread (Steam_ThreadFunc).
+	// NET_SendPacket uses sendto() which is atomic on Linux UDP — safe
+	// for concurrent calls from game thread and Steam thread.
 
 	// KTP: Log steam detail when any sub-operation exceeded 1ms
+	// Note: sendpackets now runs on background thread, not measured here
 	if (ktp_steam_detail)
 	{
-		double total_ms = (ktp_t_frag + ktp_t_callbacks + ktp_t_sendpkt) * 1000.0;
+		double total_ms = (ktp_t_frag + ktp_t_callbacks) * 1000.0;
 		if (total_ms > 1.0)
 		{
-			Log_Printf("[KTP_PROFILE_STEAM] callbacks=%.3fms sendpackets=%.3fms fragupdate=%.3fms\n",
+			Log_Printf("[KTP_PROFILE_STEAM] callbacks=%.3fms fragupdate=%.3fms\n",
 				ktp_t_callbacks * 1000.0,
-				ktp_t_sendpkt * 1000.0,
 				ktp_t_frag * 1000.0);
 		}
 	}
@@ -786,6 +920,15 @@ void Steam_NotifyOfLevelChange()
 
 void Steam_Shutdown()
 {
+	// KTP: Stop background callback thread before shutdown
+	s_steamThreadRunning.store(false, std::memory_order_relaxed);
+	if (s_steamThread)
+	{
+		s_steamThread->join();
+		delete s_steamThread;
+		s_steamThread = nullptr;
+	}
+
 	if (Steam3Server())
 	{
 		Steam3Server()->Shutdown();
@@ -804,6 +947,13 @@ void Steam_Activate()
 	}
 
 	Steam3Server()->Activate();
+
+	// KTP: Start background callback thread
+	if (!s_steamThread)
+	{
+		s_steamThreadRunning.store(true, std::memory_order_relaxed);
+		s_steamThread = new std::thread(Steam_ThreadFunc);
+	}
 }
 
 void Steam_RunFrame()

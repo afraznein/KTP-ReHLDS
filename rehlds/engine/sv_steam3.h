@@ -92,6 +92,15 @@ public:
 	void OnGSClientDenyHelper(client_t *cl, EDenyReason eDenyReason, const char *pchOptionalText);
 	client_t *ClientFindFromSteamID(class CSteamID &steamIDFind);
 
+	// KTP: Main-thread callback processors (dequeued from background thread)
+	void ProcessGSClientApprove(GSClientApprove_t *p);
+	void ProcessGSClientDeny(GSClientDeny_t *p);
+	void ProcessGSClientKick(GSClientKick_t *p);
+	void ProcessGSPolicyResponse(GSPolicyResponse_t *p);
+	void ProcessLogonSuccess(SteamServersConnected_t *p);
+	void ProcessLogonFailure(SteamServerConnectFailure_t *p);
+	void DrainCallbackQueue();
+
 	CSteam3Server();
 
 	void Activate();
