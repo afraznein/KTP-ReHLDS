@@ -1511,7 +1511,7 @@ SOCKET NET_IPSocket(char *net_interface, int port, qboolean multicast)
 	}
 
 #ifndef _WIN32
-	if (COM_CheckParm("-tos"))
+	// KTP: Always set LOWDELAY TOS for game server sockets — tells routers to prioritize
 	{
 		int i = IPTOS_LOWDELAY;
 		Con_Printf("Enabling LOWDELAY TOS option\n");
@@ -1520,7 +1520,7 @@ SOCKET NET_IPSocket(char *net_interface, int port, qboolean multicast)
 			int err = NET_GetLastError();
 			if (err != WSAENOPROTOOPT)
 				Con_Printf("WARNING: UDP_OpenSocket: port: %d  setsockopt IP_TOS: %s\n", port, NET_ErrorString(err));
-			return INV_SOCK;
+			// KTP: TOS failure is non-fatal — don't kill the socket over an advisory flag
 		}
 	}
 #endif // _WIN32

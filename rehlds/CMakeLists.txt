@@ -41,7 +41,7 @@ set(COMPILE_FLAGS "${COMPILE_FLAGS} -ffunction-sections -fdata-sections")
 if (DEBUG)
 	set(COMPILE_FLAGS "${COMPILE_FLAGS} -g3 -O3 -ggdb")
 else()
-	set(COMPILE_FLAGS "${COMPILE_FLAGS} -g0 -O3 -fno-stack-protector")
+	set(COMPILE_FLAGS "${COMPILE_FLAGS} -g0 -O3 -flto -fno-math-errno -fno-stack-protector")
 endif()
 
 # Check Intel C++ compiler
@@ -64,7 +64,7 @@ else()
 	# Produce code optimized for the most common IA32/AMD64/EM64T processors.
 	# As new processors are deployed in the marketplace, the behavior of this option will change.
 	set(COMPILE_FLAGS "${COMPILE_FLAGS} \
-		-mtune=generic -msse3\
+		-march=native -mtune=native\
 		-fpermissive -fno-sized-deallocation\
 		-Wno-unknown-pragmas -Wno-invalid-offsetof\
 		-Wno-unused-variable -Wno-unused-result -Wno-unused-function -Wno-delete-non-virtual-dtor\
@@ -88,7 +88,7 @@ if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 8.0)
 endif()
 
 if (NOT DEBUG)
-	set(LINK_FLAGS "${LINK_FLAGS} \
+	set(LINK_FLAGS "${LINK_FLAGS} -flto \
 		-Wl,-gc-sections -Wl,--version-script=\"${PROJECT_SOURCE_DIR}/../version_script.lds\"")
 endif()
 

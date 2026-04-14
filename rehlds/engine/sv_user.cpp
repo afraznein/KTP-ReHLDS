@@ -805,8 +805,8 @@ void SV_RunCmd(usercmd_t *ucmd, int random_seed)
 	}
 
 
-	if (!host_client->fakeclient)
-		SV_SetupMove(host_client);
+	// KTP: SV_SetupMove/SV_RestoreMove moved to SV_ParseMove (once per packet, not per cmd)
+	// targettime is constant across all cmds in a packet — no need to recompute lag comp per cmd
 
 #ifdef REHLDS_FIXES
 	if (sv_usercmd_custom_random_seed.value)
@@ -1100,8 +1100,7 @@ void SV_RunCmd(usercmd_t *ucmd, int random_seed)
 	gEntityInterface.pfnPlayerPostThink(sv_player);
 	gEntityInterface.pfnCmdEnd(sv_player);
 
-	if (!host_client->fakeclient)
-		SV_RestoreMove(host_client);
+	// KTP: SV_RestoreMove moved to SV_ParseMove (once per packet, not per cmd)
 
 	if (ktp_rc_prof) {
 		g_ktp_runcmd_acc_postthink += Sys_FloatTime() - ktp_rc_t0;
@@ -1354,16 +1353,12 @@ void SV_SetupMove(client_t *_host_client)
 		{
 			state = &nextFrame->entities.entities[j];
 
-#ifdef REHLDS_OPT_PEDANTIC
+			// KTP: Players are always entities 1..maxclients at the beginning of the entity list
 			if (state->number <= 0)
 				continue;
 
 			if (state->number > g_psvs.maxclients)
-				break; // players are always in the beginning of the list, no need to look more
-#else
-			if (state->number <= 0 || state->number > g_psvs.maxclients)
-				continue;
-#endif
+				break; // No more players — skip remaining 900+ non-player entities
 
 			pos = &truepositions[state->number - 1];
 			if (pos->deadflag)
@@ -1800,6 +1795,11 @@ void SV_ParseMove(client_t *pSenderClient)
 		g_ktp_runcmd_acc_postthink = 0.0;
 	}
 
+	// KTP: Setup lag compensation once for the entire packet (not per cmd)
+	// targettime depends on client latency + interp, which is constant across all cmds
+	if (!host_client->fakeclient)
+		SV_SetupMove(host_client);
+
 	if (net_drop < 24)
 	{
 		while (net_drop > numbackup)
@@ -1820,6 +1820,10 @@ void SV_ParseMove(client_t *pSenderClient)
 	{
 		SV_RunCmd(&cmds[i], host_client->netchan.incoming_sequence - i);
 	}
+
+	// KTP: Restore lag compensation once after all cmds processed
+	if (!host_client->fakeclient)
+		SV_RestoreMove(host_client);
 
 	// KTP: Log if SV_ParseMove total > 1ms (with CPU time + sub-phase breakdown)
 	if (ktp_pm_prof)

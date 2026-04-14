@@ -6,7 +6,22 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
-## [KTP-ReHLDS `3.22.0.913`] - 2026-04-13
+## [KTP-ReHLDS `3.22.0.914`] - 2026-04-02
+
+**Engine hot-path optimizations — lag compensation, compiler, network priority**
+
+### Changed
+- **Lag compensation once per packet instead of per cmd** — `SV_SetupMove()` and `SV_RestoreMove()` now run once per packet in `SV_ParseMove()` instead of per-usercmd in `SV_RunCmd()`. At 1000Hz with cl_cmdrate ~100, each packet contains ~10 cmds sharing the same `targettime` (computed from client latency + interp, which doesn't change between cmds). This eliminates ~90% of lag compensation overhead — 13 players' positions no longer get moved back and forth 10 times per packet.
+- **Nodelta during pause limited to state transitions** — `SV_EmitPacketEntities()` was forcing full entity state (nodelta) on every frame while paused. Now only forces nodelta for 3 frames after a pause state transition, then resumes delta compression. Eliminates redundant full-state flooding at 1000Hz during paused matches.
+- **Compiler: `-march=native -mtune=native`** — Replaced `-mtune=generic -msse3` with native architecture targeting. Enables SSE4.2, AVX, BMI, and other instructions available on server hardware.
+- **Compiler: `-flto` (link-time optimization)** — Enables cross-translation-unit inlining for hot paths like `SV_RunCmd` → `SV_SetupMove` → entity iteration.
+- **Compiler: `-fno-math-errno`** — Prevents setting errno after math library calls (sqrt, pow, etc.). Engine never checks errno; removing the store allows better optimization of math-heavy paths.
+- **IPTOS_LOWDELAY always enabled** — `IP_TOS` with `IPTOS_LOWDELAY` now set on all UDP sockets unconditionally (previously required `-tos` command-line flag). Tells routers and switches to prioritize game packets. TOS failure is now non-fatal (was killing the socket on failure).
+- **SV_SetupMove entity early-break** — Entity iteration in lag compensation now breaks out of the inner loop when entity number exceeds `maxclients` instead of continuing through 900+ non-player entities. Players are always entities 1 through maxclients in GoldSrc, guaranteed by entity list ordering.
+
+---
+
+## [KTP-ReHLDS `3.22.0.913`] - 2026-03-27
 
 **Background Steam callback thread — eliminates 3-13ms frame spikes**
 

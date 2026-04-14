@@ -64,6 +64,11 @@ server_t g_psv;
 // KTP Modification: Flag to track temporary unpause for chat (not static, used in rehlds_api_impl.cpp)
 int g_ktp_temporary_unpause = 0;
 
+// KTP: Track pause state transitions for nodelta — only force nodelta for a few frames
+// after pause state changes, not every frame while paused
+static int s_ktp_pauseTransitionFrames = 0;
+static int s_ktp_lastPauseState = 0;
+
 // KTP: Flag to track if current command is from RCON (vs local console/LinuxGSM)
 // Used to block quit/restart via RCON while allowing local console
 int g_bRconCommand = 0;
@@ -4920,10 +4925,11 @@ int SV_CreatePacketEntities_internal(sv_delta_t type, client_t *client, packet_e
 
 void SV_EmitPacketEntities(client_t *client, packet_entities_t *to, sizebuf_t *msg)
 {
-	// KTP Modification: Force nodelta during pause to avoid cl_flushentitypacket warnings
-	// During pause, game time is frozen so delta sequences become stale
+	// KTP Modification: Force nodelta only on pause state transitions (not every paused frame)
+	// During transition, delta sequences may be stale — flush with nodelta for a few frames
+	// After transition, resume delta compression to avoid flooding clients at 1000Hz
 	sv_delta_t deltaType;
-	if (client->delta_sequence == -1 || g_ktp_temporary_unpause) {
+	if (client->delta_sequence == -1 || s_ktp_pauseTransitionFrames > 0) {
 		deltaType = sv_packet_nodelta;
 	} else {
 		deltaType = sv_packet_delta;
@@ -7163,7 +7169,7 @@ static double g_ktp_profile_last_spike_time = 0.0;
 // KTP: Inter-frame gap tracking (time between end of one SV_Frame_Internal and start of next)
 static double g_ktp_profile_prev_frame_end = 0.0;   // timestamp of previous frame's end
 static double g_ktp_profile_acc_interframe = 0.0;    // accumulated inter-frame gap time
-static double g_ktp_profile_peak_interframe = 0.0;   // worst inter-frame gap
+static double g_ktp_profile_peak_interframe = 0.0;   // worst inter-frame gap
 static int g_ktp_profile_acc_interframe_count = 0;    // frames contributing to interframe avg
 static double g_ktp_profile_last_gap_spike_time = 0.0; // rate limiter for gap spike alerts
 
@@ -8617,6 +8623,14 @@ void EXT_FUNC SV_Frame_Internal()
 	int wasPaused = g_psv.paused;
 	g_ktp_temporary_unpause = 0;  // Reset flag
 
+	// KTP: Track pause state transitions for nodelta flushing
+	if (wasPaused != s_ktp_lastPauseState) {
+		s_ktp_pauseTransitionFrames = 3;  // Force nodelta for 3 frames on transition
+	}
+	s_ktp_lastPauseState = wasPaused;
+	if (s_ktp_pauseTransitionFrames > 0)
+		s_ktp_pauseTransitionFrames--;
+
 	// Store the restore decision NOW to prevent race condition
 	// If we check g_ktp_temporary_unpause later, a plugin could change it mid-frame
 	int shouldRestorePause = 0;
@@ -8845,7 +8859,7 @@ void EXT_FUNC SV_Frame_Internal()
 			}
 
 			// Inter-frame gap stats
-			double avg_interframe = (g_ktp_profile_acc_interframe_count > 0) ?
+			double avg_interframe = (g_ktp_profile_acc_interframe_count > 0) ?
 				(g_ktp_profile_acc_interframe / g_ktp_profile_acc_interframe_count) * 1000.0 : 0.0;
 			double peak_interframe = g_ktp_profile_peak_interframe * 1000.0;
 			Log_Printf("[KTP_PROFILE] interframe: avg=%.3fms peak=%.3fms\n",
