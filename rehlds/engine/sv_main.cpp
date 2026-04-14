@@ -5112,19 +5112,11 @@ void SV_WriteEntitiesToClient(client_t *client, sizebuf_t *msg)
 
 		edict_t* ent = &g_psv.edicts[e];
 
-#ifdef REHLDS_OPT_PEDANTIC
-		//Part of gamedll's code is moved here to decrease amount of calls to AddToFullPack()
-		//We don't even try to transmit entities without model as well as invisible entities
-		if (ent->v.modelindex && !(ent->v.effects & EF_NODRAW)) {
-			qboolean add = gEntityInterface.pfnAddToFullPack(&curPack->entities[curPack->num_entities], e, &g_psv.edicts[e], host_client->edict, flags, FALSE, pSet);
-			if (add)
-				++curPack->num_entities;
-		}
-#else
+		// KTP: Always let game DLL's AddToFullPack decide entity visibility
+		// PEDANTIC pre-filters by modelindex/EF_NODRAW which can break DoD wall penetration
 		qboolean add = gEntityInterface.pfnAddToFullPack(&curPack->entities[curPack->num_entities], e, &g_psv.edicts[e], host_client->edict, flags, FALSE, pSet);
 		if (add)
 			++curPack->num_entities;
-#endif //REHLDS_OPT_PEDANTIC
 	}
 
 #ifdef REHLDS_FIXES

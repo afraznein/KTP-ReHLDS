@@ -1180,7 +1180,8 @@ void SV_ClipToLinks(areanode_t *node, moveclip_t *clip)
 		if (touch->v.solid == SOLID_TRIGGER)
 			Sys_Error("%s: Trigger in clipping list", __func__);
 
-#ifndef REHLDS_OPT_PEDANTIC
+		// KTP: Always check shouldCollide() BEFORE geometric tests to preserve DoD wall penetration
+		// PEDANTIC moves this after geometry which breaks wallbangs — keep it early
 		if (gNewDLLFunctions.pfnShouldCollide && !gNewDLLFunctions.pfnShouldCollide(touch, clip->passedict))
 #ifdef REHLDS_FIXES
 			// https://github.com/dreamstalker/rehlds/issues/46
@@ -1188,7 +1189,6 @@ void SV_ClipToLinks(areanode_t *node, moveclip_t *clip)
 #else
 			return;
 #endif // REHLDS_FIXES
-#endif // REHLDS_OPT_PEDANTIC
 
 		// monsterclip filter
 		if (touch->v.solid == SOLID_BSP)
@@ -1235,15 +1235,7 @@ void SV_ClipToLinks(areanode_t *node, moveclip_t *clip)
 				continue; // don't clip against owner
 		}
 
-#ifdef REHLDS_OPT_PEDANTIC
-		if (gNewDLLFunctions.pfnShouldCollide && !gNewDLLFunctions.pfnShouldCollide(touch, clip->passedict))
-#ifdef REHLDS_FIXES
-			// https://github.com/dreamstalker/rehlds/issues/46
-			continue;
-#else
-			return;
-#endif // REHLDS_FIXES
-#endif // REHLDS_OPT_PEDANTIC
+		// KTP: PEDANTIC late shouldCollide() check removed — using early check above instead
 
 		trace_t trace;
 		if (touch->v.flags & FL_MONSTER)

@@ -1,6 +1,6 @@
 # KTP-ReHLDS
 
-**Version 3.22.0.914** | Custom ReHLDS fork for KTP competitive Day of Defeat infrastructure
+**Version 3.22.0.915** | Custom ReHLDS fork for KTP competitive Day of Defeat infrastructure
 
 A specialized fork of [ReHLDS](https://github.com/rehlds/rehlds) that enables advanced competitive match features through engine-level pause control, real-time HUD updates during pause, and selective subsystem operation.
 
@@ -185,7 +185,7 @@ Check server console on startup:
 ========================================
   KTP ReHLDS - Custom Pause Build
   HUD enabled during pause
-  Version: 3.22.0.914 (Apr 2026)
+  Version: 3.22.0.915 (Apr 2026)
 ========================================
 ```
 
@@ -195,7 +195,7 @@ Check modules loaded: `amxx modules` in server console.
 
 ## Version Information
 
-- **Current Version**: 3.22.0.914 (2026-04)
+- **Current Version**: 3.22.0.915 (2026-04)
 - **Based on**: ReHLDS 3.14.0.857 (upstream)
 - **Platform**: Visual Studio 2022 (v143) / GCC 4.9.2+ / Clang 6.0+
 - **Compatible with**: KTP-ReAPI 5.29.0.362-ktp+, KTPAMXX 2.6.9+

@@ -250,8 +250,10 @@ target_compile_definitions(engine PRIVATE
 	REHLDS_CHECKS
 	REHLDS_API
 	REHLDS_SELF
-	# KTP: Disabled REHLDS_OPT_PEDANTIC - causes DoD wall penetration to fail
-	# REHLDS_OPT_PEDANTIC
+	# KTP: REHLDS_OPT_PEDANTIC re-enabled with wallbang-safe overrides:
+	# - shouldCollide() kept in early position (world.cpp) — preserves wall penetration
+	# - AddToFullPack pre-filter disabled (sv_main.cpp) — all entities go through game DLL
+	REHLDS_OPT_PEDANTIC
 	HAVE_OPT_STRTOOLS
 	USE_BREAKPAD_HANDLER
 	_LINUX

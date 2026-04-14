@@ -6,6 +6,29 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.915`] - 2026-04-02
+
+**REHLDS_OPT_PEDANTIC re-enabled with wallbang-safe overrides**
+
+### Added
+- **REHLDS_OPT_PEDANTIC enabled** — Re-enables 16+ upstream ReHLDS optimizations that were previously disabled entirely due to DoD wall penetration breakage. Two wallbang-unsafe optimizations are manually overridden while all safe ones are active.
+
+### Changed
+- **Iterative BSP tree traversal** — `SV_RecursiveHullCheck`, `SV_FindTouchedLeafs`, `SV_LinkContents`, `PM_RecursiveHullCheck` converted from recursive to iterative (tail-call unrolling). Eliminates stack frame overhead on deep BSP trees without changing trace results.
+- **Model name hash map** — `SV_FindModelIndex` uses O(1) hash table lookup instead of O(MAX_MODELS) linear search. At 13 clients × ~150 entities × 1000Hz = ~1.95M lookups/sec, this eliminates millions of string comparisons per second.
+- **Delta JIT acceleration** — `DELTA_CheckDelta`, `DELTA_WriteDelta`, field set/unset operations use pre-compiled JIT paths for faster entity delta encoding.
+- **Challenge circular buffer** — Connection challenge management uses O(1) circular index instead of O(1024) linear scan.
+- **User command delta caching** — `MSG_ReadUsercmd` uses cached `g_pusercmddelta` pointer instead of `SV_LookupDelta("usercmd_t")` per frame.
+- **CD key MD5 + digest caching** — `SV_WriteFullClientUpdate` sends pre-computed hash instead of recomputing MD5 per update.
+- **Packet entity pre-allocation** — Frame entity storage allocated once at MAX_PACKET_ENTITIES, avoiding per-frame reallocation.
+- **Point trace specialization** — `SV_Move_Point` fast path for zero-extent traces.
+
+### Preserved (wallbang safety)
+- **shouldCollide() kept in early position** — PEDANTIC moves this check after geometric tests which breaks DoD wall penetration. Overridden to always check before `BoundsIntersect`/`SV_CheckSphereIntersection` (world.cpp).
+- **AddToFullPack pre-filter removed** — PEDANTIC skips entities without `modelindex` or with `EF_NODRAW` before calling game DLL. Overridden to let game DLL decide all entity visibility (sv_main.cpp).
+
+---
+
 ## [KTP-ReHLDS `3.22.0.914`] - 2026-04-02
 
 **Engine hot-path optimizations — lag compensation, compiler, network priority**
