@@ -69,6 +69,9 @@ int g_ktp_temporary_unpause = 0;
 static int s_ktp_pauseTransitionFrames = 0;
 static int s_ktp_lastPauseState = 0;
 
+// KTP: Per-frame cvar cache — set once in SV_Frame_Internal, used in hot per-client loops
+float g_ktp_cached_sv_timeout = 65.0f;
+
 // KTP: Flag to track if current command is from RCON (vs local console/LinuxGSM)
 // Used to block quit/restart via RCON while allowing local console
 int g_bRconCommand = 0;
@@ -4183,7 +4186,8 @@ void SV_CheckTimeouts(void)
 	client_t *cl;
 	float droptime;
 
-	droptime = realtime - sv_timeout.value;
+	// KTP: Use frame-cached cvar value instead of per-frame cvar dereference
+	droptime = realtime - g_ktp_cached_sv_timeout;
 
 	for (i = 0, cl = g_psvs.clients; i < g_psvs.maxclients; i++, cl++)
 	{
@@ -8590,6 +8594,9 @@ void EXT_FUNC SV_Frame_Internal()
 			ktp_t_interframe = ktp_t_full_start - g_ktp_profile_prev_frame_end;
 		}
 	}
+
+	// KTP: Cache hot cvars once per frame instead of reading per-client in loops
+	g_ktp_cached_sv_timeout = sv_timeout.value;
 
 	gGlobalVariables.frametime = host_frametime;
 	g_psv.oldtime = g_psv.time;

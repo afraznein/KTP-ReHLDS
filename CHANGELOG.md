@@ -6,6 +6,15 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.916`] - 2026-04-02
+
+**Hot-path cvar caching**
+
+### Changed
+- **Per-frame cvar cache** — `sv_timeout.value` cached once per frame in `SV_Frame_Internal` instead of re-reading the cvar struct each frame in `SV_CheckTimeouts`. Eliminates redundant cvar dereference from the per-client timeout loop.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.915`] - 2026-04-02
 
 **REHLDS_OPT_PEDANTIC re-enabled with wallbang-safe overrides**
