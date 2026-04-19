@@ -7183,6 +7183,14 @@ double g_ktp_read_worst_pkt = 0.0;        // worst single packet processing time
 extern double g_ktp_phys_startframe;
 extern double g_ktp_phys_entloop;
 
+// KTP: Physics sub-phase timing for the paused else-branch in SV_Frame_Internal.
+// SV_Physics() is skipped when g_psv.paused is set, so startframe/entloop globals
+// above retain stale values from whichever frame last ran SV_Physics. These two
+// capture the paused path's own work (pfnStartFrame + SV_UpdatePausedHUD) so
+// [KTP_SPIKE_PHYS] on a paused-frame spike isn't misleading.
+double g_ktp_phys_paused_startframe = 0.0;
+double g_ktp_phys_paused_hud = 0.0;
+
 // KTP: Per-client send timing (non-static — forward-declared before SV_SendClientMessages)
 double g_ktp_send_worst_client_time = 0.0;
 int g_ktp_send_worst_client_slot = -1;
@@ -8640,6 +8648,17 @@ void EXT_FUNC SV_Frame_Internal()
 		shouldRestorePause = 1;  // Capture restore decision before frame processing
 	}
 
+	// KTP: Reset paused-branch sub-phase globals every frame so [KTP_SPIKE_PHYS]
+	// on an unpaused-frame spike doesn't inherit stale paused-frame values.
+	// The SV_Physics sub-phase globals (startframe/entloop) are intentionally
+	// NOT reset here — they remain whatever the last simulating frame captured,
+	// so a paused-frame spike can still see context from prior unpaused work.
+	if (ktp_profiling)
+	{
+		g_ktp_phys_paused_startframe = 0.0;
+		g_ktp_phys_paused_hud = 0.0;
+	}
+
 	if (shouldSimulate)
 	{
 		SV_Physics();
@@ -8653,8 +8672,22 @@ void EXT_FUNC SV_Frame_Internal()
 		// - Player physics frozen (frametime = 0)
 		//
 		// The g_psv.paused flag was cleared above to allow chat processing
+		double ktp_paused_t0 = 0.0;
+		if (ktp_profiling) ktp_paused_t0 = Sys_FloatTime();
+
 		gEntityInterface.pfnStartFrame();
+
+		if (ktp_profiling)
+		{
+			double ktp_paused_t1 = Sys_FloatTime();
+			g_ktp_phys_paused_startframe = ktp_paused_t1 - ktp_paused_t0;
+			ktp_paused_t0 = ktp_paused_t1;
+		}
+
 		SV_UpdatePausedHUD();
+
+		if (ktp_profiling)
+			g_ktp_phys_paused_hud = Sys_FloatTime() - ktp_paused_t0;
 	}
 
 	// KTP: Profile - capture time after Physics
@@ -8800,6 +8833,18 @@ void EXT_FUNC SV_Frame_Internal()
 					g_ktp_read_time_recv * 1000.0,
 					g_ktp_read_time_process * 1000.0,
 					g_ktp_read_worst_pkt * 1000.0);
+				// KTP: Emit spike-frame phys sub-phases. Unlike [KTP_PROFILE]
+				// phys_detail (periodic, reads current globals at log time), this
+				// captures the values produced by *this* spike frame — so a phys-
+				// dominant spike shows exactly which sub-phase absorbed the time.
+				// startframe/entloop are populated when SV_Physics ran this frame;
+				// paused_startframe/paused_hud are populated when the paused else-
+				// branch ran. On any given spike at least one pair will be zero.
+				Log_Printf("[KTP_SPIKE_PHYS] startframe=%.3fms entloop=%.3fms paused_startframe=%.3fms paused_hud=%.3fms\n",
+					g_ktp_phys_startframe * 1000.0,
+					g_ktp_phys_entloop * 1000.0,
+					g_ktp_phys_paused_startframe * 1000.0,
+					g_ktp_phys_paused_hud * 1000.0);
 			}
 		}
 

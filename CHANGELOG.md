@@ -6,6 +6,19 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.917`] - 2026-04-19
+
+**Spike-frame phys sub-phase instrumentation**
+
+### Added
+- **`[KTP_SPIKE_PHYS]` emitted on spike frames** — `[KTP_PROFILE] phys_detail` has always reported `startframe` + `entloop` values at the periodic log interval, but those are the instantaneous globals *at log time* (whichever frame happened to run last), not the spike frame's values. On the 2026-04-17 ATL2 158ms phys spike the periodic log showed `startframe=0.001ms entloop=0.013ms` — clearly not the spike's values since the spike itself was 158ms. Now every `[KTP_SPIKE]` emission is followed by `[KTP_SPIKE_READ]` *and* a new `[KTP_SPIKE_PHYS]` line capturing the sub-phase values for the exact spike frame.
+- **Paused-path sub-phases** — `SV_Physics()` is skipped when the server is paused; the paused else-branch in `SV_Frame_Internal` runs `pfnStartFrame()` + `SV_UpdatePausedHUD()` instead. Those were previously unprofiled, so a 158ms spike on a paused frame would have shown stale `startframe`/`entloop` globals from the last unpaused frame. Added `g_ktp_phys_paused_startframe` and `g_ktp_phys_paused_hud` globals, populated in the paused branch, reset each frame, and emitted alongside the SV_Physics sub-phases in `[KTP_SPIKE_PHYS]`. On any given spike at least one sub-phase pair will be zero, immediately distinguishing which path the spike hit.
+
+### Why
+The ATL2 `dod_railyard_s9d` 158ms phys-dominant spike (3-cap Town Square at 21:52:25) left the actual sub-phase breakdown unidentifiable — could have been inside `SV_Physics` or on the paused branch. This patch makes spike-frame phys breakdown visible with every spike event so the next occurrence narrows to a specific sub-phase (game-DLL `pfnStartFrame` cascade, entity physics loop, or `SV_UpdatePausedHUD`). Instrumentation only; no behavior change on non-spike frames.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.916`] - 2026-04-02
 
 **Hot-path cvar caching**
