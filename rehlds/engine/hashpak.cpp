@@ -102,6 +102,19 @@ qboolean HPAK_GetDataPointer(char *pakname, struct resource_s *pResource, unsign
 		return FALSE;
 	}
 	directory.p_rgEntries = (hash_pack_entry_t *)Mem_ZeroMalloc(sizeof(hash_pack_entry_t) * directory.nEntries);
+#ifdef REHLDS_FIXES
+	// KTP: Mem_ZeroMalloc returns NULL on OOM (see mem.cpp). Bail before FS_Read,
+	// which would dereference NULL. Under client customization-download load
+	// (sv_send_logos 1), directory.nEntries can reach MAX_FILE_ENTRIES=32768,
+	// requiring a ~2.3MB allocation — failure is rare but reachable under heap
+	// fragmentation.
+	if (!directory.p_rgEntries)
+	{
+		Con_Printf("ERROR: HPAK_GetDataPointer: failed to allocate %i directory entries\n", directory.nEntries);
+		FS_Close(fp);
+		return FALSE;
+	}
+#endif
 	FS_Read(directory.p_rgEntries, sizeof(hash_pack_entry_t) * directory.nEntries, 1, fp);
 
 	for (int i = 0; i < directory.nEntries; i++)
@@ -127,6 +140,10 @@ qboolean HPAK_GetDataPointer(char *pakname, struct resource_s *pResource, unsign
 				if (bufsize)
 					*bufsize = 0;
 				retval = FALSE;
+				// KTP: Fall through to skip the FS_Read(NULL, ...) + *pbuffer = NULL
+				// that the stock code performs unconditionally. Without this break,
+				// alloc failure writes to NULL inside the FS layer and SEGVs.
+				break;
 			}
 
 			FS_Read(pbuf, entry->nFileLength, 1, fp);
@@ -647,6 +664,17 @@ qboolean HPAK_ResourceForHash(char *pakname, unsigned char *hash, struct resourc
 		return FALSE;
 	}
 	directory.p_rgEntries = (hash_pack_entry_t *)Mem_Malloc(sizeof(hash_pack_entry_t) * directory.nEntries);
+#ifdef REHLDS_FIXES
+	// KTP: Mem_Malloc returns NULL on OOM. Bail before FS_Read(NULL, ...)
+	// SEGVs. Same rationale as HPAK_GetDataPointer (client !MD5... customization
+	// download path hit every time sv_send_logos is enabled).
+	if (!directory.p_rgEntries)
+	{
+		Con_Printf("ERROR: HPAK_ResourceForHash: failed to allocate %i directory entries\n", directory.nEntries);
+		FS_Close(fp);
+		return FALSE;
+	}
+#endif
 	FS_Read(directory.p_rgEntries, sizeof(hash_pack_entry_t) * directory.nEntries, 1, fp);
 
 	bFound = HPAK_FindResource(&directory, hash, pResourceEntry);

@@ -72,6 +72,12 @@ static int s_ktp_lastPauseState = 0;
 // KTP: Per-frame cvar cache — set once in SV_Frame_Internal, used in hot per-client loops
 float g_ktp_cached_sv_timeout = 65.0f;
 
+// KTP: Forward declaration — definition lower in the file (~line 7171) alongside the
+// other profiler peak globals. Written once per frame at the top of SV_Frame_Internal
+// (line ~8603) and read by sub-functions (SV_WriteSpawn, SV_ReadPackets, etc.) to avoid
+// redundant `ktp_profile_frame.value` cvar struct dereferences in hot paths.
+extern bool g_ktp_profiling_enabled;
+
 // KTP: Flag to track if current command is from RCON (vs local console/LinuxGSM)
 // Used to block quit/restart via RCON while allowing local console
 int g_bRconCommand = 0;
@@ -1175,7 +1181,8 @@ void SV_SendServerinfo_internal(sizebuf_t *msg, client_t *client)
 		COM_FileBase(com_gamedir, message);
 
 	MSG_WriteString(msg, pszGameDir);
-	MSG_WriteString(msg, Cvar_VariableString("hostname"));
+	// KTP: direct host_name.string instead of Cvar_VariableString hash lookup
+	MSG_WriteString(msg, host_name.string);
 	MSG_WriteString(msg, g_psv.modelname);
 
 #ifdef REHLDS_FIXES
@@ -1422,8 +1429,8 @@ void SV_WriteSpawn(sizebuf_t *msg)
 	int i = 0;
 	client_t *client = g_psvs.clients;
 
-	// KTP: Sub-phase profiling within SV_WriteSpawn
-	bool ktp_ws_prof = (ktp_profile_frame.value != 0.0f);
+	// KTP: Sub-phase profiling within SV_WriteSpawn (use global set in SV_Frame_Internal)
+	bool ktp_ws_prof = g_ktp_profiling_enabled;
 	double ktp_ws_t0 = 0.0, ktp_ws_t1 = 0.0, ktp_ws_t2 = 0.0, ktp_ws_t3 = 0.0, ktp_ws_t4 = 0.0;
 	bool ktp_ws_hltv = (host_client->proxy != 0);
 
@@ -1742,8 +1749,8 @@ void EXT_FUNC SV_Spawn_f_internal(void)
 		}
 #endif // REHLDS_FIXES
 
-		// KTP: Sub-phase profiling for spawn handler
-		bool ktp_spawn_prof = (ktp_profile_frame.value != 0.0f);
+		// KTP: Sub-phase profiling for spawn handler (use global set in SV_Frame_Internal)
+		bool ktp_spawn_prof = g_ktp_profiling_enabled;
 		double ktp_t0 = 0.0, ktp_t1 = 0.0, ktp_t2 = 0.0, ktp_t3 = 0.0, ktp_t4 = 0.0, ktp_t5 = 0.0;
 		bool ktp_is_hltv = (host_client->proxy != 0);
 
@@ -3072,7 +3079,8 @@ NOXREF void SVC_InfoString(void)
 #else
 	Info_SetValueForKey(info, "description", gEntityInterface.pfnGetGameDescription(), ARRAYSIZE(info));
 #endif // REHLDS_FIXES
-	Info_SetValueForKey(info, "hostname", Cvar_VariableString("hostname"), ARRAYSIZE(info));
+	// KTP: direct host_name.string instead of Cvar_VariableString hash lookup
+	Info_SetValueForKey(info, "hostname", host_name.string, ARRAYSIZE(info));
 	Info_SetValueForKey(info, "map", g_psv.name, ARRAYSIZE(info));
 
 	const char *type;
@@ -3147,7 +3155,8 @@ NOXREF void SVC_Info(qboolean bDetailed)
 	else
 		MSG_WriteString(&buf, NET_AdrToString(net_local_adr));
 
-	MSG_WriteString(&buf, Cvar_VariableString("hostname"));
+	// KTP: direct host_name.string instead of Cvar_VariableString hash lookup
+	MSG_WriteString(&buf, host_name.string);
 	MSG_WriteString(&buf, g_psv.name);
 	COM_FileBase(com_gamedir, gd);
 	MSG_WriteString(&buf, gd);
@@ -4033,8 +4042,8 @@ extern double g_ktp_read_worst_pkt;
 
 void SV_ReadPackets(void)
 {
-	// KTP: Read phase detail profiling
-	qboolean ktp_rp = (ktp_profile_frame.value != 0.0f);
+	// KTP: Read phase detail profiling (use global set in SV_Frame_Internal)
+	qboolean ktp_rp = g_ktp_profiling_enabled;
 
 	// Reset read-detail globals only when profiling (spike logger only fires when profiling)
 	if (ktp_rp) {
@@ -5420,13 +5429,20 @@ void SV_SendClientMessages(void)
 {
 	SV_UpdateToReliableMessages();
 
-	// KTP: Hoist profiling check outside client loop
-	qboolean ktp_send_prof = (ktp_profile_frame.value != 0.0f);
+	// KTP: Hoist profiling check outside client loop (use global set in SV_Frame_Internal)
+	qboolean ktp_send_prof = g_ktp_profiling_enabled;
 	if (ktp_send_prof) {
 		g_ktp_send_worst_client_time = 0.0;
 		g_ktp_send_worst_client_slot = -1;
 		g_ktp_send_client_count = 0;
 	}
+
+	// KTP: Hoist cvar reads outside the 1000Hz × maxclients client loop
+	// (same pattern as the v3.22.0.916 sv_timeout hoist). These cvars only
+	// change via console command, never mid-frame, so caching once per call
+	// is safe and eliminates redundant struct dereferences per client.
+	const float ktp_limitlocal = host_limitlocal.value;
+	const float ktp_failuretime = sv_failuretime.value;
 
 	for (int i = 0; i < g_psvs.maxclients; i++)
 	{
@@ -5442,7 +5458,7 @@ void SV_SendClientMessages(void)
 			continue;
 		}
 
-		if (host_limitlocal.value == 0.0f && cl->netchan.remote_address.type == NA_LOOPBACK)
+		if (ktp_limitlocal == 0.0f && cl->netchan.remote_address.type == NA_LOOPBACK)
 			cl->send_message = TRUE;
 
 		// KTP Modification: During temporary unpause, respect normal message timing
@@ -5473,7 +5489,7 @@ void SV_SendClientMessages(void)
 		}
 		else if (cl->send_message)
 		{
-			if (sv_failuretime.value < realtime - cl->netchan.last_received)
+			if (ktp_failuretime < realtime - cl->netchan.last_received)
 				cl->send_message = FALSE;
 		}
 
@@ -6537,7 +6553,8 @@ int SV_SpawnServer(qboolean bIsDemo, char *server, char *startspot)
 	Log_PrintServerVars();
 	NET_Config((qboolean)(g_psvs.maxclients > 1));
 
-	pszhost = Cvar_VariableString("hostname");
+	// KTP: direct host_name.string instead of Cvar_VariableString hash lookup
+	pszhost = host_name.string;
 	if (pszhost && *pszhost == '\0')
 	{
 		if (gEntityInterface.pfnGetGameDescription != NULL)

@@ -37,6 +37,12 @@ typedef void (*SleepType)(int msec);
 extern bool g_bVGui;
 extern IDedicatedServerAPI *engineAPI;
 
+// KTP Stage C: set true by Sys_InitPingboost when -pingboost 2 is selected.
+// Signals the main loop in sys_ded.cpp to use clock_nanosleep(TIMER_ABSTIME)
+// against a tracked 1ms grid target instead of the fixed sys->Sleep(1).
+// Linux-only path; Windows builds always go through the legacy sys->Sleep(1).
+extern bool g_use_abs_grid;
+
 bool Sys_SetupConsole();
 void Sys_PrepareConsoleInput();
 void Sys_InitPingboost();

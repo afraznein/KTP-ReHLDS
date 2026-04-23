@@ -694,9 +694,19 @@ qboolean Host_FilterTime(float time)
 		// KTP: Removed "+ 1.0f" which artificially capped fps at (sys_ticrate - 1)
 		// Original: 1.0f / (fps + 1.0f) - at 1000 ticrate, this capped at ~999 fps
 		// Fixed: 1.0 / fps - allows true 1000 fps at sys_ticrate 1000
+		//
+		// KTP 2026-04-22: Added 1ns tolerance (1e-9s) for abs-time sleep modes
+		// (pingboost 4). When a sleep lands delta at *exactly* 1.0/fps, IEEE 754
+		// double rounding makes `1/fps > delta` evaluate non-deterministically,
+		// rejecting ~2% of frames and capping measured fps at ~979. Subtracting
+		// 1 nanosecond from the threshold makes the comparison reliably pass for
+		// on-target sleeps while still rejecting anything meaningfully early.
+		// 1e-9 is 1000× smaller than the double-precision ulp at 0.001, so it
+		// doesn't meaningfully change the existing fps-gate semantics for any
+		// other pingboost mode.
 		if (fps > 0.0)
 		{
-			if (1.0 / fps > realtime - oldrealtime)
+			if ((1.0 / fps) - 1e-9 > realtime - oldrealtime)
 				return FALSE;
 		}
 	}

@@ -36,7 +36,18 @@ void *Mem_Malloc(size_t size)
 void *Mem_ZeroMalloc(size_t size)
 {
 	void *p = malloc(size);
-	Q_memset(p, 0, size);
+	// KTP: only zero when alloc succeeded. Upstream unconditionally calls
+	// Q_memset(NULL, 0, size) on OOM, which SEGVs inside glibc memset. At
+	// least one of the fleet-wide segfaults we've seen on the HPAK
+	// customization path (2026-04 NY/ATL crash clusters) plausibly lands
+	// here — HPAK_GetDataPointer allocates up to ~2.3MB for the directory
+	// table, and under heap fragmentation the call can return NULL.
+	// Returning NULL cleanly lets callers that check (e.g., the KTP hot-
+	// path NULL guards added in hashpak.cpp:104 and :653) bail gracefully.
+	// Callers that don't check may still crash later, but at an informative
+	// site rather than inside memset with no stack context.
+	if (p != NULL)
+		Q_memset(p, 0, size);
 	return p;
 }
 

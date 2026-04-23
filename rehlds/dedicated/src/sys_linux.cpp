@@ -27,6 +27,7 @@
 */
 
 #include "precompiled.h"
+#include <sys/prctl.h>
 
 class CSys: public ISys {
 public:
@@ -97,6 +98,27 @@ void Sleep_Net(int msec)
 	NET_Sleep_Timeout();
 }
 
+// Never sleep — main loop spins as fast as possible, Host_FilterTime rate-limits
+// frame processing. Pins the instance's CPU at 100%. Gets true ~999 fps at
+// sys_ticrate 1000 because total iteration time = ~25µs of non-sleep work only,
+// and Host_FilterTime gates the actual frame rate via its `1.0/fps > delta` check.
+// REQUIRES exclusive CPU (isolcpus + SCHED_FIFO, or dedicated VPS).
+//
+// After Stage C (3.22.0.919), the default -pingboost 2 mode also reaches ~999 fps
+// at ~1-3% CPU via clock_nanosleep(TIMER_ABSTIME) on a 1ms grid in the main loop
+// (see sys_ded.cpp). Prefer pingboost 2 unless exclusive CPU headroom is needed.
+void Sleep_Never(int msec)
+{
+	(void)msec;
+}
+
+// KTP: Enables the clock_nanosleep(TIMER_ABSTIME) 1ms-grid main loop path in
+// sys_ded.cpp. Set true ONLY when -pingboost 2 is selected — other modes keep
+// their own sleep semantics (pingboost 1 uses setitimer+pause(), pingboost 3
+// uses NET_Sleep_Timeout, pingboost 4 spins). Referenced via `extern` by
+// sys_ded.cpp; declared in dedicated.h.
+bool g_use_abs_grid = false;
+
 // linux runs on a 100Hz scheduling clock, so the minimum latency from
 // usleep is 10msec. However, people want lower latency than this..
 //
@@ -160,6 +182,24 @@ void Sys_InitPingboost()
 			break;
 		case 2:
 			Sys_Sleep = Sleep_Select;
+			// KTP Stage C (EXPERIMENTAL, opt-in via -absgrid):
+			// Enables the clock_nanosleep(TIMER_ABSTIME) 1ms-grid path in
+			// sys_ded.cpp instead of Sleep_Select. Goal is ~999 fps at baseline
+			// CPU, but tested-on-our-kernel (6.8.0-110-lowlatency) the clock
+			// primitive does NOT beat the wakeup-latency floor of idle-CPU exit —
+			// observed ~643 fps with 1.5ms interframe + recurring 5ms peaks.
+			// Probably needs idle=poll kernel cmdline or a custom kernel to work.
+			// Disabled by default so fleet pingboost 2 keeps the 977 fps baseline
+			// via Sleep_Select. Opt in only for kernel-research canaries.
+			if (CommandLine()->CheckParm("-absgrid", nullptr))
+			{
+				g_use_abs_grid = true;
+				// Zero timerslack so hrtimer expiries fire tightly. Linux
+				// inherits 50µs timerslack from the parent shell; on SCHED_FIFO
+				// this is supposed to be ignored but behavior depends on kernel
+				// build. Cheap insurance; only matters for the absgrid path.
+				prctl(PR_SET_TIMERSLACK, 1, 0, 0, 0);
+			}
 			break;
 		case 3:
 			Sys_Sleep = Sleep_Net;
@@ -167,6 +207,9 @@ void Sys_InitPingboost()
 			// we Sys_GetProcAddress NET_Sleep() from
 			//engine_i486.so later in this function
 			NET_Sleep_Timeout = (NET_Sleep_t)Sys_GetProcAddress(g_pEngineModule, "NET_Sleep_Timeout");
+			break;
+		case 4:
+			Sys_Sleep = Sleep_Never;
 			break;
 		// just in case
 		default:

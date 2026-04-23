@@ -75,6 +75,154 @@ static std::atomic<int> s_queueTail{0};
 static std::thread* s_steamThread = nullptr;
 static std::atomic<bool> s_steamThreadRunning{false};
 
+// ============================================================
+// KTP: Main → background "refresh server details" work slot.
+// The 5s periodic block in RunFrame used to do SetServerName /
+// SetMaxPlayerCount / SetBotPlayerCount / SetMapName / SetGameDescription
+// / SetGameTags / BUpdateUserData(...) per client inline on the main
+// frame — Steam API calls total 3-6ms, and those spikes account for
+// ~26% of fleet spike volume post-913. Move that work to the existing
+// Steam background thread. Main thread now snapshots state (~20µs of
+// cheap reads) and flips a flag; bg thread publishes to Steam API.
+//
+// Single-slot, race-free without a lock: main writes snapshot only
+// when pending==false; bg reads only when pending==true; acquire/release
+// ordering makes the write visible across threads. If bg hasn't
+// processed the previous one by the next 5s fire, we skip — the next
+// interval's snapshot will carry fresh data, no accumulation needed.
+// ============================================================
+struct SteamRefreshSnapshot {
+	int maxPlayers;
+	int botCount;
+	bool hasPW;
+	bool hasGameTags;
+	char hostname[64];
+	char mapname[64];
+	char gameDesc[128];
+	char gameTags[128];
+	int numClients;
+	struct ClientInfo {
+		uint64 steamid;
+		char name[32];
+		int frags;
+	} clients[MAX_CLIENTS];
+};
+
+static SteamRefreshSnapshot s_refreshSnapshot;
+static std::atomic<bool> s_refreshPending{false};
+
+// Main thread. Snapshot state + flip flag. ~20µs of cheap local reads.
+// Skips if previous refresh is still in flight.
+static void SteamRefresh_Enqueue()
+{
+	if (s_refreshPending.load(std::memory_order_acquire))
+		return;
+
+	int maxPlayers = sv_visiblemaxplayers.value;
+	if (maxPlayers < 0)
+		maxPlayers = g_psvs.maxclients;
+	s_refreshSnapshot.maxPlayers = maxPlayers;
+
+	int botCount = 0;
+	for (int i = 0; i < g_psvs.maxclients; i++)
+	{
+		auto cl = &g_psvs.clients[i];
+		if ((cl->active || cl->spawned || cl->connected) && cl->fakeclient)
+			++botCount;
+	}
+	s_refreshSnapshot.botCount = botCount;
+
+	s_refreshSnapshot.hasPW = (sv_password.string[0] && Q_stricmp(sv_password.string, "none"));
+
+	Q_strncpy(s_refreshSnapshot.hostname, Cvar_VariableString("hostname"), sizeof(s_refreshSnapshot.hostname) - 1);
+	s_refreshSnapshot.hostname[sizeof(s_refreshSnapshot.hostname) - 1] = 0;
+
+	Q_strncpy(s_refreshSnapshot.mapname, g_psv.name, sizeof(s_refreshSnapshot.mapname) - 1);
+	s_refreshSnapshot.mapname[sizeof(s_refreshSnapshot.mapname) - 1] = 0;
+
+#ifdef REHLDS_FIXES
+	const char *desc = gEntityInterface.pfnGetGameDescription();
+	if (desc) {
+		Q_strncpy(s_refreshSnapshot.gameDesc, desc, sizeof(s_refreshSnapshot.gameDesc) - 1);
+		s_refreshSnapshot.gameDesc[sizeof(s_refreshSnapshot.gameDesc) - 1] = 0;
+	} else {
+		s_refreshSnapshot.gameDesc[0] = 0;
+	}
+
+	if (sv_tags.string[0]) {
+		Q_strncpy(s_refreshSnapshot.gameTags, sv_tags.string, sizeof(s_refreshSnapshot.gameTags) - 1);
+		s_refreshSnapshot.gameTags[sizeof(s_refreshSnapshot.gameTags) - 1] = 0;
+		Q_strlwr(s_refreshSnapshot.gameTags);
+		s_refreshSnapshot.hasGameTags = true;
+	} else {
+		s_refreshSnapshot.hasGameTags = false;
+		s_refreshSnapshot.gameTags[0] = 0;
+	}
+#else
+	s_refreshSnapshot.gameDesc[0] = 0;
+	s_refreshSnapshot.gameTags[0] = 0;
+	s_refreshSnapshot.hasGameTags = false;
+#endif
+
+	int n = 0;
+	for (int i = 0; i < g_psvs.maxclients && n < MAX_CLIENTS; i++)
+	{
+		client_t *cl = &g_psvs.clients[i];
+		if (!cl->active) continue;
+		// Defensive: transitional windows during map change / edict reuse can
+		// leave cl->active set while cl->edict is in an invalid state. Skipping
+		// the row is safe — the next 5s refresh will pick them up.
+		if (!cl->edict || cl->edict->free) continue;
+		auto &ci = s_refreshSnapshot.clients[n++];
+		ci.steamid = cl->network_userid.m_SteamID;
+		Q_strncpy(ci.name, cl->name, sizeof(ci.name) - 1);
+		ci.name[sizeof(ci.name) - 1] = 0;
+		ci.frags = cl->edict->v.frags;
+	}
+	s_refreshSnapshot.numClients = n;
+
+	s_refreshPending.store(true, std::memory_order_release);
+}
+
+// Background thread. Publishes the snapshot to Steam API then clears flag.
+// Up to 50ms latency from enqueue (the Steam_ThreadFunc loop period); negligible
+// vs the 5000ms interval at which refreshes are produced.
+static void SteamRefresh_ProcessIfPending()
+{
+	if (!s_refreshPending.load(std::memory_order_acquire))
+		return;
+
+	auto steam = CRehldsPlatformHolder::get()->SteamGameServer();
+	steam->SetMaxPlayerCount(s_refreshSnapshot.maxPlayers);
+	steam->SetBotPlayerCount(s_refreshSnapshot.botCount);
+	steam->SetServerName(s_refreshSnapshot.hostname);
+	steam->SetMapName(s_refreshSnapshot.mapname);
+	steam->SetPasswordProtected(s_refreshSnapshot.hasPW);
+
+#ifdef REHLDS_FIXES
+	if (s_refreshSnapshot.gameDesc[0])
+		steam->SetGameDescription(s_refreshSnapshot.gameDesc);
+	if (s_refreshSnapshot.hasGameTags)
+		steam->SetGameTags(s_refreshSnapshot.gameTags);
+#endif
+
+	// NOTE: Must use the direct SteamGameServer->BUpdateUserData() here even in
+	// REHLDS_FIXES builds. The ISteamGameServer_BUpdateUserData() helper routes
+	// through m_Steam_GSBUpdateUserData hookchain, which plugins (KTP-ReAPI →
+	// AMXX forwards) register handlers on. Those handlers touch main-thread-only
+	// state (g_psvs.clients, AMX VM, etc.) and are NOT safe from this background
+	// thread. Bypassing the hook preserves main-thread safety; plugins that want
+	// to observe score updates still fire from the main-thread call sites
+	// (ProcessLogonSuccess / NotifyOfLevelChange) which remain synchronous.
+	for (int i = 0; i < s_refreshSnapshot.numClients; i++)
+	{
+		auto &ci = s_refreshSnapshot.clients[i];
+		steam->BUpdateUserData(ci.steamid, ci.name, ci.frags);
+	}
+
+	s_refreshPending.store(false, std::memory_order_release);
+}
+
 static void SteamCallbackQueue_Push(const QueuedCallback &cb)
 {
 	int head = s_queueHead.load(std::memory_order_relaxed);
@@ -111,6 +259,11 @@ static void Steam_ThreadFunc()
 
 			iLen = CRehldsPlatformHolder::get()->SteamGameServer()->GetNextOutgoingPacket(szOutBuf, sizeof(szOutBuf), &ip, &port);
 		}
+
+		// KTP: Publish any pending "refresh server details" work that the main
+		// 5s-timer enqueued. Off-main Steam API calls — ~3-6ms per cycle here
+		// instead of on the game frame path.
+		SteamRefresh_ProcessIfPending();
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	}
@@ -607,27 +760,12 @@ void CSteam3Server::RunFrame()
 		}
 
 		m_bHasActivePlayers = bHasPlayers;
-		SendUpdatedServerDetails();
-		bool iHasPW = (sv_password.string[0] && Q_stricmp(sv_password.string, "none"));
-		CRehldsPlatformHolder::get()->SteamGameServer()->SetPasswordProtected(iHasPW);
 
-#ifdef REHLDS_FIXES
-		// Let's get it an up-to-date description of the game
-		CRehldsPlatformHolder::get()->SteamGameServer()->SetGameDescription(gEntityInterface.pfnGetGameDescription());
-#endif
-
-		for (int i = 0; i < g_psvs.maxclients; i++)
-		{
-			client_t* cl = &g_psvs.clients[i];
-			if (!cl->active)
-				continue;
-
-#ifdef REHLDS_FIXES
-			ISteamGameServer_BUpdateUserData(cl->network_userid.m_SteamID, cl->name, cl->edict->v.frags);
-#else
-			CRehldsPlatformHolder::get()->SteamGameServer()->BUpdateUserData(cl->network_userid.m_SteamID, cl->name, cl->edict->v.frags);
-#endif
-		}
+		// KTP: Snapshot + dispatch to background thread. Replaces the old
+		// main-frame synchronous chain of SendUpdatedServerDetails +
+		// SetPasswordProtected + SetGameDescription + per-client BUpdateUserData,
+		// which caused 3-6ms "steam=" frame spikes (26% of fleet spike volume).
+		SteamRefresh_Enqueue();
 
 		if (CRehldsPlatformHolder::get()->SteamGameServer()->WasRestartRequested())
 		{

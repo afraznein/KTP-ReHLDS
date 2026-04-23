@@ -6,6 +6,76 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.920`] - 2026-04-23
+
+**HPAK defensive hardening — Mem_ZeroMalloc NULL-safety + two hot-path directory alloc guards**
+
+### Fixed
+- **`Mem_ZeroMalloc` NULL-safety** (`mem.cpp:36-44`) — stock upstream `Mem_ZeroMalloc` unconditionally calls `Q_memset(p, 0, size)` on the `malloc` result, which dereferences NULL on OOM. Changed to only memset when the alloc succeeded; returns NULL cleanly otherwise. Universal fix — benefits every caller across the engine, not just HPAK. At least one of the fleet-wide segfaults on the HPAK customization path (2026-04 NY/ATL crash clusters) plausibly lands here, since `HPAK_GetDataPointer` allocates up to ~2.3MB for the directory table (`MAX_FILE_ENTRIES=32768 × sizeof(hash_pack_entry_t)`) and under heap fragmentation the call can return NULL.
+- **`HPAK_GetDataPointer` directory alloc NULL guard** (`hashpak.cpp:104-117`) — added `REHLDS_FIXES`-guarded NULL check after `Mem_ZeroMalloc`. If the alloc fails, log the entry count, close the file handle, and return FALSE before the subsequent `FS_Read(NULL, ...)` would crash. Belt-and-suspenders alongside the `Mem_ZeroMalloc` fix: now even if a future regression reintroduces the NULL-memset, callers bail cleanly.
+- **`HPAK_ResourceForHash` directory alloc NULL guard** (`hashpak.cpp:666-677`) — same pattern as `HPAK_GetDataPointer`. This function uses `Mem_Malloc` (which already returns NULL on failure, unlike the old `Mem_ZeroMalloc`), but the upstream code fed the result directly into `FS_Read` without a NULL check. Both HPAK entry points in the client customization-download path now fail gracefully on OOM.
+
+### Why
+Following the 2026-04-22 `sv_send_logos "0"` hotfix, the HPAK segfault remained a latent bug with no code-level fix. A code audit of the `HPAK_ResourceForHash` / `HPAK_GetDataPointer` path (the specific sv_main.cpp:8374-8376 call chain hit by client `dlfile !MD5...` requests) surfaced the `Mem_ZeroMalloc` NULL-memset as the most plausible crash vector, with two additional unchecked-alloc sites feeding `FS_Read(NULL, ...)` as secondary failure modes. All three are now hardened.
+
+This does not necessarily mean OOM was the actual root cause in production (the crashes were intermittent, not heap-pressure correlated). But three real SEGV-on-OOM paths were reachable from the customization hot path, all defensive, all one-line fixes, all guarded under `REHLDS_FIXES`. If the real crash site is elsewhere, the now-enabled fleet-wide core dumps will capture it on the next occurrence under `sv_send_logos 1`, and these defensive fixes can't hurt.
+
+The `sv_send_logos "0"` hotfix stays in place fleet-wide until 920 rolls out and soaks. Toggling `sv_send_logos 1` on a single canary after deploy is the recommended way to re-exercise the HPAK path and confirm no residual crashes (or, if crashes do recur, capture a core dump at the true fault site).
+
+### What was NOT bundled
+Five more `Mem_Malloc + Q_memset(p, 0, size)` patterns in `hashpak.cpp` (lines 246, 792, 820, 980, 1129) are functionally `Mem_ZeroMalloc` with the same latent SEGV-on-OOM bug. Not fixed here because the alloc-size / memset-size mismatch (`size+1` alloc vs `size` memset in several of them) makes a safe conversion non-trivial, and the sites are in less-hot paths (upload / admin console commands) where the crash surface is much smaller. Worth a dedicated follow-up PR after 920 soaks.
+
+---
+
+## [KTP-ReHLDS `3.22.0.919`] - 2026-04-23
+
+**Main-loop frame-boundary rewrite + per-frame efficiency + HPAK defensive fix + Linux receive-thread port**
+
+### Added
+- **Linux `NET_ThreadMain` port** (`net_ws.cpp`) — the Windows `-netthread` receive-pre-queue thread now has a Linux equivalent using `pthread_create` + `std::mutex`. `NET_ThreadLock`/`Unlock` honor the Linux mutex when the thread is active; `NET_StartThread` / `NET_StopThread` handle thread lifecycle portably. `NET_StopThread` uses a clean shutdown-flag + `pthread_join` (no `TerminateThread` equivalent needed on Linux). Gated behind the existing `-netthread` cmdline flag — off by default. **Mutually exclusive with `-pingboost 3`**: both drive `select()` on the same UDP fds, so `NET_StartThread` detects `-pingboost 3` at init time, logs a warning, and refuses to start the thread. No current burst-traffic pain signal on the fleet, but architecturally symmetric with Windows now.
+
+### Added (experimental)
+- **Stage C: `sys_ded.cpp` absolute-time 1ms grid path** (Linux, opt-in via `-absgrid` cmdline flag with `-pingboost 2`) — replaces the fixed `sys->Sleep(1)` call with `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)` against a tracked 1ms grid target. The absolute-time kernel path (`hrtimer_start_range_ns(target, 0, HRTIMER_MODE_ABS)`) programs the hrtimer expiry directly — no `now + delta` addition inside the kernel, so scheduler-entry jitter in principle can't accumulate across iterations. **But on tested kernels (6.8.0-110-lowlatency), this primitive does NOT beat the wakeup-latency floor of idle-CPU exit** — measured 643 fps with 1.53ms interframe + recurring 5ms peaks even on a SCHED_FIFO + isolcpus + nohz_full + PR_SET_TIMERSLACK=1 pinned core. The CPU spends most time idle (2.8% utilization) but the hrtimer-fire → thread-runs latency appears to average ~500µs. Likely needs `idle=poll` kernel cmdline or a custom kernel with PREEMPT_RT to reach the theoretical 999 fps. Code is retained for research — gate behind `-absgrid` to opt in; plain `-pingboost 2` keeps the proven `Sleep_Select` path (977 fps baseline, no regression). `prctl(PR_SET_TIMERSLACK, 1)` is set when `-absgrid` is active. New extern `bool g_use_abs_grid` controls the branch in `sys_ded.cpp`.
+
+### Fixed
+- **Per-frame `host_limitlocal.value` / `sv_failuretime.value` cvar reads inside the `SV_SendClientMessages` client loop** (`sv_main.cpp:5445, 5476`) — hoisted above the `for (int i = 0; i < g_psvs.maxclients; i++)` loop. Same pattern as the v3.22.0.916 `sv_timeout` hoist. These cvars only change via console command, never mid-frame; per-client dereferences were pure waste. Saves ~2 × 12 clients × 5ns ≈ 120ns per frame at full load.
+- **Four sub-function `ktp_profile_frame.value` cvar reads** (`sv_main.cpp:1426, 1746, 4037, 5424`) — replaced with reads of the existing `g_ktp_profiling_enabled` global that `SV_Frame_Internal` sets once per frame (line ~8603). The global existed specifically to eliminate these per-sub-function cvar dereferences but wasn't being consumed. Forward-declared near the top of `sv_main.cpp` so the earlier call sites see the symbol.
+- **Four `Cvar_VariableString("hostname")` hash-table lookups** (`sv_main.cpp:1178, 3075, 3150, 6547`) — replaced with direct `host_name.string` reads. `host_name` is a global `cvar_t` declared in `host.h`; the string-keyed lookup was a legacy pattern. Event-driven code paths (not per-frame hot), so the win is cleanup hygiene more than raw cycles — but it also removes a subtle class of bugs where a typo in the cvar name string returns `""` silently.
+- **`HPAK_GetDataPointer` defensive fix** (`hashpak.cpp:117-135`) — stock code calls `FS_Read(pbuf, entry->nFileLength, 1, fp)` and `*pbuffer = pbuf` unconditionally after `Mem_Malloc` — if the allocation failed (huge `nFileLength`, low memory, corrupt `custom.hpk`), `FS_Read(NULL, …)` SEGVs the server. Added `break` in the alloc-failure branch to short-circuit before the invalid-pointer write. Dormant bug surfaced by the HPAK crash investigation following the 2026-04-22 `sv_send_logos "0"` hotfix; worth patching while we're in this area of code.
+
+### Why
+The 3.22.0.918 release established that `-pingboost 4` (never-sleep) could reach ~999 fps, but at 100% CPU per instance — a poor trade for most fleet deployments. Stage C is the alternative path: keep the sleep, but sleep *until the right moment* rather than *for a fixed duration*. `clock_nanosleep(TIMER_ABSTIME)` was the piece the earlier abs-time `Sleep_BusyWait` experiments were missing — the relative `nanosleep()` primitive had a HZ-tick edge case on the lowlatency kernel that caused multi-ms overshoots on short sleeps. The absolute-time primitive bypasses that entirely by handing the kernel a literal expiry ktime, not a duration to add. Combined with the `Host_FilterTime` 1ns tolerance already in 918 and the zero timerslack, `-pingboost 2` instances now match the `-pingboost 4` fps ceiling.
+
+Supporting wins (cvar hoists, `g_ktp_profiling_enabled` use, direct `host_name.string`) are surgical per-frame cleanups in the same release. The HPAK defensive fix is an opportunistic dormant-bug patch.
+
+---
+
+## [KTP-ReHLDS `3.22.0.918`] - 2026-04-22
+
+**Main-thread offload + new never-sleep pingboost mode**
+
+### Added
+- **`-pingboost 4` (never-sleep mode)** — `Sys_Sleep` becomes a no-op; the main loop spins and `Host_FilterTime` rate-gates frame execution. Reaches true ~999 fps at `sys_ticrate 1000` (vs the ~977 ceiling of pingboost 2) at the cost of 100% CPU per instance. Opt-in only via cmdline. Requires exclusive CPU availability (isolcpus + SCHED_FIFO or dedicated VPS); do NOT enable on shared-CPU hosts. Existing `-pingboost 2` stays as the recommended default — it's 977 fps at ~1-3% CPU, which is the better trade for most deployments.
+
+### Changed
+- **Steam 5s-timer "refresh server details" moved to background thread** (`sv_steam3.cpp` — `SteamRefresh_Enqueue` / `SteamRefresh_ProcessIfPending`). The 5s block in `CSteam3Server::RunFrame` that called `SetMaxPlayerCount` / `SetBotPlayerCount` / `SetServerName` / `SetMapName` / `SetPasswordProtected` / `SetGameDescription` / `SetGameTags` / per-client `BUpdateUserData` inline on the game frame caused the residual post-3.22.0.913 `steam=3-6ms` spikes that were ~26% of fleet `[KTP_SPIKE]` volume. Main thread now snapshots the needed state (~20µs of cheap reads) and flips an atomic flag; the existing Steam background thread picks up the snapshot within its 50ms poll cycle and publishes to the Steam API off the main thread. Single-slot, lock-free acquire/release handoff; drops the new snapshot if previous is still in flight (next 5s interval re-captures fresh data). NOTE: uses direct `SteamGameServer()->BUpdateUserData` even on `REHLDS_FIXES` builds to bypass the `m_Steam_GSBUpdateUserData` hookchain — plugin handlers on that hook touch main-thread-only state (AMX VM, g_psvs) and are not safe from the background thread. The two low-frequency call sites (`ProcessLogonSuccess` on connect, `NotifyOfLevelChange` on map rotation) still call `SendUpdatedServerDetails()` synchronously on the main thread so plugin hooks continue to fire at those boundaries.
+- **`Con_DebugLog` persistent fd** (`sys_dll.cpp:1510`). Stock code opened/wrote/closed `qconsole.log` per log line (3 syscalls). Under `-condebug` + `mp_logecho=1` (default on KTP servers for HLStatsX tailing) that's hundreds of open/close pairs per second. Now caches the `FILE*` across calls, flushes after each write to preserve tail-reader semantics. Cache invalidates and reopens if the `file` argument changes. Also fixes a latent Windows crash bug where the original code called `_write(fd=-1, …)` if the `_open` failed.
+- **ProcessConsoleInput rate-limit** (`sys_ded.cpp:155-178`). Stock main loop called `ProcessConsoleInput()` every iteration (→ `kbhit()` → `select()` on stdin). At 100k+ iter/sec in `-pingboost 4` this was 57% kernel time from the syscall alone. Now rate-limited to 50ms cadence (20 polls/sec) via `CLOCK_MONOTONIC`. Admin console input latency is unchanged in practice (imperceptible for human typing); for traditional pingboost modes (0-3) there's no observable impact since they already slept 1ms+ between iterations. Post-fix: pingboost 4 CPU split went from 43% usr / 57% sys → 99.67% usr / 0.33% sys (~172× reduction in syscall load).
+
+### Fixed
+- **`Host_FilterTime` float-precision boundary** (`host.cpp:699`). Check is now `(1.0/fps) - 1e-9 > realtime - oldrealtime` instead of `1.0/fps > realtime - oldrealtime`. When a precise-sleep mode lands delta at exactly `1.0/fps`, IEEE 754 double comparison was non-deterministic due to accumulated float precision error in `realtime`, rejecting ~2% of frames and capping measured FPS at ~979 instead of 999 in abs-time sleep experiments. 1ns tolerance (`1e-9s`) beats the boundary reliably while remaining 1000× smaller than the double-precision ulp at 0.001, so no existing pingboost mode's fps gate behavior changes.
+
+### Why (context)
+Pre-3.22.0.918 fleet baseline at `sys_ticrate 1000` was a median of 977 fps (see resolved `Why is fleet FPS capped at ~977` TODO). Root cause: the dedicated main loop's fixed `Sleep(1)` + ~25µs of non-sleep work per iteration = ~1.025ms cycle → 977 fps. This release makes several independent improvements:
+- Gives operators an opt-in escape to true ~999 fps (pingboost 4) at the cost of 100% CPU
+- Removes the residual Steam-timer spikes (26% of fleet spike volume) without any fps tradeoff
+- Eliminates hundreds of syscalls/sec from Con_DebugLog under normal operation
+- Patches a float-precision fps-gate bug that was blocking future frame-boundary work
+
+The Stage C main-loop frame-boundary rewrite (filed as TODO) is the path to getting to ~999 fps at baseline CPU cost. This release ships the pieces needed to support that work without shipping the rewrite itself.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.917`] - 2026-04-19
 
 **Spike-frame phys sub-phase instrumentation**

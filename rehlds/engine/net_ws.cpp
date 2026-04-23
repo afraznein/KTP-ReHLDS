@@ -28,6 +28,12 @@
 
 #include "precompiled.h"
 
+#ifndef _WIN32
+#include <pthread.h>
+#include <mutex>
+#include <atomic>
+#endif
+
 qboolean net_thread_initialized;
 
 loopback_t loopbacks[2];
@@ -71,6 +77,18 @@ net_messages_t *normalqueue;
 HANDLE hNetThread;
 DWORD dwNetThreadId;
 CRITICAL_SECTION net_cs;
+#else
+// KTP: Linux port of the Windows receive-pre-queue thread. std::mutex replaces
+// CRITICAL_SECTION; pthread replaces HANDLE/CreateThread (pthread instead of
+// std::thread because the engine is built with -fno-exceptions and the
+// std::thread constructor can throw on resource exhaustion). `net_thread_run`
+// is the shutdown flag — the thread loop polls it each iteration so we can
+// clean-join instead of the Windows TerminateThread(). net_thread_initialized
+// (qboolean, declared above) is still the set-once init guard shared with Windows.
+static pthread_t s_netThreadLinux;
+static bool      s_netThreadLinuxCreated = false;
+static std::mutex s_netMutexLinux;
+static std::atomic<bool> s_netThreadRunLinux{false};
 #endif
 
 cvar_t net_address = { "net_address", "", 0, 0.0f, NULL };
@@ -105,7 +123,12 @@ void NET_ThreadLock()
 	{
 		EnterCriticalSection(&net_cs);
 	}
-#endif // _WIN32
+#else
+	if (use_thread && net_thread_initialized)
+	{
+		s_netMutexLinux.lock();
+	}
+#endif
 }
 
 void NET_ThreadUnlock()
@@ -115,7 +138,12 @@ void NET_ThreadUnlock()
 	{
 		LeaveCriticalSection(&net_cs);
 	}
-#endif // _WIN32
+#else
+	if (use_thread && net_thread_initialized)
+	{
+		s_netMutexLinux.unlock();
+	}
+#endif
 }
 
 unsigned short Q_ntohs(unsigned short netshort)
@@ -1130,12 +1158,77 @@ DWORD WINAPI NET_ThreadMain(LPVOID lpThreadParameter)
 	return 0;
 }
 
+#else // _WIN32
+
+// KTP: Linux port of NET_ThreadMain. Same loop structure as Windows:
+// select() on the UDP sockets (via NET_Sleep), drain to the per-socket
+// message queue, release lock so NET_GetPacket on the main thread can
+// consume. Uses std::atomic shutdown flag so NET_StopThread can clean-join
+// rather than the Windows TerminateThread path.
+static void *NET_ThreadMain_Linux(void *)
+{
+	while (s_netThreadRunLinux.load(std::memory_order_relaxed))
+	{
+		while (NET_Sleep())
+		{
+			qboolean bret = FALSE;
+			for (int sock = 0; sock < NS_MAX; sock++)
+			{
+				NET_ThreadLock();
+
+				bret = NET_QueuePacket((netsrc_t)sock);
+				if (bret)
+				{
+					net_messages_t *pmsg = NET_AllocMsg(in_message.cursize);
+					pmsg->next = nullptr;
+					Q_memcpy(pmsg->buffer, in_message.data, in_message.cursize);
+					Q_memcpy(&pmsg->from, &in_from, sizeof(pmsg->from));
+
+					net_messages_t *p = messages[sock];
+					if (p)
+					{
+						while (p->next)
+							p = p->next;
+						p->next = pmsg;
+					}
+					else
+					{
+						messages[sock] = pmsg;
+					}
+				}
+
+				NET_ThreadUnlock();
+			}
+
+			if (!bret)
+				break;
+		}
+
+		Sys_Sleep(1);
+	}
+	return nullptr;
+}
+
 #endif // _WIN32
 
 void NET_StartThread()
 {
 	if (use_thread)
 	{
+		// KTP: -netthread and -pingboost 3 both do select() on the server UDP
+		// fds — the receive thread would race against Sleep_Net (pingboost 3's
+		// sleep primitive) on the same sockets. The stagger logic in
+		// NET_Sleep_Timeout assumes the main thread owns the recv, which breaks
+		// when the bg thread consumes packets first. Disable the receive thread
+		// when pingboost 3 is active; operator must pick one mode.
+		int pb_idx = COM_CheckParm("-pingboost");
+		if (pb_idx > 0 && (pb_idx + 1) < com_argc && Q_atoi(com_argv[pb_idx + 1]) == 3)
+		{
+			Con_Printf("-netthread disabled: incompatible with -pingboost 3 (both drive select() on the same fds)\n");
+			use_thread = FALSE;
+			return;
+		}
+
 		if (!net_thread_initialized)
 		{
 			net_thread_initialized = TRUE;
@@ -1150,7 +1243,20 @@ void NET_StartThread()
 				use_thread = FALSE;
 				Sys_Error("%s: Couldn't initialize network thread, run without -netthread\n", __func__);
 			}
-#endif // _WIN32
+#else
+			s_netThreadRunLinux.store(true, std::memory_order_relaxed);
+			if (pthread_create(&s_netThreadLinux, nullptr, NET_ThreadMain_Linux, nullptr) != 0)
+			{
+				s_netThreadRunLinux.store(false, std::memory_order_relaxed);
+				net_thread_initialized = FALSE;
+				use_thread = FALSE;
+				Sys_Error("%s: Couldn't initialize network thread, run without -netthread\n", __func__);
+			}
+			else
+			{
+				s_netThreadLinuxCreated = true;
+			}
+#endif
 		}
 	}
 }
@@ -1164,7 +1270,15 @@ void NET_StopThread()
 #ifdef _WIN32
 			TerminateThread(hNetThread, 0);
 			DeleteCriticalSection(&net_cs);
-#endif // _WIN32
+#else
+			// Clean-join: signal shutdown, let the loop exit naturally, then join.
+			s_netThreadRunLinux.store(false, std::memory_order_relaxed);
+			if (s_netThreadLinuxCreated)
+			{
+				pthread_join(s_netThreadLinux, nullptr);
+				s_netThreadLinuxCreated = false;
+			}
+#endif
 			net_thread_initialized = FALSE;
 		}
 	}

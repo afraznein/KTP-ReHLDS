@@ -1507,6 +1507,18 @@ void Con_Init(void)
 	Cmd_AddCommand("condebug", Con_Debug_f);
 }
 
+// KTP: Persistent-fd variant of the original open/write/close-per-line path.
+// Stock code called FS_Open("at") + FS_FPrintf + FS_Close on EVERY log line,
+// which is ~3 syscalls per line. Under -condebug (default on KTP servers for
+// HLStatsX tailing) + mp_logecho=1 this is the noisiest IO path in the engine
+// — KTP_PROFILE alone emits 11+ lines per 10s interval, each going through
+// this function. Keep the file handle open for the server's lifetime and
+// flush after each line so HLStatsX's tail-based parser sees new lines
+// immediately (same observable behavior as the old close-after-every-line
+// semantics, minus the open/close syscall pair).
+//
+// Cached per `file` argument — callers currently always pass "qconsole.log"
+// but we handle path changes by closing and reopening if the path differs.
 void Con_DebugLog(const char *file, const char *fmt, ...)
 {
 	va_list argptr;
@@ -1520,16 +1532,52 @@ void Con_DebugLog(const char *file, const char *fmt, ...)
 
 #ifdef _WIN32
 
-	int fd = _open(file, _O_WRONLY | _O_APPEND | _O_CREAT, _S_IREAD | _S_IWRITE);
-	int len = Q_strlen(data);
-	_write(fd, data, len);
-	_close(fd);
+	static int s_cached_fd = -1;
+	static char s_cached_file[MAX_PATH] = {0};
+
+	if (Q_strcmp(s_cached_file, file) != 0)
+	{
+		if (s_cached_fd >= 0)
+			_close(s_cached_fd);
+		s_cached_fd = _open(file, _O_WRONLY | _O_APPEND | _O_CREAT, _S_IREAD | _S_IWRITE);
+		if (s_cached_fd >= 0)
+			Q_strncpy(s_cached_file, file, sizeof(s_cached_file) - 1);
+		else
+			s_cached_file[0] = 0;
+	}
+
+	if (s_cached_fd >= 0)
+	{
+		int len = Q_strlen(data);
+		_write(s_cached_fd, data, len);
+		// Win32 _write is unbuffered at the CRT level, so no explicit flush needed
+		// to make the bytes visible to a concurrent reader of the same file.
+	}
 
 #else // _WIN32
 
-	FILE *fd = FS_Open(file, "at");
-	FS_FPrintf(fd, "%s", data);
-	FS_Close(fd);
+	static FILE *s_cached_fp = NULL;
+	static char s_cached_file[MAX_PATH] = {0};
+
+	if (Q_strcmp(s_cached_file, file) != 0)
+	{
+		if (s_cached_fp)
+			FS_Close(s_cached_fp);
+		s_cached_fp = FS_Open(file, "at");
+		if (s_cached_fp)
+			Q_strncpy(s_cached_file, file, sizeof(s_cached_file) - 1);
+		else
+			s_cached_file[0] = 0;
+	}
+
+	if (s_cached_fp)
+	{
+		FS_FPrintf(s_cached_fp, "%s", data);
+		// Flush to kernel so tail-based readers (HLStatsX) see new lines without
+		// having to wait for the default 4KB stdio buffer to fill. Cheap: one
+		// write() syscall instead of open()+write()+close() per line.
+		FS_Flush(s_cached_fp);
+	}
 
 #endif // _WIN32
 }

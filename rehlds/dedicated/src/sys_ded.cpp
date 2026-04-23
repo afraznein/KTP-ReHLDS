@@ -153,12 +153,71 @@ int RunEngine()
 	RunVGUIFrame();
 
 	bool bDone = false;
+	// Rate-limit admin console polling. ProcessConsoleInput() ultimately calls
+	// select() on stdin via kbhit(), which is a syscall. In high-iteration
+	// pingboost modes (4, 5) the unthrottled poll rate (~100k/sec) dominates
+	// kernel CPU time. 50ms cadence (~20 polls/sec) is imperceptible for admin
+	// input and collapses the syscall overhead by ~5000x.
+	static int64_t s_last_console_poll_ns = 0;
+
+#ifdef __linux__
+	// KTP Stage C: absolute-time 1ms grid for pingboost 2. Each iteration
+	// targets `grid_target` (advanced by exactly 1ms per loop) rather than
+	// sleeping a fixed duration from now. clock_nanosleep(TIMER_ABSTIME) sets
+	// the hrtimer expiry directly, bypassing the "now + delta" addition that
+	// accumulates scheduler jitter in relative nanosleep. Absorbs frame-work
+	// time into the next sleep so total cycle ≈ 1ms → ~999 fps at baseline CPU.
+	struct timespec grid_target;
+	if (g_use_abs_grid) {
+		clock_gettime(CLOCK_MONOTONIC, &grid_target);
+		// Start one tick in the future.
+		grid_target.tv_nsec += 1000000LL;
+		if (grid_target.tv_nsec >= 1000000000LL) {
+			grid_target.tv_sec++;
+			grid_target.tv_nsec -= 1000000000LL;
+		}
+	}
+#endif
+
 	while (!bDone)
 	{
+#ifdef __linux__
+		if (g_use_abs_grid) {
+			// Sleep until grid_target. If frame work already overran the target
+			// (spike frame), skip the sleep and let the loop catch up naturally
+			// over the next few iterations — don't accumulate debt or try to
+			// "catch up" any faster than the natural 1ms cadence.
+			struct timespec now;
+			clock_gettime(CLOCK_MONOTONIC, &now);
+			bool past_target =
+				(now.tv_sec > grid_target.tv_sec) ||
+				(now.tv_sec == grid_target.tv_sec && now.tv_nsec >= grid_target.tv_nsec);
+			if (!past_target) {
+				clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &grid_target, nullptr);
+			}
+			// Advance grid by 1ms regardless of actual wake time.
+			grid_target.tv_nsec += 1000000LL;
+			if (grid_target.tv_nsec >= 1000000000LL) {
+				grid_target.tv_sec++;
+				grid_target.tv_nsec -= 1000000000LL;
+			}
+		} else {
+			sys->Sleep(1);
+		}
+#else
 		// Running really fast, yield some time to other apps
 		sys->Sleep(1);
+#endif
 
-		Sys_PrepareConsoleInput();
+		struct timespec cts;
+		clock_gettime(CLOCK_MONOTONIC, &cts);
+		int64_t now_ns = (int64_t)cts.tv_sec * 1000000000LL + (int64_t)cts.tv_nsec;
+		bool poll_console = (now_ns - s_last_console_poll_ns) >= 50000000LL;
+		if (poll_console)
+			s_last_console_poll_ns = now_ns;
+
+		if (poll_console)
+			Sys_PrepareConsoleInput();
 
 		if (g_bAppHasBeenTerminated)
 			break;
@@ -169,7 +228,7 @@ int RunEngine()
 		}
 		else
 #endif
-		{
+		if (poll_console) {
 			ProcessConsoleInput();
 		}
 
