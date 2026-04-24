@@ -6,6 +6,30 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.921`] - 2026-04-23
+
+**HPAK secondary-path hardening — 5 more `Mem_Malloc` + `Q_memset` sites guarded**
+
+### Fixed
+Follow-up to 3.22.0.920's hot-path `Mem_ZeroMalloc` / directory-alloc hardening. Audit of `hashpak.cpp` surfaced five additional sites in less-hot upload and admin-console paths that share the same bug class — `Mem_Malloc` followed by `Q_memset(p, 0, size)` that would SEGV inside glibc `memset` on OOM NULL return. All now `REHLDS_FIXES`-guarded with explicit NULL checks.
+
+- **`HPAK_AddLump:259`** — pDiskData MD5-verification buffer. On OOM, logs and returns; caller's upload is dropped (correct failure mode — can't verify the hash).
+- **`HPAK_CreatePak:816`** — same pattern as `HPAK_AddLump`. On OOM, closes the output file handle and returns (no directory entries written yet, safe to abort).
+- **`HPAK_CreatePak:844`** — directory entry alloc. On OOM, closes fp and returns. Header was already written; the resulting header-only file fails `HPAK_GetDataPointer`'s `nEntries < 1` validation on next read and is treated as empty — acceptable failure mode.
+- **`HPAK_Validate_f:1004`** — per-entry alloc inside the directory-iteration loop (admin `hpkval` command). On OOM, prints `skip (failed to alloc N bytes)` and `continue`s to the next entry; partial validation results are more useful than aborting the whole listing.
+- **`HPAK_Extract_f:1153`** — per-entry alloc inside the extraction loop (admin `hpkextract` command). Same `continue`-on-failure pattern; partial extraction is more useful than abort.
+
+### Why
+These five sites were explicitly called out in 3.22.0.920's CHANGELOG as "not bundled — less-hot paths, alloc-size/memset-size mismatch makes safe conversion non-trivial." This release keeps the exact existing `Mem_Malloc(size+1)` / `Q_memset(p, 0, size)` behavior on the success path (preserving the intentional trailing-byte uninitialized-space pattern) and only adds explicit NULL guards on the failure path. No behavioral change for OOM-free operation.
+
+### Why NOT bundled with 920
+Scope hygiene: 920 shipped with four other changes bundled into the 3 AM ET 2026-04-24 auto-swap (KTPAMXX 2.7.13, fleet JIT activation, KTPMatchHandler 0.10.114, restart-script lockfile patch). Adding a sixth change right before activation would have made regression isolation harder if anything went wrong. 921 lands after 920 has soaked.
+
+### Rollout
+Not auto-staged. Committed to KTPReHLDS `main`; hold for a future release bundle once 920 has validated clean on the fleet (3-5 day soak). No urgency — `sv_send_logos 0` fleet-wide means the HPAK upload paths aren't exercised today.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.920`] - 2026-04-23
 
 **HPAK defensive hardening — Mem_ZeroMalloc NULL-safety + two hot-path directory alloc guards**

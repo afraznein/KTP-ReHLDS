@@ -257,6 +257,17 @@ void HPAK_AddLump(qboolean bUseQueue, char *pakname, struct resource_s *pResourc
 	else
 	{
 		pDiskData = (byte *)Mem_Malloc(pResource->nDownloadSize + 1);
+#ifdef REHLDS_FIXES
+		// KTP 3.22.0.921: Mem_Malloc returns NULL on OOM (see mem.cpp
+		// Mem_ZeroMalloc NULL-safety in 920). Q_memset + FS_Read on NULL
+		// would SEGV. Bail cleanly — caller's upload is dropped, which is
+		// the correct failure mode when we can't verify the MD5 hash.
+		if (!pDiskData)
+		{
+			Con_Printf("%s: failed to allocate %i bytes for MD5 verification\n", __func__, pResource->nDownloadSize + 1);
+			return;
+		}
+#endif
 		Q_memset(pDiskData, 0, pResource->nDownloadSize);
 
 		FS_Read(pDiskData, pResource->nDownloadSize, 1, fpSource);
@@ -814,6 +825,16 @@ void HPAK_CreatePak(char *pakname, struct resource_s *pResource, void *pData, Fi
 	{
 		curpos = FS_Tell(fpSource);
 		pDiskData = (byte *)Mem_Malloc(pResource->nDownloadSize + 1);
+#ifdef REHLDS_FIXES
+		// KTP 3.22.0.921: bail on OOM (same rationale as HPAK_AddLump).
+		// Close the output file we just created — no entries written yet.
+		if (!pDiskData)
+		{
+			Con_Printf("HPAK_CreatePak: failed to allocate %i bytes for MD5 verification\n", pResource->nDownloadSize + 1);
+			FS_Close(fp);
+			return;
+		}
+#endif
 		Q_memset(pDiskData, 0, pResource->nDownloadSize);
 		FS_Read(pDiskData, pResource->nDownloadSize, 1, fp);
 		FS_Seek(fpSource, curpos, FILESYSTEM_SEEK_HEAD);
@@ -842,6 +863,18 @@ void HPAK_CreatePak(char *pakname, struct resource_s *pResource, void *pData, Fi
 
 	hash_pack_dir.nEntries = 1;
 	hash_pack_dir.p_rgEntries = (hash_pack_entry_t *)Mem_Malloc(sizeof(hash_pack_entry_t));
+#ifdef REHLDS_FIXES
+	// KTP 3.22.0.921: directory entry alloc failure — abort pak creation.
+	// Header was already written to fp; close and bail. Result is a header-only
+	// file which will fail HPAK_GetDataPointer's nEntries validation on next
+	// read and be treated as empty/corrupt — acceptable failure mode.
+	if (!hash_pack_dir.p_rgEntries)
+	{
+		Con_Printf("HPAK_CreatePak: failed to allocate directory entry\n");
+		FS_Close(fp);
+		return;
+	}
+#endif
 	Q_memset(hash_pack_dir.p_rgEntries, 0, sizeof(hash_pack_entry_t) * hash_pack_dir.nEntries);
 
 	pCurrentEntry = &hash_pack_dir.p_rgEntries[0];
@@ -1002,6 +1035,16 @@ void HPAK_Validate_f(void)
 		else
 		{
 			pData = (byte *)Mem_Malloc(nDataSize + 1);
+#ifdef REHLDS_FIXES
+			// KTP 3.22.0.921: per-entry alloc failure — skip this entry, continue
+			// validating the rest of the HPAK. Admin-command path (hpkval);
+			// partial results are more useful than abort.
+			if (!pData)
+			{
+				Con_Printf(" skip (failed to alloc %i bytes)\n", nDataSize + 1);
+				continue;
+			}
+#endif
 			Q_memset(pData, 0, nDataSize);
 			FS_Seek(fp, entry->nOffset, FILESYSTEM_SEEK_HEAD);
 			FS_Read(pData, nDataSize, 1, fp);
@@ -1151,6 +1194,16 @@ void HPAK_Extract_f(void)
 			else
 			{
 				pData = (byte *)Mem_Malloc(nDataSize + 1);
+#ifdef REHLDS_FIXES
+				// KTP 3.22.0.921: per-entry alloc failure — skip this entry,
+				// continue extracting the rest. Admin-command path (hpkextract);
+				// partial extraction is more useful than abort.
+				if (!pData)
+				{
+					Con_Printf("Skip entry %i (failed to alloc %i bytes)\n", nCurrent, nDataSize + 1);
+					continue;
+				}
+#endif
 				Q_memset(pData, 0, nDataSize);
 				FS_Seek(fp, entry->nOffset, FILESYSTEM_SEEK_HEAD);
 				FS_Read(pData, nDataSize, 1, fp);
