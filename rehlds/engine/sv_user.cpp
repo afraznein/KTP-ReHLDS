@@ -1977,17 +1977,34 @@ void EXT_FUNC SV_HandleClientMessage_api(IGameClient* client, uint8 opcode) {
 			double ktp_op_ms = (Sys_FloatTime() - ktp_op_t0) * 1000.0;
 			if (ktp_op_ms > 1.0)
 			{
-				if (opcode == clc_stringcmd && g_ktp_last_stringcmd[0])
+				// KTP 3.22.0.923: suppress the alert for HLTV spawn opcodes.
+				// HLTV reconnects every ~20 min at match half transitions and
+				// each `spawn N ...` takes 4-5ms inside the game DLL's WriteSpawn
+				// (gamedll=3.2ms for HLTV vs 0.06ms for real clients per KTP_SPAWN
+				// profiling data — HLTV takes the iterate-all-entities slow path
+				// that real clients short-circuit). Cost lives in dod_i386.so
+				// which we don't own, and the cost is unavoidable for HLTV
+				// recording correctness. Historically this was 85% of KTP_OPCODE
+				// alert volume. Fine-grained KTP_SPAWN / KTP_WRITESPAWN phase
+				// logs still emit — only the top-level noisy alert is suppressed.
+				bool ktp_suppress = (cl->proxy != 0)
+				                    && opcode == clc_stringcmd
+				                    && g_ktp_last_stringcmd[0]
+				                    && Q_strncmp(g_ktp_last_stringcmd, "spawn ", 6) == 0;
+				if (!ktp_suppress)
 				{
-					Log_Printf("[KTP_OPCODE] client=%d(%s) opcode=%s time=%.3fms cmd=\"%s\"\n",
-						cl - g_psvs.clients, cl->name,
-						sv_clcfuncs[opcode].pszname, ktp_op_ms, g_ktp_last_stringcmd);
-				}
-				else
-				{
-					Log_Printf("[KTP_OPCODE] client=%d(%s) opcode=%s time=%.3fms\n",
-						cl - g_psvs.clients, cl->name,
-						sv_clcfuncs[opcode].pszname, ktp_op_ms);
+					if (opcode == clc_stringcmd && g_ktp_last_stringcmd[0])
+					{
+						Log_Printf("[KTP_OPCODE] client=%d(%s) opcode=%s time=%.3fms cmd=\"%s\"\n",
+							cl - g_psvs.clients, cl->name,
+							sv_clcfuncs[opcode].pszname, ktp_op_ms, g_ktp_last_stringcmd);
+					}
+					else
+					{
+						Log_Printf("[KTP_OPCODE] client=%d(%s) opcode=%s time=%.3fms\n",
+							cl - g_psvs.clients, cl->name,
+							sv_clcfuncs[opcode].pszname, ktp_op_ms);
+					}
 				}
 			}
 		}

@@ -6,6 +6,21 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.923`] - 2026-04-24
+
+**Suppress KTP_OPCODE alert for HLTV `spawn` opcodes (log-noise cleanup)**
+
+### Fixed
+- **`[KTP_OPCODE]` alert no longer fires for HLTV `spawn N ...` commands** (`sv_user.cpp:1975-1998`). HLTV clients hit `WriteSpawn`'s slow-path (iterate-all-entities) inside the game DLL, taking p50=3.2ms in `gamedll` vs p50=0.06ms for real clients — a ~50× asymmetry. Root cost is in `dod_i386.so` (not KTP-controllable, same situation as the 158ms `pfnStartFrame` capture spikes). HLTV reconnects every ~20 min at match half transitions, each reconnect emitted a ~4-5ms `[KTP_OPCODE]` alert — historically this was 85% of total alert volume, pure noise that made real-client alert patterns harder to see. Fine-grained `[KTP_SPAWN]` / `[KTP_WRITESPAWN]` phase profiling still emits unchanged — only the noisy top-level alert is suppressed when `cl->proxy != 0` AND the command starts with `"spawn "`.
+
+### Why
+The underlying game-DLL cost is unavoidable for HLTV recording correctness — HLTV needs to see all entity state, so the slow path is legitimate. Filter at the alert-threshold level rather than chasing a binary-patch to `dod_i386.so`. Data captured 2026-04-24 fleet-wide: HLTV SPAWN n=7591 p50=4.818ms p95=5.776ms vs real-client SPAWN n=522 p50=1.812ms p95=5.058ms, writespawn-phase gap entirely in `gamedll` phase (p50=3.197ms HLTV vs 0.062ms real).
+
+### Rollout
+Same model as 921 + 922: not auto-staged. Committed to main; bundles with future release once 920 has soaked clean on the fleet.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.922`] - 2026-04-23
 
 **Micro-wins from the sv_phys.cpp frame-efficiency pass**
