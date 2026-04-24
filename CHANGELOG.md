@@ -6,6 +6,21 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.922`] - 2026-04-23
+
+**Micro-wins from the sv_phys.cpp frame-efficiency pass**
+
+### Fixed
+- **`SV_Physics` entity-loop: hoist `gGlobalVariables.force_retouch` and `g_psvs.maxclients`** (`sv_phys.cpp:1494-1510`). The `force_retouch` check is a global float load + compare executed per entity; the field is ~always zero during normal frames (only set transiently during level transitions). Cached as a `const bool` before the loop so the branch folds to a single bool test per entity. `g_psvs.maxclients` is fixed for the server run — hoisted as a `const int`. Combined savings ~5-15ns per entity per frame. At 12 players / peak ~80 active entities mid-match, that's ~0.4-1.2µs/frame — immaterial on its own but a zero-risk cleanup that matches the `sv_timeout` hoist pattern from 3.22.0.916 and the `host_limitlocal` / `sv_failuretime` hoists from 3.22.0.919.
+
+### What was NOT bundled
+The same scan surfaced a bigger potential win: hoisting `sv_gravity.value` / `sv_friction.value` / `sv_stopspeed.value` / `sv_bounce.value` out of `SV_AddGravity`, `SV_Physics_Step`, and `SV_FlyMove` via cross-function threading or a frame-scoped global. Rough ballpark savings of 20-80ns per active entity per frame, but the change requires coordinating across 3-4 functions in the physics path — risk-to-reward not proportional for ~1-6µs/frame at peak entity count. Left as a future opportunistic TODO.
+
+### Rollout
+Same model as 921: not auto-staged. Committed to main, bundled into a future release once 920 has soaked clean on the fleet. No urgency — the savings are real but immaterial to live gameplay.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.921`] - 2026-04-23
 
 **HPAK secondary-path hardening — 5 more `Mem_Malloc` + `Q_memset` sites guarded**

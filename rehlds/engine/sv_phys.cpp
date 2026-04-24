@@ -1492,6 +1492,14 @@ void SV_Physics()
 		ktp_t0 = now;
 	}
 
+	// KTP 3.22.0.922: hoist hot-loop values. `gGlobalVariables.force_retouch`
+	// is a float counter that's ~always zero during normal frames (only set
+	// transiently during level transitions); branching on a bool local avoids
+	// a global-float load + compare per entity. `g_psvs.maxclients` is fixed
+	// for the duration of the server run — no reason to re-read per iteration.
+	const bool ktp_force_retouch = gGlobalVariables.force_retouch != 0.0f;
+	const int ktp_maxclients = g_psvs.maxclients;
+
 	// treat each object in turn
 	for (int i = 0; i < g_psv.num_edicts; i++)
 	{
@@ -1499,13 +1507,13 @@ void SV_Physics()
 		if (ent->free)
 			continue;
 
-		if (gGlobalVariables.force_retouch != 0.0f)
+		if (ktp_force_retouch)
 		{
 			// force retouch even for stationary
 			SV_LinkEdict(ent, TRUE);
 		}
 
-		if (i > 0 && i <= g_psvs.maxclients)
+		if (i > 0 && i <= ktp_maxclients)
 			continue;
 
 		SV_CheckMovingGround(ent, host_frametime);
