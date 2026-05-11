@@ -43,6 +43,15 @@ extern IDedicatedServerAPI *engineAPI;
 // Linux-only path; Windows builds always go through the legacy sys->Sleep(1).
 extern bool g_use_abs_grid;
 
+// KTP Stage C debug instrumentation (additive to -absgrid). When set, the
+// main loop in sys_ded.cpp samples 3 timestamps per iteration (top, after
+// sleep, after RunFrame) and emits a [KTP_ABSGRID_PROBE] histogram every
+// 10s tagging sleep_us, work_us, and total_us bucket counts + min/max.
+// Diagnostic for the 2026-05-11 finding that absgrid measures 696 fps vs
+// the 980 fps that loop math predicts (414µs/iter unaccounted in the
+// engine layer). Opt-in via -absgrid_probe; zero overhead when off.
+extern bool g_absgrid_probe;
+
 bool Sys_SetupConsole();
 void Sys_PrepareConsoleInput();
 void Sys_InitPingboost();

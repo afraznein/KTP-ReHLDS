@@ -119,6 +119,12 @@ void Sleep_Never(int msec)
 // sys_ded.cpp; declared in dedicated.h.
 bool g_use_abs_grid = false;
 
+// KTP Stage C debug probe (see dedicated.h). Set true by Sys_InitPingboost
+// when -absgrid_probe is on the cmdline (additive to -absgrid). Activates
+// the per-iteration histogram in sys_ded.cpp's main loop. Zero overhead
+// when off (gated by `if (g_absgrid_probe)` checks).
+bool g_absgrid_probe = false;
+
 // linux runs on a 100Hz scheduling clock, so the minimum latency from
 // usleep is 10msec. However, people want lower latency than this..
 //
@@ -199,6 +205,13 @@ void Sys_InitPingboost()
 				// this is supposed to be ignored but behavior depends on kernel
 				// build. Cheap insurance; only matters for the absgrid path.
 				prctl(PR_SET_TIMERSLACK, 1, 0, 0, 0);
+			}
+			// KTP Stage C debug instrumentation (see dedicated.h + sys_ded.cpp).
+			// Additive to -absgrid; activates per-iteration histogram every 10s.
+			// Diagnostic for the 2026-05-11 414µs/iter unaccounted finding.
+			if (CommandLine()->CheckParm("-absgrid_probe", nullptr))
+			{
+				g_absgrid_probe = true;
 			}
 			break;
 		case 3:
