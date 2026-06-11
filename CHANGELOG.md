@@ -6,6 +6,20 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.925`] - 2026-06-11
+
+**Hitreg-audit instrumentation: entloop spike attribution + unlag estimator telemetry**
+
+### Added
+- **`[KTP_SPIKE_ENT]` emitted on spike frames** (`sv_main.cpp`, `sv_phys.cpp`) — the 2026-06-11 hitreg audit found 50-165ms `entloop` spikes ~16-19×/day/instance fleet-wide, including during evening play, with no attribution beyond "the entity loop". Every `[KTP_SPIKE]` now also emits the worst single entity dispatch of that frame (`worst=` time, `classname=`, `idx=`, `movetype=`), the frame's accumulated `Log_Printf`/`Con_Printf` time (`logio=`/`conio=` — captured before the spike block's own emissions), and the frame's page-fault delta (`faults=min/maj` via `getrusage`, Linux only). Per-entity timing costs 2 clock reads per non-client entity per frame (~8µs/frame at 180 edicts), gated on the existing `ktp_profile_frame`.
+- **`[KTP_PROFILE] worst_ent:` / `io:` / `unlag:` interval lines** (`sv_main.cpp`) — interval-peak worst entity, worst single `Log_Printf`/`Con_Printf` call (`sv_log.cpp`/`sys_dll.cpp` track these; log writes from entity thinks blocking on tmux-pty or qconsole.log disk backpressure are the lead suspect for the entloop spikes), and unlag estimator counters.
+- **Unlag jitter-guard telemetry** (`sv_user.cpp` `SV_CalcClientTime`) — `guard_zero` counts shots where the jitter sanity check silently returned latency 0.0 (= zero lag compensation for that shot). `shadow20_zero` recomputes the guard over a fixed 20-sample window regardless of the configured `sv_unlagsamples`, quantifying what the pre-2026-06-11 fleet setting (`sv_unlagsamples 20`) was doing now that the fleet runs the engine default of 1. Context: `cl->frames[]` advances per client packet (~100/s at cmdrate 100), not per server frame — 20 samples is a ~200ms latency-smoothing window, and the guard scaling with `backtrack` meant one ping spike in 20 packets disabled compensation entirely for subsequent shots. The samples=20 rationale ("at 1000Hz, 16 samples = 16ms") was based on the per-server-frame assumption and is wrong.
+
+### Why
+Two of the three open findings from the 2026-06-11 fleet hitreg audit need data only the engine can produce: which entity think (or which I/O sink) absorbs the sporadic 50-165ms entloop stalls, and how often the old unlag config was zeroing compensation in live play. Instrumentation only; no behavior change on any path.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.923`] - 2026-04-24
 
 **Suppress KTP_OPCODE alert for HLTV `spawn` opcodes (log-noise cleanup)**

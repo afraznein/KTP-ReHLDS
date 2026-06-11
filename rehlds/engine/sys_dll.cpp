@@ -1582,6 +1582,12 @@ void Con_DebugLog(const char *file, const char *fmt, ...)
 #endif // _WIN32
 }
 
+// KTP: I/O timing for the profiler — covers the stdout (tmux pty) write and
+// the qconsole.log condebug flush, both of which can block on backpressure.
+extern bool g_ktp_profiling_enabled;
+extern double g_ktp_conio_frame;  // accumulated Con_Printf time this frame
+extern double g_ktp_conio_worst;  // worst single Con_Printf this interval
+
 void Con_Printf(const char *fmt, ...)
 {
 	char Dest[4096];
@@ -1591,7 +1597,19 @@ void Con_Printf(const char *fmt, ...)
 	Q_vsnprintf(Dest, sizeof(Dest), fmt, va);
 	va_end(va);
 
+	double ktp_con_t0 = 0.0;
+	bool ktp_con_prof = g_ktp_profiling_enabled;
+	if (ktp_con_prof) ktp_con_t0 = Sys_FloatTime();
+
 	g_RehldsHookchains.m_Con_Printf.callChain(Con_Printf_internal, Dest);
+
+	if (ktp_con_prof)
+	{
+		double ktp_con_dt = Sys_FloatTime() - ktp_con_t0;
+		g_ktp_conio_frame += ktp_con_dt;
+		if (ktp_con_dt > g_ktp_conio_worst)
+			g_ktp_conio_worst = ktp_con_dt;
+	}
 }
 
 void EXT_FUNC Con_Printf_internal(const char *Dest)

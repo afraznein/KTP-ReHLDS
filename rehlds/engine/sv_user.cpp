@@ -1124,6 +1124,16 @@ int SV_ValidateClientCommand(char *pszCommand)
 	return 0;
 }
 
+// KTP: Unlag latency-estimator telemetry. guard_zero counts shots where the
+// jitter guard below silently disabled lag compensation (returned 0.0).
+// shadow20_zero counts shots the guard WOULD have zeroed at the pre-2026-06-11
+// fleet setting of sv_unlagsamples 20, independent of the configured value —
+// quantifies what the old config was doing without having to run it.
+// Read + reset by the [KTP_PROFILE] interval block in sv_main.cpp.
+int g_ktp_unlag_calls = 0;
+int g_ktp_unlag_guard_zero = 0;
+int g_ktp_unlag_shadow20_zero = 0;
+
 float SV_CalcClientTime(client_t *cl)
 {
 	float minping;
@@ -1133,6 +1143,27 @@ float SV_CalcClientTime(client_t *cl)
 	float ping = 0.0;
 	int count = 0;
 	backtrack = (int)sv_unlagsamples.value;
+
+	if (g_ktp_profiling_enabled)
+	{
+		g_ktp_unlag_calls++;
+
+		float smin = 9999.0f;
+		float smax = -9999.0f;
+		for (int i = 0; i < 20; i++)
+		{
+			client_frame_t *frame = &cl->frames[SV_UPDATE_MASK & (cl->netchan.incoming_acknowledged - i)];
+			if (frame->ping_time <= 0.0f)
+				continue;
+
+			if (frame->ping_time < smin)
+				smin = frame->ping_time;
+			if (frame->ping_time > smax)
+				smax = frame->ping_time;
+		}
+		if (smax >= smin && fabs(smax - smin) > 0.2)
+			g_ktp_unlag_shadow20_zero++;
+	}
 
 	if (backtrack < 1)
 		backtrack = 1;
@@ -1184,6 +1215,9 @@ float SV_CalcClientTime(client_t *cl)
 
 	if (maxping < minping || fabs(maxping - minping) <= 0.2)
 		return ping;
+
+	if (g_ktp_profiling_enabled)
+		g_ktp_unlag_guard_zero++;
 
 	return 0.0f;
 }

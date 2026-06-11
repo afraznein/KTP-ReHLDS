@@ -33,6 +33,12 @@ LOGLIST_T *firstLog;
 cvar_t mp_logecho = { "mp_logecho", "1", 0, 0.0f, NULL };
 cvar_t mp_logfile = { "mp_logfile", "1", FCVAR_SERVER, 0.0f, NULL };
 
+// KTP: I/O timing for the profiler — log lines emitted from entity thinks are
+// a suspect for the fleet's sporadic entloop spikes (pty/disk backpressure).
+extern bool g_ktp_profiling_enabled;
+extern double g_ktp_logio_frame;  // accumulated Log_Printf time this frame
+extern double g_ktp_logio_worst;  // worst single Log_Printf this interval
+
 void Log_Printf(const char *fmt, ...)
 {
 	va_list argptr;
@@ -43,6 +49,10 @@ void Log_Printf(const char *fmt, ...)
 
 	if (!g_psvs.log.net_log_ && !firstLog && !g_psvs.log.active)
 		return;
+
+	double ktp_log_t0 = 0.0;
+	bool ktp_log_prof = g_ktp_profiling_enabled;
+	if (ktp_log_prof) ktp_log_t0 = Sys_FloatTime();
 
 	time(&ltime);
 	today = localtime(&ltime);
@@ -86,6 +96,14 @@ void Log_Printf(const char *fmt, ...)
 			if (mp_logfile.value != 0.0f)
 				FS_FPrintf((FileHandle_t)g_psvs.log.file, "%s", string);
 		}
+	}
+
+	if (ktp_log_prof)
+	{
+		double ktp_log_dt = Sys_FloatTime() - ktp_log_t0;
+		g_ktp_logio_frame += ktp_log_dt;
+		if (ktp_log_dt > g_ktp_logio_worst)
+			g_ktp_logio_worst = ktp_log_dt;
 	}
 }
 

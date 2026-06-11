@@ -1473,6 +1473,13 @@ void SV_Physics_Step(edict_t *ent)
 double g_ktp_phys_startframe = 0.0;  // pfnStartFrame time (AMXX plugins + game DLL)
 double g_ktp_phys_entloop = 0.0;     // Entity physics loop time
 
+// KTP: Worst single entity in the loop this frame. Like startframe/entloop,
+// these hold the last simulating frame's values on paused frames.
+double g_ktp_phys_worst_ent_time = 0.0;
+int g_ktp_phys_worst_ent_index = -1;
+int g_ktp_phys_worst_ent_movetype = -1;
+char g_ktp_phys_worst_ent_classname[64] = "";
+
 extern bool g_ktp_profiling_enabled;
 
 void SV_Physics()
@@ -1500,6 +1507,13 @@ void SV_Physics()
 	const bool ktp_force_retouch = gGlobalVariables.force_retouch != 0.0f;
 	const int ktp_maxclients = g_psvs.maxclients;
 
+	if (ktp_prof) {
+		g_ktp_phys_worst_ent_time = 0.0;
+		g_ktp_phys_worst_ent_index = -1;
+		g_ktp_phys_worst_ent_movetype = -1;
+		g_ktp_phys_worst_ent_classname[0] = '\0';
+	}
+
 	// treat each object in turn
 	for (int i = 0; i < g_psv.num_edicts; i++)
 	{
@@ -1515,6 +1529,15 @@ void SV_Physics()
 
 		if (i > 0 && i <= ktp_maxclients)
 			continue;
+
+		// KTP: movetype captured pre-dispatch — thinks can mutate it (e.g.
+		// SV_Physics_Follow downgrades to MOVETYPE_NONE on a NULL aiment).
+		double ktp_ent_t0 = 0.0;
+		int ktp_ent_movetype = 0;
+		if (ktp_prof) {
+			ktp_ent_t0 = Sys_FloatTime();
+			ktp_ent_movetype = ent->v.movetype;
+		}
 
 		SV_CheckMovingGround(ent, host_frametime);
 
@@ -1549,6 +1572,21 @@ void SV_Physics()
 			break;
 		default:
 			Sys_Error("%s: %s bad movetype %d", __func__, &pr_strings[ent->v.classname], ent->v.movetype);
+		}
+
+		// KTP: capture before the FL_KILLME free below — classname string is
+		// gone after ED_Free.
+		if (ktp_prof) {
+			double ktp_ent_dt = Sys_FloatTime() - ktp_ent_t0;
+			if (ktp_ent_dt > g_ktp_phys_worst_ent_time) {
+				g_ktp_phys_worst_ent_time = ktp_ent_dt;
+				g_ktp_phys_worst_ent_index = i;
+				g_ktp_phys_worst_ent_movetype = ktp_ent_movetype;
+				Q_strncpy(g_ktp_phys_worst_ent_classname,
+					ent->v.classname ? &pr_strings[ent->v.classname] : "<none>",
+					sizeof(g_ktp_phys_worst_ent_classname) - 1);
+				g_ktp_phys_worst_ent_classname[sizeof(g_ktp_phys_worst_ent_classname) - 1] = '\0';
+			}
 		}
 
 		if (ent->v.flags & FL_KILLME)
