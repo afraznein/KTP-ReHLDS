@@ -6,6 +6,22 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.926`] - 2026-06-16
+
+**Hitreg-audit follow-up: split `logio` telemetry by sink; retire the audit-closed entity + unlag instrumentation**
+
+### Added
+- **`logaddr=`/`file=` fields on the new `[KTP_SPIKE_IO]` line + `logaddr_worst=`/`file_worst=` on `[KTP_PROFILE] io:`** (`sv_log.cpp`, `sv_main.cpp`). The 2026-06-16 load-confirmed spike pull (15,332 spikes / 4 days / 24 instances with real match traffic) found that a single `Log_Printf` blocked up to **163ms** on the busy instances — but the existing `logio=` field couldn't say *which* sink blocked. `Log_Printf` does two unrelated I/O operations: a `Netchan_OutOfBandPrint` UDP `sendto` per logaddress (HLStatsX → data server, can block on receive-buffer backpressure) and a `FS_FPrintf` to `qconsole.log` on disk. These are now timed separately so the next pull can attribute the tail and pick the proportionate fix — a non-blocking logaddress socket vs. tmpfs `qconsole.log` vs. the full async log-writer thread.
+
+### Removed (audit closed — both questions answered by the 2026-06-16 pull)
+- **Per-entity worst-think timing** (`sv_phys.cpp`): the 2-clock-reads-per-entity-per-frame loop instrumentation that populated `[KTP_SPIKE_ENT]`'s `worst=/classname=/idx=/movetype=` fields. The entloop spikes were conclusively attributed to `dod_control_point_master`'s think in the closed-source `dod_i386.so` (no KTP code leverage) — ongoing per-entity attribution is no longer needed. The `[KTP_SPIKE_ENT]` line is replaced by `[KTP_SPIKE_IO]` (I/O + page-fault fields only); a phys-dominant spike is still flagged by the retained `[KTP_SPIKE_PHYS] entloop=` field. `[KTP_PROFILE] worst_ent:` interval line removed.
+- **Unlag shadow-20 estimator** (`sv_user.cpp`): the 20-iteration counterfactual loop in `SV_CalcClientTime` (`guard_zero`/`shadow20_zero` counters) that validated the `sv_unlagsamples 20 → 1` change. Validation is complete (`guard_zero=0` fleet-wide vs `shadow20_zero` in the thousands on busy instances), and it was the dominant cost in `SV_CalcClientTime` while profiling was on. `[KTP_PROFILE] unlag:` interval line removed.
+
+### Why
+The async log-writer-thread work was gated on "profiler shows log-correlated spikes" — the 6-16 pull cleared that gate (163ms tail), but `logio=` lumped the two sinks together. This split is the cheap diagnostic that decides whether the ~180-LOC thread is even needed or a one-line socket/mount fix covers it. Bundled in the same release: now that the audit's two questions (entloop attribution, unlag validation) are answered, their measurement scaffolding is retired so the hot paths carry no leftover profiling cost. Instrumentation only; gated on `ktp_profile_frame`; no behavior change on any path.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.925`] - 2026-06-11
 
 **Hitreg-audit instrumentation: entloop spike attribution + unlag estimator telemetry**

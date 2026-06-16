@@ -38,6 +38,11 @@ cvar_t mp_logfile = { "mp_logfile", "1", FCVAR_SERVER, 0.0f, NULL };
 extern bool g_ktp_profiling_enabled;
 extern double g_ktp_logio_frame;  // accumulated Log_Printf time this frame
 extern double g_ktp_logio_worst;  // worst single Log_Printf this interval
+// Split of logio by sink, to find which one blocks on a spike:
+extern double g_ktp_logaddr_io_frame;  // Netchan_OutOfBandPrint UDP sendto (logaddress)
+extern double g_ktp_file_io_frame;     // FS_FPrintf to qconsole.log (disk)
+extern double g_ktp_logaddr_io_worst;
+extern double g_ktp_file_io_worst;
 
 void Log_Printf(const char *fmt, ...)
 {
@@ -75,6 +80,7 @@ void Log_Printf(const char *fmt, ...)
 
 	if (g_psvs.log.net_log_ || firstLog != NULL)
 	{
+		double ktp_addr_t0 = ktp_log_prof ? Sys_FloatTime() : 0.0;
 		if (g_psvs.log.net_log_)
 			Netchan_OutOfBandPrint(NS_SERVER, g_psvs.log.net_address_, "log %s", string);
 
@@ -85,6 +91,13 @@ void Log_Printf(const char *fmt, ...)
 
 			else Netchan_OutOfBandPrint(NS_SERVER, list->log.net_address_, "%c%s%s", S2A_LOGKEY, sv_logsecret.string, string);
 		}
+		if (ktp_log_prof)
+		{
+			double ktp_addr_dt = Sys_FloatTime() - ktp_addr_t0;
+			g_ktp_logaddr_io_frame += ktp_addr_dt;
+			if (ktp_addr_dt > g_ktp_logaddr_io_worst)
+				g_ktp_logaddr_io_worst = ktp_addr_dt;
+		}
 	}
 	if (g_psvs.log.active && (g_psvs.maxclients > 1 || sv_log_singleplayer.value != 0.0f))
 	{
@@ -94,7 +107,17 @@ void Log_Printf(const char *fmt, ...)
 		if (g_psvs.log.file)
 		{
 			if (mp_logfile.value != 0.0f)
+			{
+				double ktp_file_t0 = ktp_log_prof ? Sys_FloatTime() : 0.0;
 				FS_FPrintf((FileHandle_t)g_psvs.log.file, "%s", string);
+				if (ktp_log_prof)
+				{
+					double ktp_file_dt = Sys_FloatTime() - ktp_file_t0;
+					g_ktp_file_io_frame += ktp_file_dt;
+					if (ktp_file_dt > g_ktp_file_io_worst)
+						g_ktp_file_io_worst = ktp_file_dt;
+				}
+			}
 		}
 	}
 

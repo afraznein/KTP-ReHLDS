@@ -7204,18 +7204,6 @@ double g_ktp_read_worst_pkt = 0.0;        // worst single packet processing time
 extern double g_ktp_phys_startframe;
 extern double g_ktp_phys_entloop;
 
-// KTP: Worst single entity this frame (populated by SV_Physics in sv_phys.cpp)
-extern double g_ktp_phys_worst_ent_time;
-extern int g_ktp_phys_worst_ent_index;
-extern int g_ktp_phys_worst_ent_movetype;
-extern char g_ktp_phys_worst_ent_classname[64];
-
-// KTP: Interval-peak copy of the worst entity (for the periodic summary)
-static double g_ktp_profile_peak_worst_ent_time = 0.0;
-static int g_ktp_profile_peak_worst_ent_index = -1;
-static int g_ktp_profile_peak_worst_ent_movetype = -1;
-static char g_ktp_profile_peak_worst_ent_classname[64] = "";
-
 // KTP: Log/console I/O timing. Frame accumulators are written by Log_Printf
 // (sv_log.cpp) and Con_Printf (sys_dll.cpp), reset each frame below. Note
 // conio is a subset of logio whenever mp_logecho is on, and Log_Printf calls
@@ -7224,11 +7212,12 @@ double g_ktp_logio_frame = 0.0;
 double g_ktp_conio_frame = 0.0;
 double g_ktp_logio_worst = 0.0;
 double g_ktp_conio_worst = 0.0;
-
-// KTP: Unlag telemetry (populated by SV_CalcClientTime in sv_user.cpp)
-extern int g_ktp_unlag_calls;
-extern int g_ktp_unlag_guard_zero;
-extern int g_ktp_unlag_shadow20_zero;
+// logio split: which sink blocks — logaddr = Netchan_OutOfBandPrint UDP sendto
+// per logaddress (HLStatsX), file = FS_FPrintf to qconsole.log on disk.
+double g_ktp_logaddr_io_frame = 0.0;
+double g_ktp_file_io_frame = 0.0;
+double g_ktp_logaddr_io_worst = 0.0;
+double g_ktp_file_io_worst = 0.0;
 
 // KTP: Page-fault counters at frame start, for spike-frame deltas
 #ifndef _WIN32
@@ -8658,6 +8647,8 @@ void EXT_FUNC SV_Frame_Internal()
 		// Reset per-frame I/O accumulators (written by Log_Printf/Con_Printf)
 		g_ktp_logio_frame = 0.0;
 		g_ktp_conio_frame = 0.0;
+		g_ktp_logaddr_io_frame = 0.0;
+		g_ktp_file_io_frame = 0.0;
 
 #ifndef _WIN32
 		// Snapshot page-fault counters so a spike frame can report its delta
@@ -8873,17 +8864,6 @@ void EXT_FUNC SV_Frame_Internal()
 		if (full_frame_time > g_ktp_profile_peak_full)
 			g_ktp_profile_peak_full = full_frame_time;
 
-		// Track interval-peak worst entity for the periodic summary
-		if (g_ktp_phys_worst_ent_time > g_ktp_profile_peak_worst_ent_time)
-		{
-			g_ktp_profile_peak_worst_ent_time = g_ktp_phys_worst_ent_time;
-			g_ktp_profile_peak_worst_ent_index = g_ktp_phys_worst_ent_index;
-			g_ktp_profile_peak_worst_ent_movetype = g_ktp_phys_worst_ent_movetype;
-			Q_strncpy(g_ktp_profile_peak_worst_ent_classname, g_ktp_phys_worst_ent_classname,
-				sizeof(g_ktp_profile_peak_worst_ent_classname) - 1);
-			g_ktp_profile_peak_worst_ent_classname[sizeof(g_ktp_profile_peak_worst_ent_classname) - 1] = '\0';
-		}
-
 		// KTP: Spike alert - log individual frame breakdown when threshold exceeded
 		double spike_threshold_ms = ktp_profile_spike_threshold.value;
 		if (spike_threshold_ms > 0.0 && full_frame_time * 1000.0 > spike_threshold_ms)
@@ -8897,6 +8877,8 @@ void EXT_FUNC SV_Frame_Internal()
 				// Log_Printf calls add to them.
 				double spike_logio = g_ktp_logio_frame;
 				double spike_conio = g_ktp_conio_frame;
+				double spike_logaddr = g_ktp_logaddr_io_frame;
+				double spike_file = g_ktp_file_io_frame;
 				long spike_minflt = 0, spike_majflt = 0;
 #ifndef _WIN32
 				struct rusage ktp_spike_ru;
@@ -8936,15 +8918,15 @@ void EXT_FUNC SV_Frame_Internal()
 					g_ktp_phys_entloop * 1000.0,
 					g_ktp_phys_paused_startframe * 1000.0,
 					g_ktp_phys_paused_hud * 1000.0);
-				// KTP: Spike attribution — worst entity think this frame, log/console
-				// I/O spent this frame, and the frame's page-fault delta. Worst-ent
-				// values are stale on paused-frame spikes, same as startframe/entloop.
-				Log_Printf("[KTP_SPIKE_ENT] worst=%.3fms classname=%s idx=%d movetype=%d logio=%.3fms conio=%.3fms faults=%ld/%ld\n",
-					g_ktp_phys_worst_ent_time * 1000.0,
-					g_ktp_phys_worst_ent_classname[0] ? g_ktp_phys_worst_ent_classname : "<none>",
-					g_ktp_phys_worst_ent_index,
-					g_ktp_phys_worst_ent_movetype,
+				// KTP: Spike I/O attribution — log/console time spent this frame,
+				// split by sink (logaddr = logaddress UDP sendto, file = qconsole.log
+				// disk), plus the frame's page-fault delta. The entloop attribution
+				// (CP-master think, closed-source DoD) was retired post-audit; the
+				// [KTP_SPIKE_PHYS] entloop= field still flags a phys-dominant spike.
+				Log_Printf("[KTP_SPIKE_IO] logio=%.3fms logaddr=%.3fms file=%.3fms conio=%.3fms faults=%ld/%ld\n",
 					spike_logio * 1000.0,
+					spike_logaddr * 1000.0,
+					spike_file * 1000.0,
 					spike_conio * 1000.0,
 					spike_minflt, spike_majflt);
 			}
@@ -8996,21 +8978,12 @@ void EXT_FUNC SV_Frame_Internal()
 			// Physics sub-phase detail (from SV_Physics)
 			Log_Printf("[KTP_PROFILE] phys_detail: startframe=%.3fms entloop=%.3fms\n",
 				g_ktp_phys_startframe * 1000.0, g_ktp_phys_entloop * 1000.0);
-			// Worst single entity dispatch seen this interval
-			if (g_ktp_profile_peak_worst_ent_time > 0.0)
-			{
-				Log_Printf("[KTP_PROFILE] worst_ent: time=%.3fms classname=%s idx=%d movetype=%d\n",
-					g_ktp_profile_peak_worst_ent_time * 1000.0,
-					g_ktp_profile_peak_worst_ent_classname[0] ? g_ktp_profile_peak_worst_ent_classname : "<none>",
-					g_ktp_profile_peak_worst_ent_index,
-					g_ktp_profile_peak_worst_ent_movetype);
-			}
-			// Worst single log/console write this interval (entloop-stall suspect)
-			Log_Printf("[KTP_PROFILE] io: logprintf_worst=%.3fms conprintf_worst=%.3fms\n",
-				g_ktp_logio_worst * 1000.0, g_ktp_conio_worst * 1000.0);
-			// Unlag estimator telemetry (see SV_CalcClientTime)
-			Log_Printf("[KTP_PROFILE] unlag: calls=%d guard_zero=%d shadow20_zero=%d\n",
-				g_ktp_unlag_calls, g_ktp_unlag_guard_zero, g_ktp_unlag_shadow20_zero);
+			// Worst single log/console write this interval. logaddr_worst vs
+			// file_worst splits the logio sink: UDP sendto to a logaddress
+			// (HLStatsX backpressure) vs FS_FPrintf to qconsole.log (disk).
+			Log_Printf("[KTP_PROFILE] io: logprintf_worst=%.3fms conprintf_worst=%.3fms logaddr_worst=%.3fms file_worst=%.3fms\n",
+				g_ktp_logio_worst * 1000.0, g_ktp_conio_worst * 1000.0,
+				g_ktp_logaddr_io_worst * 1000.0, g_ktp_file_io_worst * 1000.0);
 			// Per-client send detail
 			if (g_ktp_send_worst_client_slot >= 0) {
 				client_t *worst_cl = &g_psvs.clients[g_ktp_send_worst_client_slot];
@@ -9046,15 +9019,10 @@ void EXT_FUNC SV_Frame_Internal()
 			g_ktp_profile_peak_steam = 0.0;
 			g_ktp_profile_peak_full = 0.0;
 			g_ktp_profile_peak_interframe = 0.0;
-			g_ktp_profile_peak_worst_ent_time = 0.0;
-			g_ktp_profile_peak_worst_ent_index = -1;
-			g_ktp_profile_peak_worst_ent_movetype = -1;
-			g_ktp_profile_peak_worst_ent_classname[0] = '\0';
 			g_ktp_logio_worst = 0.0;
 			g_ktp_conio_worst = 0.0;
-			g_ktp_unlag_calls = 0;
-			g_ktp_unlag_guard_zero = 0;
-			g_ktp_unlag_shadow20_zero = 0;
+			g_ktp_logaddr_io_worst = 0.0;
+			g_ktp_file_io_worst = 0.0;
 			g_ktp_profile_last_log_time = current_time;
 		}
 	}
