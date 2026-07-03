@@ -27,6 +27,7 @@
 */
 
 #include "precompiled.h"
+#include <atomic>  // KTP: async log-writer telemetry counters
 
 #ifndef _WIN32
 #include <sys/resource.h>  // KTP: per-frame page-fault counters for spike attribution
@@ -7219,6 +7220,12 @@ double g_ktp_file_io_frame = 0.0;
 double g_ktp_logaddr_io_worst = 0.0;
 double g_ktp_file_io_worst = 0.0;
 
+// KTP: Async log writer (sv_log.cpp). With ktp_log_async on, file_worst above
+// measures only the enqueue; these expose the writer thread's side of it.
+extern cvar_t ktp_log_async;
+extern std::atomic<uint32> g_ktp_logq_drops;
+extern std::atomic<uint32> g_ktp_fileq_worst_us;
+
 // KTP: Page-fault counters at frame start, for spike-frame deltas
 #ifndef _WIN32
 static long g_ktp_ru_minflt_frame_start = 0;
@@ -8981,9 +8988,11 @@ void EXT_FUNC SV_Frame_Internal()
 			// Worst single log/console write this interval. logaddr_worst vs
 			// file_worst splits the logio sink: UDP sendto to a logaddress
 			// (HLStatsX backpressure) vs FS_FPrintf to qconsole.log (disk).
-			Log_Printf("[KTP_PROFILE] io: logprintf_worst=%.3fms conprintf_worst=%.3fms logaddr_worst=%.3fms file_worst=%.3fms\n",
+			Log_Printf("[KTP_PROFILE] io: logprintf_worst=%.3fms conprintf_worst=%.3fms logaddr_worst=%.3fms file_worst=%.3fms fileq_worst=%.3fms logq_drops=%u\n",
 				g_ktp_logio_worst * 1000.0, g_ktp_conio_worst * 1000.0,
-				g_ktp_logaddr_io_worst * 1000.0, g_ktp_file_io_worst * 1000.0);
+				g_ktp_logaddr_io_worst * 1000.0, g_ktp_file_io_worst * 1000.0,
+				g_ktp_fileq_worst_us.load(std::memory_order_relaxed) / 1000.0,
+				g_ktp_logq_drops.load(std::memory_order_relaxed));
 			// Per-client send detail
 			if (g_ktp_send_worst_client_slot >= 0) {
 				client_t *worst_cl = &g_psvs.clients[g_ktp_send_worst_client_slot];
@@ -9023,6 +9032,7 @@ void EXT_FUNC SV_Frame_Internal()
 			g_ktp_conio_worst = 0.0;
 			g_ktp_logaddr_io_worst = 0.0;
 			g_ktp_file_io_worst = 0.0;
+			g_ktp_fileq_worst_us.store(0, std::memory_order_relaxed);  // logq_drops is lifetime, not reset
 			g_ktp_profile_last_log_time = current_time;
 		}
 	}
@@ -9276,6 +9286,9 @@ void SV_Init(void)
 	Cvar_RegisterVariable(&ktp_profile_interval);
 	Cvar_RegisterVariable(&ktp_profile_spike_threshold);
 	Cvar_RegisterVariable(&ktp_profile_steam_detail);
+
+	// KTP: Async log-file writer (mode latches at Log_Open, i.e. next map)
+	Cvar_RegisterVariable(&ktp_log_async);
 
 	//------------------------------------------------
 	// Movevars cvarhook registers

@@ -1305,6 +1305,7 @@ void Host_Shutdown(void)
 	W_Shutdown();
 	Log_Printf("Server shutdown\n");
 	Log_Close();
+	KTP_Log_AsyncShutdown();  // drain + join before the FS goes away
 	COM_Shutdown();
 	CL_Shutdown();
 	DELTA_Shutdown();

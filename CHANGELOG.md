@@ -6,6 +6,20 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.927`] - 2026-07-02
+
+**Async log-file writer — game thread never touches the log disk again**
+
+### Added
+- **`ktp_log_async` cvar (default `1`) + dedicated log-writer thread** (`sv_log.cpp`, `sv_log.h`, `host.cpp`, `sv_main.cpp`). The 2026-07-02 sink-split pull answered .926's question: the blocking sink is the **file write** — `FS_FPrintf` in `Log_Printf` stalled the game thread up to 167ms, dozens of >50ms hits per instance per week on ATL/DAL/NYC, including 114–165ms frame freezes during prime-time matches. fio pinned the root cause to the consumer Intel 530-class SSDs on those hosts (~20ms *median* fdatasync, 86ms max vs 0.04ms on Denver's DC S3700) — ext4 journal commits block the append. The UDP logaddress sink measured innocent everywhere (≤3.2ms) and stays inline.
+- Design: the game thread enqueues formatted lines into a fixed 2048-slot ring (µs, mutex held only for a memcpy); a writer thread owns the log `FILE*` via plain stdio — never the engine FS layer, which isn't thread-safe against main-thread map loads. `Log_Open` still creates the file through FS (correct search path), then hands the `FS_GetLocalPath`-resolved path to the writer. Open/close are queued ops, so ordering across map-change rotations is preserved. A full queue **drops the line and counts it** — never blocks. Flush happens when the queue drains, off-lock. `Host_Shutdown` drains + joins. `ktp_log_async 0` restores the exact synchronous path; mode latches per log session at `Log_Open`.
+- **`fileq_worst=`/`logq_drops=` fields on `[KTP_PROFILE] io:`** — writer-thread worst write (per interval) and lifetime dropped-line count, so the fix is verifiable from the same telemetry that found the bug: `file_worst` should collapse to enqueue-cost µs while `fileq_worst` absorbs the disk stalls.
+
+### Why
+Last measured software-fixable hitreg suspect from the 2026-06-11 audit. The alternative (tmpfs log path) loses crash durability and needs per-host mounts; enterprise-SSD swaps cost money. Making the engine immune to log-disk latency fixes all current and future hosts. No behavior change with `ktp_log_async 0`; log file content and line ordering are identical in both modes.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.926`] - 2026-06-16
 
 **Hitreg-audit follow-up: split `logio` telemetry by sink; retire the audit-closed entity + unlag instrumentation**

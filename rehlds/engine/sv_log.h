@@ -42,6 +42,7 @@ void Log_Printf(const char *fmt, ...);
 void Log_PrintServerVars(void);
 void Log_Close(void);
 void Log_Open(void);
+void KTP_Log_AsyncShutdown(void);
 void SV_SetLogAddress_f(void);
 void SV_AddLogAddress_f(void);
 void SV_DelLogAddress_f(void);
