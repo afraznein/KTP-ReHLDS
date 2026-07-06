@@ -1,0 +1,78 @@
+# KTP CI — build gate + dual-copy header drift check for the fleet branch.
+#
+# Two jobs, both cheap, both meaningful:
+#  - header-drift: rehlds_api.h is manually duplicated between this repo and
+#    KTP-ReAPI. Vtable drift between the copies produces silent wrong-function
+#    calls with NO compile error (KTP hooks were historically inserted
+#    mid-vtable). The append-only rule's enforcement is this byte-diff.
+#    A failure here is ALWAYS treated as Critical.
+#  - build-linux: compile gate only. Fleet binaries are built locally and
+#    verified by md5 (builds are not reproducible) — the CI artifact is never
+#    the deploy artifact.
+#
+# The upstream workflow (build.yml, "C/C++ CI") triggers on master only and is
+# not maintained for the KTP tree.
+
+name: KTP CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  header-drift:
+    name: rehlds_api.h drift vs KTP-ReAPI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout KTP-ReHLDS
+        uses: actions/checkout@v4
+
+      - name: Checkout KTP-ReAPI
+        uses: actions/checkout@v4
+        with:
+          repository: afraznein/KTP-ReAPI
+          path: ktpreapi
+
+      - name: Diff the dual copies
+        run: |
+          if diff -u rehlds/public/rehlds/rehlds_api.h ktpreapi/reapi/include/cssdk/engine/rehlds_api.h; then
+            echo "rehlds_api.h copies are byte-identical"
+          else
+            echo "::error::rehlds_api.h has DRIFTED between KTP-ReHLDS and KTP-ReAPI. Vtable drift = silent wrong-function calls at runtime. Hook slots are APPEND-ONLY; sync both copies in the same change window."
+            exit 1
+          fi
+
+  build-linux:
+    name: Linux GCC 32-bit build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # appversion.sh derives the build number from git history
+
+      - name: Install 32-bit toolchain
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc-multilib g++-multilib
+
+      - name: Build
+        run: |
+          sed -i 's/\r$//' build.sh rehlds/version/appversion.sh
+          chmod +x build.sh rehlds/version/appversion.sh
+          bash build.sh -j=$(nproc)
+
+      - name: Verify artifacts
+        run: |
+          set -e
+          test -f build/rehlds/engine_i486.so || { echo "::error::engine_i486.so missing"; exit 1; }
+          find build -name hlds_linux | grep -q . || { echo "::error::hlds_linux missing"; exit 1; }
+          file build/rehlds/engine_i486.so | grep -q 'ELF 32-bit' || { echo "::error::engine is not 32-bit ELF"; exit 1; }
+          echo "Artifacts OK:"
+          ls -la build/rehlds/engine_i486.so
