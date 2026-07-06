@@ -1907,6 +1907,11 @@ void SV_IgnoreHLTV(client_t *cl)
 {
 }
 
+// CONTRACT NOTE: pfnClientCvarChanged (KTP) fires ONLY from the cvarvalue2
+// path below — this legacy clc_cvarvalue response carries no cvar name, so
+// there is nothing to hand the callback. AMXX's query_client_cvar always
+// uses the Value2 variant, but any future direct QueryClientCvarValue caller
+// will silently bypass KTPCvarChecker. Documented as Value2-only by design.
 void SV_ParseCvarValue(client_t *cl)
 {
 	char *value;

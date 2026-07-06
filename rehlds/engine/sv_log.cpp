@@ -31,6 +31,7 @@
 #include <condition_variable>
 #include <chrono>
 #include <atomic>
+#include <thread>
 #ifndef _WIN32
 #include <pthread.h>
 #endif
@@ -51,6 +52,8 @@ cvar_t ktp_log_async = { "ktp_log_async", "1", 0, 0.0f, NULL };
 
 std::atomic<uint32> g_ktp_logq_drops(0);      // lines lost (queue full / writer has no file / write error); lifetime
 std::atomic<uint32> g_ktp_fileq_worst_us(0);  // worst single write on the writer thread; profiler resets per interval
+std::atomic<uint32> g_ktp_logq_ctl_drops(0);  // OPEN/CLOSE ops lost — a lost OPEN = a whole map's log file missing; lifetime
+static std::atomic<uint32> s_ktpWriterBeat(0); // ticks once per op processed; liveness probe reads it
 
 enum ktp_logop_t
 {
@@ -116,6 +119,8 @@ static void KTP_LogWriterLoop()
 		s_ktpLogQTail = (s_ktpLogQTail + 1) & KTP_LOGQ_MASK;
 		lk.unlock();
 
+		s_ktpWriterBeat.fetch_add(1, std::memory_order_relaxed);
+
 		switch (op.type)
 		{
 		case KTP_LOGOP_OPEN:
@@ -124,10 +129,10 @@ static void KTP_LogWriterLoop()
 			// Log_Open already created/truncated the file through the FS layer;
 			// append from byte 0.
 			fp = fopen(op.data, "a");
-			// Line-buffered: one write() per line reaches the kernel, so a crash
-			// loses at most the in-flight line — matches the old sync guarantee.
-			// The stall this change fixes is the *kernel-side* block, which now
-			// lands here instead of the game thread.
+			// Line-buffered: one write() per line reaches the kernel. Durability
+			// caveat vs the old sync path: normally a crash loses only the
+			// in-flight line, but a crash DURING a writer stall also loses
+			// whatever backlog is still queued behind the stalled write.
 			if (fp)
 				setvbuf(fp, nullptr, _IOLBF, 0);
 			needFlush = false;
@@ -173,18 +178,40 @@ static void KTP_LogWriterLoop()
 
 static void KTP_LogEnqueue(int type, const char *data)
 {
+	// OPEN/CLOSE are map-rate and structural — a dropped OPEN means the
+	// whole map's log file silently never exists (the main thread believes
+	// the session is open; every WRITE lands in the writer's counted no-file
+	// branch). If the ring is full, control ops briefly wait for one slot
+	// (this runs inside the already-blocking map-load window); WRITE keeps
+	// the never-block contract. Control drops get their own counter so the
+	// failure is distinguishable from ordinary line drops.
+	const bool isControl = (type != KTP_LOGOP_WRITE);
+	int retries = isControl ? 500 : 0;  // ~500ms bound at 1ms per retry
+
+	for (;;)
 	{
-		std::lock_guard<std::mutex> lk(s_ktpLogMx);
-		int next = (s_ktpLogQHead + 1) & KTP_LOGQ_MASK;
-		if (next == s_ktpLogQTail)
 		{
-			g_ktp_logq_drops.fetch_add(1, std::memory_order_relaxed);
+			std::lock_guard<std::mutex> lk(s_ktpLogMx);
+			int next = (s_ktpLogQHead + 1) & KTP_LOGQ_MASK;
+			if (next != s_ktpLogQTail)
+			{
+				ktp_logop_s *op = &s_ktpLogQ[s_ktpLogQHead];
+				op->type = type;
+				Q_snprintf(op->data, sizeof(op->data), "%s", data ? data : "");
+				s_ktpLogQHead = next;
+				break;
+			}
+		}
+		if (retries-- <= 0)
+		{
+			if (isControl)
+				g_ktp_logq_ctl_drops.fetch_add(1, std::memory_order_relaxed);
+			else
+				g_ktp_logq_drops.fetch_add(1, std::memory_order_relaxed);
 			return;
 		}
-		ktp_logop_s *op = &s_ktpLogQ[s_ktpLogQHead];
-		op->type = type;
-		Q_snprintf(op->data, sizeof(op->data), "%s", data ? data : "");
-		s_ktpLogQHead = next;
+		s_ktpLogCv.notify_one();
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
 	s_ktpLogCv.notify_one();
 }
@@ -221,6 +248,24 @@ static qboolean KTP_LogAsyncEnsureThread()
 	}
 	s_ktpLogThreadRunning = true;
 	return TRUE;
+}
+
+// KTP: liveness probe for the profiler (called once per profile interval).
+// "Dead" = the thread is supposed to be running, work is pending, and the
+// writer hasn't processed a single op since the previous probe — i.e. it has
+// been wedged for a whole interval, not merely slow.
+qboolean KTP_Log_WriterAlive(void)
+{
+	static uint32 s_lastBeat;
+	uint32 beat = s_ktpWriterBeat.load(std::memory_order_relaxed);
+	bool pending;
+	{
+		std::lock_guard<std::mutex> lk(s_ktpLogMx);
+		pending = (s_ktpLogQHead != s_ktpLogQTail);
+	}
+	qboolean alive = (!s_ktpLogThreadRunning || !pending || beat != s_lastBeat) ? TRUE : FALSE;
+	s_lastBeat = beat;
+	return alive;
 }
 
 // Host_Shutdown only: drains the queue (final Log_Close is already enqueued)

@@ -1232,6 +1232,11 @@ void LoadExtensionDll(const char *szDllFilename)
 	}
 
 	Con_Printf("KTP-REHLDS: Extension loaded: %s\n", szDllFilename);
+
+	// KTP: bump the deploy sentinel — every failure path above returns
+	// before this line, so the cvar counts only fully-registered extensions.
+	extern cvar_t ktp_extension_loaded;
+	Cvar_SetValue("ktp_extension_loaded", ktp_extension_loaded.value + 1.0f);
 }
 
 #ifdef _WIN32
@@ -1333,8 +1338,39 @@ void ReleaseEntityDlls(void)
 
 	Cvar_UnlinkExternals();
 
+	// KTP: give each extension a shutdown callback BEFORE any dlclose.
+	// pfnGameShutdown reaches only the game DLL, and Meta_Detach never runs
+	// in extension mode, so modules dlopened inside ktpamx (dodx/reapi/
+	// amxxcurl) otherwise get no teardown until exit-time destructors run —
+	// by which point ktpamx's MF_* surface is already unmapped (the CHI1
+	// shutdown-segfault class). Optional export: absent = silent no-op.
+	// IMPLEMENTOR CONTRACT: Host_Shutdown has already run Cmd_Shutdown /
+	// Cvar_Shutdown / NET_Shutdown by now — the callback must not touch
+	// cvars, engine commands, or engine networking. Con_Printf and
+	// Log_Printf are safe (log writer joins after this).
 	pextdll = &g_rgextdll[0];
 	pextdllMac = &g_rgextdll[g_iextdllMac];
+	while (pextdll < pextdllMac)
+	{
+		if (pextdll->lDLLHandle)
+		{
+			typedef void (*ktp_ext_shutdown_t)(void);
+			ktp_ext_shutdown_t pfnShutdown;
+#ifdef _WIN32
+			pfnShutdown = (ktp_ext_shutdown_t)GetProcAddress((HMODULE)pextdll->lDLLHandle, "KTP_ExtensionShutdown");
+#else
+			pfnShutdown = (ktp_ext_shutdown_t)dlsym(pextdll->lDLLHandle, "KTP_ExtensionShutdown");
+#endif // _WIN32
+			if (pfnShutdown)
+			{
+				Con_Printf("KTP: calling KTP_ExtensionShutdown for extension dll\n");
+				pfnShutdown();
+			}
+		}
+		pextdll++;
+	}
+
+	pextdll = &g_rgextdll[0];
 
 	while (pextdll < pextdllMac)
 	{
@@ -1353,6 +1389,12 @@ void ReleaseEntityDlls(void)
 		pextdll++;
 	}
 	g_psvs.dll_initialized = FALSE;
+
+	// KTP: ktp_extension_loaded is NOT reset here — Cvar_Shutdown already
+	// ran (Host_Shutdown order), and DLL load is once-per-process (latched
+	// by dll_initialized). If an intra-process reload cycle is ever
+	// introduced, reset the sentinel at a point where the cvar system is
+	// still alive.
 }
 
 void EXT_FUNC EngineFprintf(void *pfile, const char *szFmt, ...)

@@ -485,29 +485,10 @@ void EXT_FUNC SetServerPause(bool setPause)
 	// This signals that the pause state was explicitly changed by plugin
 	g_ktp_temporary_unpause = 0;
 
-	// KTP: If silent pause is enabled, don't notify clients (no "PAUSED" overlay)
-	// WARNING: This may cause client prediction desync - use carefully
-	if (ktp_silent_pause.value != 0.0f)
-	{
-		Con_DPrintf("[KTP] Silent pause active - not sending svc_setpause to clients\n");
-		return;
-	}
-
-#ifdef REHLDS_FIXES
-	for (int i = 0; i < g_psvs.maxclients; i++)
-	{
-		if (g_psvs.clients[i].fakeclient)
-			continue;
-		if (!g_psvs.clients[i].connected)
-			continue;
-
-		MSG_WriteByte(&g_psvs.clients[i].netchan.message, svc_setpause);
-		MSG_WriteByte(&g_psvs.clients[i].netchan.message, g_psv.paused);
-	}
-#else // REHLDS_FIXES
-	MSG_WriteByte(&g_psv.reliable_datagram, svc_setpause);
-	MSG_WriteByte(&g_psv.reliable_datagram, g_psv.paused);
-#endif // REHLDS_FIXES
+	// Centralized notify (handles ktp_silent_pause) — this used to be an
+	// inline copy of SV_BroadcastPauseState, so pause-notify changes applied
+	// to the helper silently missed the live .tech path.
+	SV_BroadcastPauseState(g_psv.paused);
 }
 
 CRehldsServerStatic g_RehldsServerStatic;

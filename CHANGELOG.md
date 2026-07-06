@@ -6,6 +6,28 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [KTP-ReHLDS `3.22.0.928`] - 2026-07-06
+
+**RCON audit completeness, extension shutdown callback, async-writer hardening** (fix wave from the 2026-07-05 full-stack review, Part 3)
+
+### Fixed
+- **`RH_SV_Rcon` hookchain now fires on EVERY rcon attempt with the real validity** (`sv_main.cpp`). It previously fired only in the success branch with `is_valid` hardcoded `true` — contradicting the documented contract — so bad-password / banned / no-privilege attempts (the security-relevant ones) never reached KTPAdminAudit or Discord. The command extraction is hoisted above the result switch (a malformed packet audits as `""`; the password is never included in the audited string). Failure audits fire BEFORE the packet redirect window so a handler's console output can never leak into the reply sent to an unauthenticated prober; success audits keep their exact .927 placement. One deliberate contract change on the success path: an empty-command valid rcon now audits with `""` (previously it wasn't audited at all). Failure-path throttling: at most one failure audit per second globally — that is the real guard; the per-IP tier (suppress addresses already accumulating in `g_rgRconFailures` or marked for rejection) is best-effort only, since the failure table fills solely on the bad-password path and its address compare includes the source port. **Plugin note:** KTPAdminAudit currently discards `is_valid=false` (safe to deploy .928 first); whenever it starts consuming failures, it must batch/dedup — 1/s = 60/min still exceeds Discord webhook limits.
+- **`SetServerPause()` now calls `SV_BroadcastPauseState()`** (`rehlds_api_impl.cpp`) instead of carrying a byte-identical inline copy of the notify loop — the live `.tech` pause path no longer silently misses future changes applied to the centralized helper.
+
+### Added
+- **`KTP_ExtensionShutdown` extension callback** (`sys_dll.cpp`). `ReleaseEntityDlls()` now dlsym's each extension DLL for an optional `KTP_ExtensionShutdown` export and calls it BEFORE the dlclose loop, while every library is still mapped. Rationale: `Meta_Detach` never runs in extension mode and `pfnGameShutdown` reaches only the game DLL, so modules dlopened inside ktpamx (dodx/reapi/amxxcurl) got no teardown until exit-time destructors ran — after ktpamx's `MF_*` surface was unmapped (the CHI1 shutdown-segfault class; amxxcurl 1.3.12/1.3.13 patched it module-side with an atexit guard). Absent export = silent no-op, so this ships fully forward-compatible: the KTPAMXX side (exporting it and cascading real module detach) rides a future 2.7.2x bump.
+- **`ktp_extension_loaded` sentinel cvar**. Counts extension DLLs successfully loaded from `extensions.ini`. An extension-load failure previously degraded the server to vanilla HLDS (no wall-fix, no cvar checks, no match handler) with a single console line; deploy/restart scripts can now assert `ktp_extension_loaded >= 1` via rcon.
+- **Async-writer hardening** (`sv_log.cpp`): (1) OPEN/CLOSE control ops no longer share the drop-on-full fate of ordinary lines — a dropped OPEN meant the whole map's log file silently never existed (the main thread believes the session is open, every write lands in the writer's no-file branch, indistinguishable inside `logq_drops`). Control ops now briefly wait for a ring slot (bounded ~500ms; they are map-rate and already inside the blocking map-load window), and if the ring is still full the failure lands in a dedicated counter. (2) Writer-thread liveness probe: the writer ticks a heartbeat per op; the profiler reports it. New `[KTP_PROFILE] io:` fields: `ctl_drops=` (lifetime control-op drops, expect 0 forever) and `writer_alive=` (0 only if work is pending and the writer processed nothing for a whole profile interval).
+
+### Docs/comments
+- `SV_ParseCvarValue`: documented that `pfnClientCvarChanged` is **Value2-only by design** (the legacy `clc_cvarvalue` response carries no cvar name; AMXX's `query_client_cvar` always uses Value2 — a future direct `QueryClientCvarValue` caller would bypass KTPCvarChecker).
+- Corrected the async-writer crash-durability comment: line-buffering means a crash normally loses only the in-flight line, but a crash DURING a writer stall also loses the queued backlog behind the stalled write.
+
+### Why
+Completes the engine-side items from the 2026-07-05 review: the RCON audit gap was the last KTP hookchain whose firing contract didn't match its documentation; the shutdown callback turns the fleet-wide "modules never detach" structural gap (root-caused during the CHI1 core analysis) into a solvable one; the writer hardening closes the only two silent-failure modes found in the .927 design review. No gameplay-path behavior changes; `ktp_log_async 0` legacy path untouched.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.927`] - 2026-07-02
 
 **Async log-file writer — game thread never touches the log disk again**

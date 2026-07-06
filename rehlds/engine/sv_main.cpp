@@ -3693,6 +3693,40 @@ qboolean SV_CheckRconFailure(netadr_t *adr)
 	return FALSE;
 }
 
+// KTP: throttle for FAILED-rcon audit-chain calls. The failure branches are
+// reachable by any internet scanner, so an unthrottled chain call would fan
+// every probe out through the plugin layer (Discord). The global 1/s cap is
+// the real guard. The per-IP tier below is best-effort only: the failure
+// table fills solely on the bad-password path (BADCHALLENGE/NOSETPASSWORD
+// spam never accumulates), and NET_CompareAdr includes the source port, so
+// a scanner rotating ephemeral ports never matches its own entry. Note for
+// any plugin consuming is_valid=false: 1/s = 60/min still exceeds Discord
+// webhook limits — batch/dedup plugin-side, don't post per event.
+qboolean SV_RconFailureAuditAllowed(netadr_t *adr)
+{
+	static double s_lastFailureAudit;
+	const int AUDIT_PER_IP_FAILURE_CAP = 3;
+
+	if (realtime - s_lastFailureAudit < 1.0)
+		return FALSE;
+
+	for (int i = 0; i < MAX_RCON_FAILURES_STORAGE; i++)
+	{
+		rcon_failure_t *r = &g_rgRconFailures[i];
+		if (!r->active)
+			break;
+		if (NET_CompareAdr(*adr, r->adr))
+		{
+			if (r->shouldreject || r->num_failures > AUDIT_PER_IP_FAILURE_CAP)
+				return FALSE;
+			break;
+		}
+	}
+
+	s_lastFailureAudit = realtime;
+	return TRUE;
+}
+
 #define RCON_RESULT_SUCCESS       0 // allow the rcon
 #define RCON_RESULT_BADPASSWORD   1 // reject it, bad password
 #define RCON_RESULT_BADCHALLENGE  2 // bad challenge
@@ -3775,25 +3809,49 @@ void SV_Rcon(netadr_t *net_from_)
 		}
 	}
 
+	// KTP: extract the attempted command once, above the switch, so failed
+	// attempts carry it too. Skips the 3 packet tokens ("rcon" challenge
+	// password) — the password itself never reaches the hook. A malformed
+	// packet (fewer tokens) audits as "".
+	char *data;
+	data = COM_Parse(rcon_buff);
+	data = COM_Parse(data);
+	data = COM_Parse(data);
+
+	remaining[0] = 0;
+	if (data)
+	{
+		Q_strncpy(remaining, data, sizeof(remaining) - 1);
+		remaining[sizeof(remaining) - 1] = 0;
+	}
+
+	// KTP: audit EVERY attempt with the real validity — the chain used to
+	// fire only on success with is_valid hardcoded true, so bad-password /
+	// banned / no-privilege attempts (the security-relevant ones) never
+	// reached KTPAdminAudit. Failure audits fire BEFORE the packet redirect:
+	// inside it, anything a handler prints (e.g. AMX runtime-error spew)
+	// would be transmitted to the unauthenticated prober in the failure
+	// reply. Throttled — see SV_RconFailureAuditAllowed.
+	if (invalid != RCON_RESULT_SUCCESS && SV_RconFailureAuditAllowed(net_from_))
+	{
+		g_RehldsHookchains.m_SV_Rcon.callChain(SV_Rcon_hook_internal, remaining, NET_AdrToString(*net_from_), false);
+	}
+
 	SV_BeginRedirect(RD_PACKET, net_from_);
+
+	// Success audits keep their .927 placement (inside the redirect, before
+	// execution — handler output goes to the authenticated rcon sender).
+	if (invalid == RCON_RESULT_SUCCESS)
+	{
+		g_RehldsHookchains.m_SV_Rcon.callChain(SV_Rcon_hook_internal, remaining, NET_AdrToString(*net_from_), true);
+	}
 
 	switch (invalid)
 	{
 	case RCON_RESULT_SUCCESS:
 	{
-		char *data;
-		data = COM_Parse(rcon_buff);
-		data = COM_Parse(data);
-		data = COM_Parse(data);
-
 		if (data)
 		{
-			Q_strncpy(remaining, data, sizeof(remaining) - 1);
-			remaining[sizeof(remaining) - 1] = 0;
-
-			// KTP: Fire hook for RCON audit logging
-			g_RehldsHookchains.m_SV_Rcon.callChain(SV_Rcon_hook_internal, remaining, NET_AdrToString(*net_from_), true);
-
 			// KTP: Set flag so commands can detect they're from RCON
 			g_bRconCommand = 1;
 			Cmd_ExecuteString(remaining, src_command);
@@ -7149,6 +7207,14 @@ cvar_t ktp_hostname_broadcast = { "ktp_hostname_broadcast", "0", 0, 0.0f, NULL }
 // WARNING: Silent pause may cause client prediction desync - test carefully
 cvar_t ktp_silent_pause = { "ktp_silent_pause", "0", 0, 0.0f, NULL };
 
+// KTP: Deploy sentinel — count of extension DLLs successfully loaded from
+// extensions.ini. An extension-load failure otherwise degrades to vanilla
+// HLDS with a single console line; restart/deploy scripts assert this via
+// rcon ("ktp_extension_loaded" must be >= 1) instead of trusting silence.
+// Extension load is once per process (latched by dll_initialized), so the
+// count never needs a runtime reset.
+cvar_t ktp_extension_loaded = { "ktp_extension_loaded", "0", 0, 0.0f, NULL };
+
 // KTP: Frame profiling system
 // ktp_profile_frame: 0 = disabled, 1 = enabled
 // ktp_profile_interval: seconds between summary logs (default 10)
@@ -7225,6 +7291,8 @@ double g_ktp_file_io_worst = 0.0;
 extern cvar_t ktp_log_async;
 extern std::atomic<uint32> g_ktp_logq_drops;
 extern std::atomic<uint32> g_ktp_fileq_worst_us;
+extern std::atomic<uint32> g_ktp_logq_ctl_drops;
+qboolean KTP_Log_WriterAlive(void);
 
 // KTP: Page-fault counters at frame start, for spike-frame deltas
 #ifndef _WIN32
@@ -8988,11 +9056,13 @@ void EXT_FUNC SV_Frame_Internal()
 			// Worst single log/console write this interval. logaddr_worst vs
 			// file_worst splits the logio sink: UDP sendto to a logaddress
 			// (HLStatsX backpressure) vs FS_FPrintf to qconsole.log (disk).
-			Log_Printf("[KTP_PROFILE] io: logprintf_worst=%.3fms conprintf_worst=%.3fms logaddr_worst=%.3fms file_worst=%.3fms fileq_worst=%.3fms logq_drops=%u\n",
+			Log_Printf("[KTP_PROFILE] io: logprintf_worst=%.3fms conprintf_worst=%.3fms logaddr_worst=%.3fms file_worst=%.3fms fileq_worst=%.3fms logq_drops=%u ctl_drops=%u writer_alive=%d\n",
 				g_ktp_logio_worst * 1000.0, g_ktp_conio_worst * 1000.0,
 				g_ktp_logaddr_io_worst * 1000.0, g_ktp_file_io_worst * 1000.0,
 				g_ktp_fileq_worst_us.load(std::memory_order_relaxed) / 1000.0,
-				g_ktp_logq_drops.load(std::memory_order_relaxed));
+				g_ktp_logq_drops.load(std::memory_order_relaxed),
+				g_ktp_logq_ctl_drops.load(std::memory_order_relaxed),
+				KTP_Log_WriterAlive() ? 1 : 0);
 			// Per-client send detail
 			if (g_ktp_send_worst_client_slot >= 0) {
 				client_t *worst_cl = &g_psvs.clients[g_ktp_send_worst_client_slot];
@@ -9280,6 +9350,9 @@ void SV_Init(void)
 
 	// KTP: Silent pause control (no "PAUSED" overlay on clients)
 	Cvar_RegisterVariable(&ktp_silent_pause);
+
+	// KTP: Extension-load sentinel (deploy scripts assert >= 1 via rcon)
+	Cvar_RegisterVariable(&ktp_extension_loaded);
 
 	// KTP: Frame profiling system
 	Cvar_RegisterVariable(&ktp_profile_frame);
