@@ -1323,6 +1323,10 @@ IgnoreThisDLL:
 	}
 }
 
+// KTP: defined in rehlds/hookchains_impl.cpp — empties every hookchain
+// registry so no post-dlclose chain call jumps into an unmapped extension.
+void KTP_ClearAllHooks();
+
 void ReleaseEntityDlls(void)
 {
 	extensiondll_t *pextdll;
@@ -1369,6 +1373,15 @@ void ReleaseEntityDlls(void)
 		}
 		pextdll++;
 	}
+
+	// KTP: safety net independent of any extension's shutdown behavior — empty
+	// every ReHLDS hookchain registry BEFORE the dlclose loop. Extension
+	// modules register hooks but (no Metamod) never detach at shutdown, so
+	// their hook pointers would otherwise stay live in the registries after
+	// their code pages are unmapped below; a chain firing during the rest of
+	// Host_Shutdown would then jump into freed memory (the CHI1 shutdown class,
+	// generalized). After this, every chain calls only the engine original.
+	KTP_ClearAllHooks();
 
 	pextdll = &g_rgextdll[0];
 

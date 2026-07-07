@@ -107,6 +107,18 @@ protected:
 	int m_Priorities[MAX_HOOKS_IN_CHAIN + 1];
 	int m_NumHooks;
 
+	// KTP: intrusive list of every registry instance, linked at construction.
+	// Extension modules (no Metamod) register hooks but never detach at
+	// shutdown (Meta_Detach doesn't run), so at ReleaseEntityDlls the module
+	// is dlclose'd with its hook pointers still live in these registries.
+	// KTP_ClearAllHooks() walks this list to empty every chain BEFORE the
+	// dlclose, so any chain that fires during the rest of Host_Shutdown calls
+	// only the engine original — no jump into unmapped module memory.
+	// Auto-covers present and future chains with zero maintenance.
+	static AbstractHookChainRegistry* s_registryListHead;
+	AbstractHookChainRegistry* m_nextRegistry;
+	friend void KTP_ClearAllHooks();
+
 protected:
 	void addHook(void* hookFunc, int priority);
 	void removeHook(void* hookFunc);
@@ -115,7 +127,15 @@ public:
 	int  getCount() const;
 	bool findHook(void* hookFunc) const;
 	AbstractHookChainRegistry();
+
+	// KTP: drop all registered hooks from this chain (does not touch the
+	// engine original). Not called per-request — only from KTP_ClearAllHooks.
+	void clearHooks();
 };
+
+// KTP: empty every hookchain registry. Call once, engine-side, immediately
+// before the extension dlclose loop in ReleaseEntityDlls.
+void KTP_ClearAllHooks();
 
 template<typename t_ret, typename ...t_args>
 class IHookChainRegistryImpl : public IHookChainRegistry < t_ret, t_args...>, public AbstractHookChainRegistry {

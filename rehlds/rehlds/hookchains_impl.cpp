@@ -19,12 +19,37 @@
 #include "precompiled.h"
 #include "hookchains_impl.h"
 
+// KTP: head of the intrusive registry list (see hookchains_impl.h).
+AbstractHookChainRegistry* AbstractHookChainRegistry::s_registryListHead = nullptr;
+
 AbstractHookChainRegistry::AbstractHookChainRegistry()
 {
 	Q_memset(m_Hooks, 0, sizeof(m_Hooks));
 	Q_memset(m_Priorities, 0, sizeof(m_Priorities));
 
 	m_NumHooks = 0;
+
+	// KTP: link into the global list at construction (static-init time,
+	// single-threaded). Cleared as a batch at shutdown via KTP_ClearAllHooks.
+	m_nextRegistry = s_registryListHead;
+	s_registryListHead = this;
+}
+
+// KTP: empty this chain's hook set. Leaves the engine original intact — a
+// subsequent callChain finds m_Hooks[0] == NULL and calls only the original.
+void AbstractHookChainRegistry::clearHooks()
+{
+	Q_memset(m_Hooks, 0, sizeof(m_Hooks));
+	Q_memset(m_Priorities, 0, sizeof(m_Priorities));
+	m_NumHooks = 0;
+}
+
+// KTP: engine-side shutdown safety net — see the class comment. Empties every
+// registry so no post-dlclose chain call jumps into an unmapped module.
+void KTP_ClearAllHooks()
+{
+	for (AbstractHookChainRegistry* r = AbstractHookChainRegistry::s_registryListHead; r; r = r->m_nextRegistry)
+		r->clearHooks();
 }
 
 bool AbstractHookChainRegistry::findHook(void* hookFunc) const
