@@ -1091,8 +1091,10 @@ void LoadExtensionDLLs(void)
 		while (*pLine == ' ' || *pLine == '\t')
 			pLine++;
 
-		// Skip comments and empty lines
-		if (*pLine == ';' || *pLine == '#' || *pLine == '/' || *pLine == '\0' || *pLine == '\n' || *pLine == '\r')
+		// Skip comments (';', '#', "//") and empty lines. A lone '/' is an
+		// absolute Unix path, not a comment — a single-slash test here used
+		// to silently skip absolute entries.
+		if (*pLine == ';' || *pLine == '#' || (pLine[0] == '/' && pLine[1] == '/') || *pLine == '\0' || *pLine == '\n' || *pLine == '\r')
 			continue;
 
 		// Remove trailing whitespace/newlines
@@ -1235,8 +1237,12 @@ void LoadExtensionDll(const char *szDllFilename)
 
 	// KTP: bump the deploy sentinel — every failure path above returns
 	// before this line, so the cvar counts only fully-registered extensions.
+	// DirectSet skips Cvar_HookVariable firing, which is fine here: nothing
+	// can have hooked this cvar yet (extensions are loading right now).
 	extern cvar_t ktp_extension_loaded;
-	Cvar_SetValue("ktp_extension_loaded", ktp_extension_loaded.value + 1.0f);
+	char szExtCount[16];
+	Q_snprintf(szExtCount, sizeof(szExtCount), "%d", (int)ktp_extension_loaded.value + 1);
+	Cvar_DirectSet(&ktp_extension_loaded, szExtCount);
 }
 
 #ifdef _WIN32
@@ -1351,7 +1357,9 @@ void ReleaseEntityDlls(void)
 	// IMPLEMENTOR CONTRACT: Host_Shutdown has already run Cmd_Shutdown /
 	// Cvar_Shutdown / NET_Shutdown by now — the callback must not touch
 	// cvars, engine commands, or engine networking. Con_Printf and
-	// Log_Printf are safe (log writer joins after this).
+	// Log_Printf are safe (log writer joins after this). A dll listed twice
+	// in extensions.ini (config error) is registered twice and gets the
+	// callback twice — it must tolerate a repeat call.
 	pextdll = &g_rgextdll[0];
 	pextdllMac = &g_rgextdll[g_iextdllMac];
 	while (pextdll < pextdllMac)

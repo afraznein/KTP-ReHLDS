@@ -7270,6 +7270,8 @@ double g_ktp_read_worst_pkt = 0.0;        // worst single packet processing time
 // KTP: Physics sub-phase timing (populated by SV_Physics in sv_phys.cpp)
 extern double g_ktp_phys_startframe;
 extern double g_ktp_phys_entloop;
+extern double g_ktp_phys_startframe_peak;  // interval peaks, reset below
+extern double g_ktp_phys_entloop_peak;
 
 // KTP: Log/console I/O timing. Frame accumulators are written by Log_Printf
 // (sv_log.cpp) and Con_Printf (sys_dll.cpp), reset each frame below. Note
@@ -7294,10 +7296,15 @@ extern std::atomic<uint32> g_ktp_fileq_worst_us;
 extern std::atomic<uint32> g_ktp_logq_ctl_drops;
 qboolean KTP_Log_WriterAlive(void);
 
-// KTP: Page-fault counters at frame start, for spike-frame deltas
+// KTP: Page-fault counters at frame start, for spike-frame deltas. Only
+// consumed by spike alerts, so the snapshot is skipped when those are off
+// (getrusage is the one real syscall in the profiling hot path). The valid
+// flag keeps a mid-frame threshold flip from producing a delta against a
+// stale snapshot.
 #ifndef _WIN32
 static long g_ktp_ru_minflt_frame_start = 0;
 static long g_ktp_ru_majflt_frame_start = 0;
+static bool g_ktp_ru_frame_start_valid = false;
 #endif
 
 // KTP: Physics sub-phase timing for the paused else-branch in SV_Frame_Internal.
@@ -7317,7 +7324,15 @@ int g_ktp_send_client_count = 0;
 // Respects ktp_silent_pause cvar - if enabled, skips sending svc_setpause
 void SV_BroadcastPauseState(qboolean paused)
 {
-	if (ktp_silent_pause.value != 0.0f)
+	// Latch the silent mode per pause episode: the unpause must mirror
+	// whatever the pause sent. Reading the cvar fresh on unpause lets a
+	// mid-episode flip strand clients on the PAUSED overlay (loud pause,
+	// silent unpause) or send a stray svc_setpause 0.
+	static bool s_episodeSilent = false;
+	if (paused)
+		s_episodeSilent = (ktp_silent_pause.value != 0.0f);
+
+	if (s_episodeSilent)
 	{
 		Con_DPrintf("[KTP] Silent pause active - skipping svc_setpause broadcast (paused=%d)\n", paused);
 		return;
@@ -8727,11 +8742,16 @@ void EXT_FUNC SV_Frame_Internal()
 
 #ifndef _WIN32
 		// Snapshot page-fault counters so a spike frame can report its delta
-		struct rusage ktp_ru;
-		if (getrusage(RUSAGE_SELF, &ktp_ru) == 0)
+		g_ktp_ru_frame_start_valid = false;
+		if (ktp_profile_spike_threshold.value > 0.0f)
 		{
-			g_ktp_ru_minflt_frame_start = ktp_ru.ru_minflt;
-			g_ktp_ru_majflt_frame_start = ktp_ru.ru_majflt;
+			struct rusage ktp_ru;
+			if (getrusage(RUSAGE_SELF, &ktp_ru) == 0)
+			{
+				g_ktp_ru_minflt_frame_start = ktp_ru.ru_minflt;
+				g_ktp_ru_majflt_frame_start = ktp_ru.ru_majflt;
+				g_ktp_ru_frame_start_valid = true;
+			}
 		}
 #endif
 	}
@@ -8765,7 +8785,7 @@ void EXT_FUNC SV_Frame_Internal()
 
 	// KTP: Track pause state transitions for nodelta flushing
 	if (wasPaused != s_ktp_lastPauseState) {
-		s_ktp_pauseTransitionFrames = 3;  // Force nodelta for 3 frames on transition
+		s_ktp_pauseTransitionFrames = 3;  // = 2 nodelta send frames (decrement below runs before the send)
 	}
 	s_ktp_lastPauseState = wasPaused;
 	if (s_ktp_pauseTransitionFrames > 0)
@@ -8957,7 +8977,7 @@ void EXT_FUNC SV_Frame_Internal()
 				long spike_minflt = 0, spike_majflt = 0;
 #ifndef _WIN32
 				struct rusage ktp_spike_ru;
-				if (getrusage(RUSAGE_SELF, &ktp_spike_ru) == 0)
+				if (g_ktp_ru_frame_start_valid && getrusage(RUSAGE_SELF, &ktp_spike_ru) == 0)
 				{
 					spike_minflt = ktp_spike_ru.ru_minflt - g_ktp_ru_minflt_frame_start;
 					spike_majflt = ktp_spike_ru.ru_majflt - g_ktp_ru_majflt_frame_start;
@@ -8982,9 +9002,9 @@ void EXT_FUNC SV_Frame_Internal()
 					g_ktp_read_time_process * 1000.0,
 					g_ktp_read_worst_pkt * 1000.0);
 				// KTP: Emit spike-frame phys sub-phases. Unlike [KTP_PROFILE]
-				// phys_detail (periodic, reads current globals at log time), this
-				// captures the values produced by *this* spike frame — so a phys-
-				// dominant spike shows exactly which sub-phase absorbed the time.
+				// phys_detail_peak (interval peak), this captures the values
+				// produced by *this* spike frame — so a phys-dominant spike
+				// shows exactly which sub-phase absorbed the time.
 				// startframe/entloop are populated when SV_Physics ran this frame;
 				// paused_startframe/paused_hud are populated when the paused else-
 				// branch ran. On any given spike at least one pair will be zero.
@@ -9050,9 +9070,11 @@ void EXT_FUNC SV_Frame_Internal()
 			Log_Printf("[KTP_PROFILE] gap=%.3fms (full - sum of phases)\n",
 				avg_gap);
 
-			// Physics sub-phase detail (from SV_Physics)
-			Log_Printf("[KTP_PROFILE] phys_detail: startframe=%.3fms entloop=%.3fms\n",
-				g_ktp_phys_startframe * 1000.0, g_ktp_phys_entloop * 1000.0);
+			// Physics sub-phase interval peaks (from SV_Physics). The old
+			// phys_detail line printed the last frame's instantaneous values —
+			// it read baseline forever and never showed a spike.
+			Log_Printf("[KTP_PROFILE] phys_detail_peak: startframe=%.3fms entloop=%.3fms\n",
+				g_ktp_phys_startframe_peak * 1000.0, g_ktp_phys_entloop_peak * 1000.0);
 			// Worst single log/console write this interval. logaddr_worst vs
 			// file_worst splits the logio sink: UDP sendto to a logaddress
 			// (HLStatsX backpressure) vs FS_FPrintf to qconsole.log (disk).
@@ -9098,6 +9120,8 @@ void EXT_FUNC SV_Frame_Internal()
 			g_ktp_profile_peak_steam = 0.0;
 			g_ktp_profile_peak_full = 0.0;
 			g_ktp_profile_peak_interframe = 0.0;
+			g_ktp_phys_startframe_peak = 0.0;
+			g_ktp_phys_entloop_peak = 0.0;
 			g_ktp_logio_worst = 0.0;
 			g_ktp_conio_worst = 0.0;
 			g_ktp_logaddr_io_worst = 0.0;

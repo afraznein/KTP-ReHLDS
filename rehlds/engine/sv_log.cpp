@@ -52,7 +52,7 @@ cvar_t ktp_log_async = { "ktp_log_async", "1", 0, 0.0f, NULL };
 
 std::atomic<uint32> g_ktp_logq_drops(0);      // lines lost (queue full / writer has no file / write error); lifetime
 std::atomic<uint32> g_ktp_fileq_worst_us(0);  // worst single write on the writer thread; profiler resets per interval
-std::atomic<uint32> g_ktp_logq_ctl_drops(0);  // OPEN/CLOSE ops lost — a lost OPEN = a whole map's log file missing; lifetime
+std::atomic<uint32> g_ktp_logq_ctl_drops(0);  // OPEN/CLOSE ops lost — a lost OPEN = a whole map's log file missing (or misrouted, see KTP_LogEnqueue); lifetime
 static std::atomic<uint32> s_ktpWriterBeat(0); // ticks once per op processed; liveness probe reads it
 
 enum ktp_logop_t
@@ -181,10 +181,13 @@ static void KTP_LogEnqueue(int type, const char *data)
 	// OPEN/CLOSE are map-rate and structural — a dropped OPEN means the
 	// whole map's log file silently never exists (the main thread believes
 	// the session is open; every WRITE lands in the writer's counted no-file
-	// branch). If the ring is full, control ops briefly wait for one slot
-	// (this runs inside the already-blocking map-load window); WRITE keeps
-	// the never-block contract. Control drops get their own counter so the
-	// failure is distinguishable from ordinary line drops.
+	// branch). Worse: a writer wedge that outlasts the retry bound can drop a
+	// CLOSE+OPEN pair, leaving the old map's FILE* open — the new map's lines
+	// then land in the OLD map's file, not the no-file branch. Both outcomes
+	// show up only as ctl_drops. If the ring is full, control ops briefly
+	// wait for one slot (this runs inside the already-blocking map-load
+	// window); WRITE keeps the never-block contract. Control drops get their
+	// own counter so the failure is distinguishable from ordinary line drops.
 	const bool isControl = (type != KTP_LOGOP_WRITE);
 	int retries = isControl ? 500 : 0;  // ~500ms bound at 1ms per retry
 

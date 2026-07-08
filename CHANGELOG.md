@@ -6,6 +6,29 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [Unreleased — rides the next cut]
+
+**Engine hygiene wave** (WARN/SUGG items from the 2026-07-06 Wave-2 assessment; no version bump — retitle at cut time)
+
+### Fixed
+- **`ktp_silent_pause` latched per pause episode** (`sv_main.cpp` `SV_BroadcastPauseState`). The cvar was read fresh at every broadcast, so flipping it mid-episode could strand clients on the PAUSED overlay (loud pause + silent unpause) or send a stray `svc_setpause 0`. The mode is now latched when the pause broadcast fires and reused for the paired unpause. Behavior is identical whenever the cvar is stable across an episode — the fleet case: KTPMatchHandler's set-1-before-pause / set-0-after-unpause ordering already kept it stable across each pause→unpause pair.
+- **`extensions.ini`: absolute Unix paths no longer silently skipped** (`sys_dll.cpp`). A lone leading `/` was treated as a comment, making the absolute-path branch dead. Comments are now `;`, `#`, or `//`.
+- **`[KTP_PROFILE] phys_detail` → `phys_detail_peak`** (`sv_phys.cpp`, `sv_main.cpp`). The periodic line printed the last simulating frame's instantaneous startframe/entloop — baseline forever, useless for spike attribution. It now reports interval peaks, tracked inside `SV_Physics` so paused frames contribute nothing. `[KTP_SPIKE_PHYS]` unchanged.
+
+### Changed
+- **Per-frame `getrusage` snapshot gated on `ktp_profile_spike_threshold > 0`** (`sv_main.cpp`) — it only feeds spike-frame fault deltas, and was the one real syscall in the profiling hot path. No change on the fleet config (threshold 3).
+- Extension-load sentinel bump uses `Cvar_DirectSet` instead of a name lookup.
+
+### Docs/comments
+- Control-op drop comments now state the wrong-file outcome (dropped CLOSE+OPEN pair = new map's lines land in the old map's file), not just the missing-file one (`sv_log.cpp`).
+- `KTP_ExtensionShutdown` contract comment notes a dll listed twice in `extensions.ini` gets the callback twice.
+- Pause-transition nodelta comment corrected: the counter of 3 yields 2 nodelta send frames.
+
+### CI
+- `ktp-ci.yml`: `actions/checkout` v4 → v6.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.928`] - 2026-07-06
 
 **RCON audit completeness, extension shutdown callback, async-writer hardening** (fix wave from the 2026-07-05 full-stack review, Part 3)

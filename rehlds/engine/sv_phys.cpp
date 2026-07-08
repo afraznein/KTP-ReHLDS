@@ -1472,6 +1472,12 @@ void SV_Physics_Step(edict_t *ent)
 // KTP: Physics sub-phase timing globals (read by SV_Frame_Internal profiler)
 double g_ktp_phys_startframe = 0.0;  // pfnStartFrame time (AMXX plugins + game DLL)
 double g_ktp_phys_entloop = 0.0;     // Entity physics loop time
+// Interval peaks, tracked here so paused frames (which skip SV_Physics and
+// leave the instantaneous globals stale) contribute nothing. The profiler
+// logs + resets these per interval; the globals above stay per-frame for
+// [KTP_SPIKE_PHYS].
+double g_ktp_phys_startframe_peak = 0.0;
+double g_ktp_phys_entloop_peak = 0.0;
 
 extern bool g_ktp_profiling_enabled;
 
@@ -1489,6 +1495,8 @@ void SV_Physics()
 	if (ktp_prof) {
 		double now = Sys_FloatTime();
 		g_ktp_phys_startframe = now - ktp_t0;
+		if (g_ktp_phys_startframe > g_ktp_phys_startframe_peak)
+			g_ktp_phys_startframe_peak = g_ktp_phys_startframe;
 		ktp_t0 = now;
 	}
 
@@ -1559,7 +1567,11 @@ void SV_Physics()
 		gGlobalVariables.force_retouch = gGlobalVariables.force_retouch - 1.0f;
 
 	if (ktp_prof)
+	{
 		g_ktp_phys_entloop = Sys_FloatTime() - ktp_t0;
+		if (g_ktp_phys_entloop > g_ktp_phys_entloop_peak)
+			g_ktp_phys_entloop_peak = g_ktp_phys_entloop;
+	}
 }
 
 trace_t SV_Trace_Toss(edict_t *ent, edict_t *ignore)
