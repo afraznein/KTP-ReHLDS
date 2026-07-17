@@ -35,6 +35,24 @@ AbstractHookChainRegistry::AbstractHookChainRegistry()
 	s_registryListHead = this;
 }
 
+// KTP: splice out of the intrusive list — the counterpart to the ctor's link.
+// Registry lifetime is process-long ONLY for the statics; MessageManagerImpl
+// deletes message-hook registries at runtime, and a freed node left linked here
+// is a heap use-after-free the moment KTP_ClearAllHooks walks it at shutdown.
+// Single-threaded (game thread), and the list is short, so a linear splice is fine.
+AbstractHookChainRegistry::~AbstractHookChainRegistry()
+{
+	for (AbstractHookChainRegistry** pp = &s_registryListHead; *pp; pp = &(*pp)->m_nextRegistry)
+	{
+		if (*pp == this)
+		{
+			*pp = m_nextRegistry;
+			break;
+		}
+	}
+	m_nextRegistry = nullptr;
+}
+
 // KTP: empty this chain's hook set. Leaves the engine original intact — a
 // subsequent callChain finds m_Hooks[0] == NULL and calls only the original.
 void AbstractHookChainRegistry::clearHooks()

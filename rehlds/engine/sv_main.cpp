@@ -93,7 +93,17 @@ void SV_Rcon_hook_internal(const char *command, const char *from_ip, bool is_val
 	// No-op: This hook is purely for notification/logging purposes
 }
 
-// KTP: Internal implementation for SV_ClientUserInfoChanged hook
+// KTP: routes ClientUserInfoChanged through the hookchain so extension-mode
+// KTPAMXX can fire client_infochanged and refresh CPlayer::name. Off (0) restores
+// the byte-exact pre-.929 path: the engine calls the game DLL directly and the
+// chain never runs. Kill switch for the LAN — `ktp_userinfo_hook 0` in console
+// needs no binary swap. Same shape as ktp_log_async's rollback.
+cvar_t ktp_userinfo_hook = { "ktp_userinfo_hook", "1", 0, 0.0f, NULL };
+
+// KTP: Internal implementation for SV_ClientUserInfoChanged hook.
+// This IS the chain's terminal (m_OriginalFunc) — callChain invokes it when no
+// hooks are registered — so it, and not the caller, owns the single dispatch to
+// the game DLL. See the call-site comment in SV_ExtractFromUserinfo.
 void SV_ClientUserInfoChanged_internal(IGameClient *pClient)
 {
 	client_t *cl = pClient->GetClient();
@@ -5653,10 +5663,19 @@ void SV_ExtractFromUserinfo(client_t *cl)
 	// Check for duplicate names
 	SV_CheckForDuplicateNames(userinfo, TRUE, cl - g_psvs.clients);
 
-	// KTP: Call through hook chain for extension mode support
-	// TEMPORARILY DISABLED - investigating client kick issue
-	// SV_CallClientUserInfoChanged(cl);
-	gEntityInterface.pfnClientUserInfoChanged(cl->edict, cl->userinfo);
+	// KTP: dispatch ClientUserInfoChanged to the game DLL — through the hookchain
+	// when enabled, directly when not. Exactly ONE of these runs.
+	//
+	// This is an if/else on purpose and it must stay one. The chain's terminal
+	// (SV_ClientUserInfoChanged_internal) calls pfnClientUserInfoChanged itself,
+	// and callChain runs the terminal even with zero hooks registered — so calling
+	// SV_CallClientUserInfoChanged() *alongside* the direct call would dispatch the
+	// name change to the game DLL twice per userinfo update. Never reintroduce the
+	// direct call as a second statement.
+	if (ktp_userinfo_hook.value != 0.0f)
+		SV_CallClientUserInfoChanged(cl);
+	else
+		gEntityInterface.pfnClientUserInfoChanged(cl->edict, cl->userinfo);
 
 	val = Info_ValueForKey(userinfo, "name");
 	Q_strncpy(cl->name, val, sizeof(cl->name) - 1);
@@ -9386,6 +9405,11 @@ void SV_Init(void)
 
 	// KTP: Async log-file writer (mode latches at Log_Open, i.e. next map)
 	Cvar_RegisterVariable(&ktp_log_async);
+
+	// KTP: route ClientUserInfoChanged through the hookchain (extension-mode
+	// client_infochanged + CPlayer::name refresh). Read live per userinfo update,
+	// so `ktp_userinfo_hook 0` takes effect immediately — no map change, no swap.
+	Cvar_RegisterVariable(&ktp_userinfo_hook);
 
 	//------------------------------------------------
 	// Movevars cvarhook registers

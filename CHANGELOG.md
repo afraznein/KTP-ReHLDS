@@ -6,11 +6,57 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
-## [Unreleased — rides the next cut]
+## [KTP-ReHLDS `3.22.0.929`] - 2026-07-16
 
-**Engine hygiene wave** (WARN/SUGG items from the 2026-07-06 Wave-2 assessment; no version bump — retitle at cut time)
+Two threads land together: the `SV_ClientUserInfoChanged` re-enable (the engine root
+cause of the stale-name class) and the engine hygiene wave that had been parked on
+`main` since 2026-07-08 waiting for a cut.
+
+**Verify by md5, not by banner.** `appversion.h` is generated from the git commit count,
+so the console will stamp a higher number than the title above — the two have drifted for
+several cuts (.928 stamps `926-dev+m`). The md5 of the shipped `engine_i486.so` is the
+only identity that matters.
 
 ### Fixed
+
+- **`SV_ClientUserInfoChanged` hookchain is live again, behind `ktp_userinfo_hook`**
+  (`sv_main.cpp`). The call site has been commented out since 2025-12-06 with
+  *"TEMPORARILY DISABLED - investigating client kick issue"*, so in extension mode the
+  game DLL was called directly, KTPAMXX's `client_infochanged` forward never fired, and
+  `CPlayer::name` never refreshed — `get_user_name()` returned the connect-time name for
+  the life of a session. That is the engine root cause behind every "stale name after a
+  rename" report (`.kick` menus, `.ready`/`.confirm` text, batched Discord embeds); plugin-side
+  "read the name live" fixes could never work, because the cache they read is the one that
+  never updates.
+
+  The hook was added **already disabled**, in the very commit that introduced it — it has
+  never executed on this fleet, on any branch. So the disable records a development-time
+  observation, not a production incident.
+
+  The re-enable is an **if/else, not an added call**, and that is load-bearing: the chain's
+  terminal (`SV_ClientUserInfoChanged_internal`) calls `pfnClientUserInfoChanged` itself, and
+  `callChain` runs the terminal even with zero hooks registered — so restoring the hook
+  *alongside* the surviving direct call would dispatch every name change to the game DLL
+  twice. That is the most economical explanation for the original kick, though the enabled
+  form never committed, so the actual 2025 trigger is unrecoverable. Either way, exactly one
+  dispatch now happens on both branches.
+
+  `ktp_userinfo_hook` (default `1`) is read per userinfo update, so `ktp_userinfo_hook 0`
+  takes effect immediately — no map change, no restart, no binary swap — and the `0` branch
+  is byte-for-byte the pre-.929 path. Same rollback shape as `ktp_log_async`, without the latch.
+
+- **Hookchain registries unlink on destruction** (`hookchains_impl.{h,cpp}`). The KTP
+  intrusive registry list linked every `AbstractHookChainRegistry` at construction but never
+  unlinked. Most registries are process-long statics, but `MessageManagerImpl` `new`s and
+  `delete`s message-hook registries at runtime (one per msg_id, freed when the last hook for
+  that message unregisters), leaving a freed node linked for `KTP_ClearAllHooks` to walk and
+  memset at shutdown — a heap use-after-free inside the mechanism added in .928 to make
+  shutdown safe. Not currently reachable (no deployed plugin uses ReAPI's message-hook API),
+  so this is pre-emptive. The destructor is `protected`, which turns an accidental
+  `delete` through the base into a compile error rather than UB.
+
+**Engine hygiene wave** (WARN/SUGG items from the 2026-07-06 Wave-2 assessment; committed
+2026-07-08, held for this cut)
 - **`ktp_silent_pause` latched per pause episode** (`sv_main.cpp` `SV_BroadcastPauseState`). The cvar was read fresh at every broadcast, so flipping it mid-episode could strand clients on the PAUSED overlay (loud pause + silent unpause) or send a stray `svc_setpause 0`. The mode is now latched when the pause broadcast fires and reused for the paired unpause. Behavior is identical whenever the cvar is stable across an episode — the fleet case: KTPMatchHandler's set-1-before-pause / set-0-after-unpause ordering already kept it stable across each pause→unpause pair.
 - **`extensions.ini`: absolute Unix paths no longer silently skipped** (`sys_dll.cpp`). A lone leading `/` was treated as a comment, making the absolute-path branch dead. Comments are now `;`, `#`, or `//`.
 - **`[KTP_PROFILE] phys_detail` → `phys_detail_peak`** (`sv_phys.cpp`, `sv_main.cpp`). The periodic line printed the last simulating frame's instantaneous startframe/entloop — baseline forever, useless for spike attribution. It now reports interval peaks, tracked inside `SV_Physics` so paused frames contribute nothing. `[KTP_SPIKE_PHYS]` unchanged.

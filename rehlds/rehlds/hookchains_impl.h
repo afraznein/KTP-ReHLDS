@@ -131,6 +131,22 @@ public:
 	// KTP: drop all registered hooks from this chain (does not touch the
 	// engine original). Not called per-request — only from KTP_ClearAllHooks.
 	void clearHooks();
+
+protected:
+	// KTP: unlink from s_registryListHead. Most registries are statics that live
+	// for the process, but MessageManagerImpl `new`s and `delete`s message-hook
+	// registries at RUNTIME (one per msg_id, freed when the last hook for that
+	// message unregisters — e.g. a ReAPI plugin's MessageHook::clear() at map
+	// change). Without this, the freed block stays linked and KTP_ClearAllHooks
+	// memsets it at shutdown: a heap use-after-free in the code added to make
+	// shutdown safe.
+	//
+	// Protected, not public: registries are only ever destroyed through their
+	// concrete type (HookRegistry_t, or as a static/member). Making this
+	// protected turns an accidental `delete (AbstractHookChainRegistry*)p` into a
+	// compile error rather than UB, so the invariant is enforced instead of
+	// merely documented. Non-virtual for the same reason.
+	~AbstractHookChainRegistry();
 };
 
 // KTP: empty every hookchain registry. Call once, engine-side, immediately
