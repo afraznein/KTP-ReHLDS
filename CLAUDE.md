@@ -9,10 +9,10 @@ bash build.sh -j=$(nproc)
 ```
 Output lands in `build/` — `engine_i486.so` and `hlds_linux`.
 
-**KTP maintainers** run an out-of-repo wrapper (`build_linux.sh`, one level up in
-the maintainer working tree — deliberately not committed: it hardcodes a
-box-specific staging path). It just runs the same `build.sh` and then copies the
-artifacts into the local `KTP DoD Server` test tree. The repo build is `build.sh`.
+**KTP maintainers** run a wrapper (`build_linux.sh` in the repo root, gitignored —
+it hardcodes a box-specific staging path, so it never ships to a clone). It runs
+the same `build.sh` and then copies the artifacts into the local `KTP DoD Server`
+test tree. The repo build is `build.sh`.
 
 ## Project Structure
 - `build.sh` - CMake build script (repo root; this is the build)
@@ -66,7 +66,7 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 [KTP_PROFILE] avg: read=0.120ms phys=0.450ms misc1=0.005ms send=0.080ms post=0.003ms steam=0.010ms full=0.680ms
 [KTP_PROFILE] peak: read=0.450ms phys=1.200ms misc1=0.020ms send=0.300ms post=0.010ms steam=0.050ms full=2.100ms
 [KTP_PROFILE] gap=0.012ms (full - sum of phases)
-[KTP_PROFILE] phys_detail: startframe=0.010ms entloop=0.430ms   (NOTE: instantaneous last-simulating-frame sample, NOT interval — for spike attribution use [KTP_SPIKE_PHYS])
+[KTP_PROFILE] phys_detail_peak: startframe=0.010ms entloop=0.430ms   (.929: interval peaks, tracked inside SV_Physics so paused frames contribute nothing — was an instantaneous last-frame sample)
 [KTP_PROFILE] io: logprintf_worst=… conprintf_worst=… logaddr_worst=… file_worst=… fileq_worst=… logq_drops=… ctl_drops=… writer_alive=…   (see Async Log-File Writer § for field meanings)
 [KTP_PROFILE] send_detail: worst_client=3(name) time=0.290ms clients_sent=11
 [KTP_PROFILE] interframe: avg=1.018ms peak=2.400ms
@@ -117,10 +117,10 @@ The synchronous log-file write in `Log_Printf` blocked the game thread up to 167
 - `writer_alive=` — (.928) 0 only if work is pending AND the writer processed nothing for a full profile interval (a wedged/dead writer). Expect 1.
 - `conprintf_worst=` — qconsole.log write cost (see the Con_DebugLog note below); `logaddr_worst=` — UDP send to a logaddress.
 
-### 3.22.0.928 (committed, NOT yet fleet-deployed)
-Engine-side fix wave (see `rehlds/CHANGELOG.md` for detail):
+### 3.22.0.928
+Engine-side fix wave (see `CHANGELOG.md` for detail):
 - **`RH_SV_Rcon` now fires on EVERY rcon attempt** with the real `is_valid` (was success-only, `is_valid` hardcoded true) — bad-password/banned/no-privilege attempts now reach KTPAdminAudit. Failure audits fire BEFORE the packet redirect (no handler output leaks to an unauthenticated prober) and are throttled (global ~1/s; the per-IP tier is best-effort). The password is never included in the audited string.
-- **`KTP_ExtensionShutdown`** optional export, dlsym'd + called on each extension in `ReleaseEntityDlls` before the dlclose loop. Currently INERT — KTPAMXX exports no such symbol yet (pending 2.7.21). **.928 alone does NOT close the CHI1-class shutdown segfault** — it installs the hook point; the fix is 2.7.21 + the paired export. `KTP_ClearAllHooks()` (also .928) empties every hookchain registry before the dlclose regardless of extension behavior — the "safe by construction" backstop.
+- **`KTP_ExtensionShutdown`** optional export, dlsym'd + called on each extension in `ReleaseEntityDlls` before the dlclose loop. **.928 alone does NOT close the CHI1-class shutdown segfault** — it installs the hook point; the fix is the paired KTPAMXX export (2.7.21+). Against an older KTPAMXX the callback is inert. `KTP_ClearAllHooks()` (also .928) empties every hookchain registry before the dlclose regardless of extension behavior — the "safe by construction" backstop.
 - **`ktp_extension_loaded`** sentinel cvar — counts extensions loaded from `extensions.ini`. **Deploy/restart scripts should assert `ktp_extension_loaded >= 1` via rcon** (the assert is the companion KTPInfrastructure change; the cvar alone detects nothing).
 - **Async-writer hardening** — OPEN/CLOSE control ops bounded-retry for a ring slot instead of silently dropping; `ctl_drops=`/`writer_alive=` telemetry added (above).
 - **`SetServerPause()` now calls `SV_BroadcastPauseState()`** instead of an inline copy.
@@ -163,16 +163,20 @@ Also changed `fps` variable from `float` to `double` for precision consistency w
 - GCC with 32-bit support
 
 ## Extension Loading
-Extensions are configured in `rehlds/extensions.ini`:
+Extensions are configured in `<gamedir>/addons/extensions.ini` — for DoD,
+`dod/addons/extensions.ini`:
 ```
-ktpamx/dlls/ktpamx_i386.so
+addons/ktpamx/dlls/ktpamx_i386.so
 ```
+The loader builds the path as `com_gamedir/<line>` (`sys_dll.cpp:1123`), so the
+`addons/` prefix is required. A missing or misplaced file returns silently
+(`sys_dll.cpp:1077`) and degrades the server to vanilla HLDS.
 
 ## Server Deployment
 
 Deploy compiled engine to production servers using Python/Paramiko.
 
-**Server Credentials + host list:** see the root `N:\Nein_\KTP Git Projects\CLAUDE.md` § Server Credentials — do NOT duplicate them here (the old copy showed the pre-2026-05-31 `ktp` password, which was rotated + burned, and omitted Chicago). Active deploy targets are all 5 hosts (Atlanta BM, Dallas, Denver, New York, Chicago), **each running 5 instances on ports 27015-27019** (Chicago runs 4; 27019 disabled). The dodserver SSH password rotated 2026-05-31.
+**Server Credentials + host list:** see the root `N:\Nein_\KTP Git Projects\CLAUDE.md` § Server Credentials — do NOT duplicate them here (the old copy showed the pre-2026-05-31 `ktp` password, which was rotated + burned, and omitted Chicago). Active deploy targets are all 5 hosts (Atlanta BM, Dallas, Denver, New York, Chicago), **each running 5 instances on ports 27015-27019**, except Chicago which runs 4 (27015-27018 — the 5th instance was deleted 2026-07-13). Fleet total: 24 instances. The dodserver SSH password rotated 2026-05-31.
 
 **Remote Paths (per instance):**
 - `~/dod-{port}/serverfiles/engine_i486.so`

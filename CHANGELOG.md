@@ -6,6 +6,69 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ---
 
+## [Unreleased]
+
+### Documentation
+
+- **`extensions.ini` was documented at a path that doesn't exist, with contents
+  that wouldn't load.** README and `CLAUDE.md` said to create
+  `rehlds/extensions.ini` containing `ktpamx/dlls/ktpamx_i386.so`. The loader
+  reads `"%s/addons/extensions.ini"` against `com_gamedir` (`sys_dll.cpp:1067`,
+  fallback `:1073`), and resolves each line as `com_gamedir/<line>` (`:1123`) —
+  so the real file is `dod/addons/extensions.ini` containing
+  `addons/ktpamx/dlls/ktpamx_i386.so` (verified on a live fleet host). Both
+  halves were wrong, and both fail *silently*: `:1077` returns without error when
+  no config is found, degrading the server to vanilla HLDS. Corrected here and in
+  four other docs across the stack.
+
+- **Build instructions targeted a script clones don't get.** The only documented
+  build ran `build_linux.sh`, which is gitignored (it hardcodes a box-specific
+  auto-stage path), and gave output paths from before the repo layout was
+  flattened. Now documents `bash build.sh -j=$(nproc)` with the real artifact
+  paths `build/rehlds/engine_i486.so` and `build/rehlds/dedicated/hlds_linux`,
+  and explains that the wrapper is maintainer-only.
+
+- **Two more build paths that don't resolve from a clone.** The compiler-options
+  snippet said `cd rehlds && ./build.sh` (there is no `build.sh` under `rehlds/`;
+  it is at the repo root), and the Windows section pointed at
+  `rehlds/msvc/rehlds.sln` (the solution is `msvc/ReHLDS.sln`). Both are
+  post-restructure path drift.
+
+- **Five KTP cvars existed only in code and `CLAUDE.md`.** README documented four
+  of nine; missing were `ktp_profile_spike_threshold`, `ktp_profile_steam_detail`,
+  `ktp_log_async`, `ktp_extension_loaded`, and `ktp_userinfo_hook` — three of
+  which are the fleet's rollback switches and the deploy sentinel. README now
+  carries a single nine-row cvar table.
+
+- **Three releases of behavior missing from the README.** Added the .927 async
+  log-file writer and the .928 `KTP_ExtensionShutdown` / `KTP_ClearAllHooks`
+  teardown contract; annotated the `SV_Rcon` hook row with the .928 firing-contract
+  change (every attempt, real validity — was success-only) that KTPAdminAudit
+  depends on.
+
+- **Version stamps.** README header `3.22.0.923` and Version Information
+  `3.22.0.917 (2026-04)` → `3.22.0.929`. The Verify-Installation sample banner no
+  longer hardcodes a version an operator could never match — it shows
+  `<APP_VERSION>` and states the rule already in `CLAUDE.md`: verify a deploy by
+  the md5 of `engine_i486.so`, not the banner.
+
+- **KTPAMXX compatibility floor** raised from `2.6.9+` to `2.7.21+`, the version
+  that actually exports `KTP_ExtensionShutdown`. Below it the .928/.929
+  shutdown-safety work is inert.
+
+- **`3.22.0.924` had no CHANGELOG entry** — the `-absgrid_probe` Stage C probe
+  (`1ef655f`, 2026-05-11) shipped and is still live in the tree. Entry added.
+
+- **`CLAUDE.md`: stale profiling field name.** The sample output showed
+  `phys_detail:` with the pre-.929 caveat about it being an instantaneous
+  last-frame sample; .929 renamed it `phys_detail_peak` and made it report
+  interval peaks. Also un-staled the .928 section's "NOT yet fleet-deployed" /
+  "KTPAMXX exports no such symbol yet" framing, and corrected the deploy-target
+  line to the current 24-instance fleet (Chicago's 5th instance was deleted, not
+  disabled).
+
+- README now points at the in-tree `README-UPSTREAM.md` from § Related Projects.
+
 ## [KTP-ReHLDS `3.22.0.929`] - 2026-07-16
 
 Two threads land together: the `SV_ClientUserInfoChanged` re-enable (the engine root
@@ -138,6 +201,17 @@ The async log-writer-thread work was gated on "profiler shows log-correlated spi
 
 ### Why
 Two of the three open findings from the 2026-06-11 fleet hitreg audit need data only the engine can produce: which entity think (or which I/O sink) absorbs the sporadic 50-165ms entloop stalls, and how often the old unlag config was zeroing compensation in live play. Instrumentation only; no behavior change on any path.
+
+---
+
+## [KTP-ReHLDS `3.22.0.924`] - 2026-05-11
+
+**Stage C absgrid debug probe (`-absgrid_probe`)**
+
+### Added
+- **`-absgrid_probe` launch parameter** (`dedicated/src/sys_ded.cpp`, `sys_linux.cpp`) — opt-in 100µs-bucket histogram of the dedicated-server sleep loop's wakeup latency, additive to `-absgrid`. Built to measure the hrtimer-fire → thread-runs gap that kept the Stage C absolute-time grid path (`-absgrid`) pinned below its theoretical frame rate. Gated on `g_absgrid_probe` (`dedicated/src/dedicated.h:53`), which defaults false — zero overhead when the flag is absent.
+
+Diagnostic only; no behavior change on any path a server takes without the flag.
 
 ---
 

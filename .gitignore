@@ -63,3 +63,9 @@ nul
 # Version tracking
 rehlds/version/appversion.h
 .claude/settings.local.json
+
+# KTP maintainer-only wrappers and local build output (box-specific paths; clones use build.sh)
+/build_linux.sh
+/build_linux_wsl.ps1
+/materials.txt
+/KTP_ReHLDS Files/

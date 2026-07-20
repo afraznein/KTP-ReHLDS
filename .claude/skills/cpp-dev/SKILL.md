@@ -165,3 +165,16 @@ Bump the version for every shipped change and write the CHANGELOG.md entry
 with what/why + the md5 of the shipped binary once built. Comments: short,
 why-not-what, no ticket/finding IDs, never delete a tripwire fact while
 trimming prose.
+
+## Docs check (not just the version line)
+Bumping the README's version string is not the docs step. If the change touched
+a build path, an install path, a config file location, or a cvar name, **verify
+the README still works from a clean clone's perspective — not from this tree.**
+Gitignored maintainer wrappers are invisible to a clone, and a doc that names a
+file the loader never reads fails silently.
+
+When a path or config location changes, grep the whole stack for the old string
+before calling it done. The 2026-07-19 audit found `rehlds/extensions.ini`
+documented in five files across three repos; the loader reads
+`<gamedir>/addons/extensions.ini` and had never read the documented path.
+Full checklist: root `CLAUDE.md` → "Module / Engine Release Checklist".

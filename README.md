@@ -1,6 +1,6 @@
 # KTP-ReHLDS
 
-**Version 3.22.0.923** | Custom ReHLDS fork for KTP competitive Day of Defeat infrastructure
+**Version 3.22.0.929** | Custom ReHLDS fork for KTP competitive Day of Defeat infrastructure
 
 A specialized fork of [ReHLDS](https://github.com/rehlds/rehlds) that enables advanced competitive match features through engine-level pause control, real-time HUD updates during pause, and selective subsystem operation.
 
@@ -77,7 +77,7 @@ Low-overhead built-in profiling for identifying performance bottlenecks.
 - `ktp_profile_frame 0/1` - Enable/disable
 - `ktp_profile_interval 10` - Seconds between summary logs
 
-**Metrics:** `read` (SV_ReadPackets), `phys` (SV_Physics), `send` (SV_SendClientMessages), `edicts_max` (peak entity count). Reports average and peak times per interval.
+**Metrics:** `read` (SV_ReadPackets), `phys` (SV_Physics), `send` (SV_SendClientMessages), `edicts_max` (peak entity count). Reports average and peak times per interval. See `CLAUDE.md` § Frame Profiling for the full metric set (`misc1`, `post`, `steam`, `full`, `gap`, the `io:` line) and the `[KTP_SPIKE*]` alert lines.
 
 ### Host_FilterTime FPS Fix (v3.22.0.904+)
 
@@ -90,6 +90,39 @@ Fixed artificial FPS cap: original `1.0f / (fps + 1.0f)` limited servers to sys_
 - `1`: Broadcast to clients (causes respawn - NOT for mid-match use)
 - Auto-resets to 0 after broadcast (one-shot)
 
+### Async Log-File Writer (v3.22.0.927+)
+
+The synchronous log write in `Log_Printf` blocked the game thread for up to 167ms
+on consumer-SSD journal stalls. A dedicated writer thread now owns the log
+`FILE*`; the game thread only enqueues into a 2048-slot ring and never blocks (a
+full queue drops the line and counts it).
+
+**Cvar: `ktp_log_async`**
+- `1` (default): writer thread owns the file
+- `0`: exact legacy synchronous path — the rollback switch, no binary swap needed
+
+The mode latches per log session at `Log_Open`, so a change takes effect at the
+next map change. Writer-side timings land on the `[KTP_PROFILE] io:` line; see
+`CLAUDE.md` § Async Log-File Writer for the field reference.
+
+---
+
+## KTP CVars
+
+| Cvar | Default | Purpose |
+|------|---------|---------|
+| `ktp_silent_pause` | `0` | `1` suppresses the client PAUSED overlay; physics stay frozen |
+| `ktp_hostname_broadcast` | `0` | `1` broadcasts a hostname change to clients (causes respawn); one-shot |
+| `ktp_profile_frame` | `0` | Enable frame profiling |
+| `ktp_profile_interval` | `10` | Seconds between profiling summary logs |
+| `ktp_profile_spike_threshold` | `5.0` | Log a `[KTP_SPIKE]` alert when a frame exceeds this many ms (`0` = off) |
+| `ktp_profile_steam_detail` | `0` | Granular `Steam_RunFrame()` sub-timing |
+| `ktp_log_async` | `1` | Async log-file writer; `0` restores the synchronous path (rollback switch) |
+| `ktp_extension_loaded` | `0` | Sentinel — counts extensions loaded from `extensions.ini`. Assert `>= 1` after a restart |
+| `ktp_userinfo_hook` | `1` | `SV_ClientUserInfoChanged` hookchain dispatch; `0` disables it live (rollback switch) |
+
+Full detail in `CLAUDE.md` and [CHANGELOG.md](CHANGELOG.md).
+
 ---
 
 ## Extension Mode Hooks
@@ -101,7 +134,7 @@ Hookchains added for KTPAMXX/DODX extension mode compatibility (no Metamod):
 | Hook | Purpose |
 |------|---------|
 | `SV_UpdatePausedHUD` | Real-time HUD updates during pause |
-| `SV_Rcon` | RCON command audit logging (command, IP, validity) |
+| `SV_Rcon` | RCON command audit logging (command, IP, validity). **.928:** fires on *every* attempt with the real validity flag; was success-only with validity hardcoded true. The password is never included in the audited string |
 | `Host_Changelevel_f` | Console changelevel command interception |
 
 ### KTPAMXX Extension Mode Hooks
@@ -119,6 +152,20 @@ Hookchains added for KTPAMXX/DODX extension mode compatibility (no Metamod):
 | `PF_SetClientKeyValue` | Client key/value changes | DODX `SetClientKeyValue` |
 | `SV_PlayerRunPreThink` | Player PreThink loop | DODX stats tracking |
 
+### Extension Shutdown Callback (v3.22.0.928+)
+
+Extensions may optionally export `KTP_ExtensionShutdown`. The engine `dlsym`s it
+on each loaded extension and calls it in `ReleaseEntityDlls` before the `dlclose`
+loop, giving the extension a chance to detach its own modules — extension mode
+never runs Metamod's `Meta_Detach`, so without this there is no teardown hook at
+all. Requires KTPAMXX 2.7.21+ to do anything; the engine is a no-op against an
+extension that doesn't export it. A dll listed twice in `extensions.ini` gets the
+callback twice.
+
+`KTP_ClearAllHooks()` empties every hookchain registry before the `dlclose`
+regardless of what the extension does — the backstop that holds even if an
+extension misbehaves.
+
 ### Message Registration Fix
 
 `RegUserMsg_internal` now searches both `sv_gpUserMsgs` (sent) and `sv_gpNewUserMsgs` (pending), preventing duplicate message IDs (130+) when KTPAMXX looks up existing messages.
@@ -127,15 +174,20 @@ Hookchains added for KTPAMXX/DODX extension mode compatibility (no Metamod):
 
 ## Build Instructions
 
-### Linux (WSL)
+### Linux (or WSL)
+
+From the repo root:
 
 ```bash
-wsl bash -c "cd '/mnt/n/Nein_/KTP Git Projects/KTPReHLDS' && bash build_linux.sh"
+bash build.sh -j=$(nproc)
 ```
 
-Output: `rehlds/build/rehlds/engine_i486.so` and `rehlds/build/dedicated/hlds_linux`
+Output: `build/rehlds/engine_i486.so` and `build/rehlds/dedicated/hlds_linux`
 
-The build script auto-stages to `KTP DoD Server/serverfiles/`.
+`build.sh` is the build — it is all a clone needs. KTP maintainers additionally
+have a `build_linux.sh` wrapper in the repo root, but it is **gitignored**: it
+hardcodes a box-specific path to auto-stage artifacts into a local
+`KTP DoD Server/serverfiles/` test tree. Don't look for it in a clone.
 
 **Requirements:**
 - cmake >= 3.1
@@ -143,12 +195,12 @@ The build script auto-stages to `KTP DoD Server/serverfiles/`.
 
 **Compiler options:**
 ```
-cd rehlds && ./build.sh --compiler=[icc|gcc|clang] --jobs=[N]
+./build.sh --compiler=[icc|gcc|clang] --jobs=[N]
 ```
 
 ### Windows
 
-1. Open `rehlds/msvc/rehlds.sln` in Visual Studio 2022
+1. Open `msvc/ReHLDS.sln` in Visual Studio 2022
 2. Select `Release` / `Win32`
 3. Build -> Rebuild Solution
 
@@ -173,10 +225,14 @@ serverfiles/hlds_linux         (Linux)
 pausable 0
 ```
 
-**Extension loading** via `rehlds/extensions.ini`:
+**Extension loading** via `<gamedir>/addons/extensions.ini` (for DoD:
+`dod/addons/extensions.ini`):
 ```
-ktpamx/dlls/ktpamx_i386.so
+addons/ktpamx/dlls/ktpamx_i386.so
 ```
+Each line resolves relative to the game directory (`sys_dll.cpp:1123`). If the
+file is missing the loader returns silently and the server runs as vanilla
+HLDS — verify with the `ktp_extension_loaded` cvar rather than assuming.
 
 ### Verify Installation
 
@@ -185,9 +241,13 @@ Check server console on startup:
 ========================================
   KTP ReHLDS - Custom Pause Build
   HUD enabled during pause
-  Version: 3.22.0.917 (Apr 2026)
+  Version: <APP_VERSION>
 ========================================
 ```
+
+The banner prints the generated `APP_VERSION`, whose commit-count component runs
+ahead of the CHANGELOG title — it is not a deploy check. **Verify a deploy by the
+md5 of `engine_i486.so`, not by the banner.**
 
 Check modules loaded: `amxx modules` in server console.
 
@@ -195,10 +255,10 @@ Check modules loaded: `amxx modules` in server console.
 
 ## Version Information
 
-- **Current Version**: 3.22.0.917 (2026-04)
+- **Current Version**: 3.22.0.929 (2026-07)
 - **Based on**: ReHLDS 3.14.0.857 (upstream)
 - **Platform**: Visual Studio 2022 (v143) / GCC 4.9.2+ / Clang 6.0+
-- **Compatible with**: KTP-ReAPI 5.29.0.362-ktp+, KTPAMXX 2.6.9+
+- **Compatible with**: KTP-ReAPI 5.29.0.362-ktp+, KTPAMXX 2.7.21+ (`KTP_ExtensionShutdown` requires 2.7.21+; on older KTPAMXX the .928/.929 shutdown-safety work is inert)
 
 See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
@@ -213,7 +273,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
 - [KTPAdminAudit](https://github.com/afraznein/KTPAdminAudit) - RCON audit logging
 
 **Upstream:**
-- [ReHLDS](https://github.com/rehlds/rehlds) - Original project
+- [ReHLDS](https://github.com/rehlds/rehlds) - Original project. Its original README is preserved in-tree as [README-UPSTREAM.md](README-UPSTREAM.md)
 - [AMX Mod X](https://www.amxmodx.org/) - Plugin platform
 
 ---
