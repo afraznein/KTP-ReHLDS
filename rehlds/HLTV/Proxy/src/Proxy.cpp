@@ -694,6 +694,17 @@ void Proxy::CMD_Status(char *cmdLine)
 
 		const char *mapname = m_World->GetLevelName() + sizeof("maps/") - 1; // skip 'maps/'
 		m_System->Printf("Game Time %s, Mod \"%s\", Map \"%s\", Players %i\n", activeTime, m_World->GetGameDir(), mapname, m_World->GetNumPlayers());
+
+		// KTP: the line above is the LIVE world clock. Spectators are served
+		// m_ClientWorldTime, which RunClocks advances on THIS proxy's system clock
+		// and only snaps back toward (GetTime() - delay) at its three corrective
+		// branches — the first of which fires only once it overruns live, so the
+		// feed is free to sit fresher than the Delay cvar implies and routinely
+		// does. Consumers aligning an overlay to the broadcast must read this
+		// rather than deriving GetTime() - Delay, which is a target, not a
+		// measurement. Fractional because the MM:SS field above truncates, a
+		// one-sided sub-second error on top.
+		m_System->Printf("Spectator Time %.2f, World Time %.2f\n", GetSpectatorTime(), (double)m_World->GetTime());
 	}
 
 	if (m_DemoClient.IsActive())
