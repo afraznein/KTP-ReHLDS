@@ -1504,6 +1504,25 @@ void Proxy::StopBroadcast(const char *message)
 void Proxy::ExecuteRcon(NetAddress *from, char *command)
 {
 	char outputbuf[1024];
+
+	// KTP: outputbuf[0] MUST be initialized. RedirectOutput captures the command's
+	// text at outputbuf + 1, but the reply below formats "%s" from outputbuf + 0 —
+	// so an uninitialized zero byte there truncates the payload to nothing and the
+	// caller receives a well-formed packet containing only the A2A_PRINT marker.
+	// The command still runs and still prints to the console, which makes it look
+	// like an auth or dispatch failure rather than a formatting one.
+	//
+	// This is undefined behaviour that happens to work: whether rcon replies at all
+	// depends on leftover stack contents. It held on the production build and broke
+	// on a 22.04 rebuild of the same commit, where every reply came back empty.
+	//
+	// A space (not \0) because consumers strip a fixed 6-byte prefix — 4 magic
+	// bytes, the A2A_PRINT marker, and this byte. Sending outputbuf + 1 would be
+	// the tidier fix and matches what the HLTV-side readers expect (they skip one
+	// byte), but it shifts the wire format and would break every existing parser in
+	// the KTP stack. Keep the format, make the byte deterministic.
+	outputbuf[0] = ' ';
+
 	m_System->Printf("Executing rcon \"%s\" from %s.\n", command, from->ToString());
 
 	m_System->RedirectOutput(outputbuf + 1, sizeof(outputbuf) - 1);
