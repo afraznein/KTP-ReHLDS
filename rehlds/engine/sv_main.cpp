@@ -69,11 +69,6 @@ server_t g_psv;
 // KTP Modification: Flag to track temporary unpause for chat (not static, used in rehlds_api_impl.cpp)
 int g_ktp_temporary_unpause = 0;
 
-// KTP: Track pause state transitions for nodelta — only force nodelta for a few frames
-// after pause state changes, not every frame while paused
-static int s_ktp_pauseTransitionFrames = 0;
-static int s_ktp_lastPauseState = 0;
-
 // KTP: Per-frame cvar cache — set once in SV_Frame_Internal, used in hot per-client loops
 float g_ktp_cached_sv_timeout = 65.0f;
 
@@ -5011,11 +5006,11 @@ int SV_CreatePacketEntities_internal(sv_delta_t type, client_t *client, packet_e
 
 void SV_EmitPacketEntities(client_t *client, packet_entities_t *to, sizebuf_t *msg)
 {
-	// KTP Modification: Force nodelta only on pause state transitions (not every paused frame)
-	// During transition, delta sequences may be stale — flush with nodelta for a few frames
-	// After transition, resume delta compression to avoid flooding clients at 1000Hz
+	// The delta baseline is ack-driven: delta_sequence comes from the client's own packet
+	// and indexes client->frames[], so a pause transition cannot staleness it. -1 (nothing
+	// acked yet) is the only case that needs nodelta.
 	sv_delta_t deltaType;
-	if (client->delta_sequence == -1 || s_ktp_pauseTransitionFrames > 0) {
+	if (client->delta_sequence == -1) {
 		deltaType = sv_packet_nodelta;
 	} else {
 		deltaType = sv_packet_delta;
@@ -8876,14 +8871,6 @@ void EXT_FUNC SV_Frame_Internal()
 	// This lets us distinguish between temporary (for chat) and permanent (plugin) unpause
 	int wasPaused = g_psv.paused;
 	g_ktp_temporary_unpause = 0;  // Reset flag
-
-	// KTP: Track pause state transitions for nodelta flushing
-	if (wasPaused != s_ktp_lastPauseState) {
-		s_ktp_pauseTransitionFrames = 3;  // = 2 nodelta send frames (decrement below runs before the send)
-	}
-	s_ktp_lastPauseState = wasPaused;
-	if (s_ktp_pauseTransitionFrames > 0)
-		s_ktp_pauseTransitionFrames--;
 
 	// Store the restore decision NOW to prevent race condition
 	// If we check g_ktp_temporary_unpause later, a plugin could change it mid-frame
