@@ -69,6 +69,101 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 - README now points at the in-tree `README-UPSTREAM.md` from § Related Projects.
 
+## [KTP-ReHLDS `3.22.0.930`] - 2026-08-07
+
+Two live production defects and two pieces of dead weight. The theme is mechanisms that
+reported success while doing nothing.
+
+**Verify by md5, not by banner.** `appversion.h` is generated from the git commit count, so
+the console stamps a higher number than the title above. The md5 of the shipped binary is the
+only identity that matters — and this cut ships **two** artifacts, `engine_i486.so` *and*
+`hlds_linux`, because the signal fix lives in the launcher.
+
+### Fixed
+
+- **The engine's own auto-bans have been disarmed for roughly seven months, on 24 public
+  instances** (`sv_main.cpp`, `server.h`, `net_chan.cpp`, `rehlds_security.cpp`). The KTP policy
+  block on the `addip` console command was meant to stop untraceable operator IP bans. But
+  rcon brute-force protection, the stringcmd/movecmd flood limiters and the
+  incoming-decompression punish all reach the filter list by shelling out to that same command
+  via `Cbuf_AddText("addip ...")` — so all seven call sites were silent no-ops. Console and log
+  said `Banned...`, no filter was ever added, and the flooder reconnected instantly.
+
+  Policy is now split from mechanism: `SV_AddIPFilterInternal()` holds the mechanism,
+  `SV_AutoBanAddress()` is the entry point the protections call directly, and the console
+  command keeps its block unchanged — `addip` and `removeip` are still refused.
+
+  **Auto-bans do not run the client kick sweep.** Every caller already drops its own offender,
+  and an rcon prober is not a client. That matters beyond tidiness: the sweep writes the globals
+  `host_client` and `net_from`, and `SV_Rcon` is called as `SV_Rcon(&net_from)` — the parameter
+  *aliases the global*. Sweeping inline would have redirected the `Bad rcon_password.` reply to
+  whichever player occupied the last swept slot, and made the audit line and hookchain name that
+  player's IP as the rcon attacker. Under the old deferred `Cbuf` path the sweep ran later, where
+  both globals are dead, which is why the hazard appeared only on inlining. It is also invisible
+  on an empty server. The sweep survives for the console path with both globals saved and
+  restored around it.
+
+  Each auto-ban now logs `[KTP_AUTOBAN] addr=<ip> minutes=<n>`. Previously the only trace was a
+  `Con_DPrintf` needing `developer 1` — a mechanism that can permanently ban an IP should not be
+  silent.
+
+  ⚠️ **Config prerequisites, not optional.** `sv_rcon_banpenalty` defaults to `0` and `0` means
+  *permanent*; a banned IP cannot rcon in to lift its own ban. The ban is keyed on the base
+  address with the port stripped while the failure table is keyed adr+port, so a tool reusing one
+  socket can permanently ban its entire host. `sv_rehlds_movecmdrate_avg_punish` and
+  `sv_rehlds_stringcmdrate_avg_punish` default to `5` minutes and are not covered by the fleet's
+  existing `*_burst_punish -1` lines — and the stringcmd limiter is documented in-tree as
+  false-positiving during pause, which after this cut turns a kick into a timed ban mid-match.
+
+- **Every signalled stop segfaults, fleet-wide** (`dedicated/src/sys_linux.cpp`).
+  `Sys_SetupConsole` built a `struct sigaction` on the stack and set only `sa_handler`, leaving
+  `sa_mask`, `sa_flags` and `sa_restorer` as garbage. The handler ran, set the terminate flag,
+  then returned through a garbage restorer.
+
+  The core is the lesser cost. The launcher's orderly exit — `Unmount()` and both
+  `Sys_UnloadModule()` — never ran, so a signalled stop bypassed the `KTP_ExtensionShutdown`
+  module-detach path that `.928` and KTPAMXX 2.7.21 exist to guarantee.
+
+  It stayed invisible because LinuxGSM stops a server by typing `quit` into tmux, never by
+  signalling. Only `pkill` / `kill` / `systemctl stop` / Ctrl+C reach it, which is why the
+  2026-07-31 LAN monitor kills all read as crashes.
+
+  `sa_flags` is deliberately left `0`: no `SA_RESTART`. This handler sets a flag and returns, so
+  `SA_RESTART` would only mask the `EINTR` that lets the loop notice the shutdown request.
+  Verified in the built `hlds_linux` at instruction level — `rep stos` zeroing 140 bytes
+  (`sizeof(struct sigaction)` on i386), then `sigemptyset`, then the handler store.
+
+### Added
+
+- **`[KTP_SPIKE_SEND]` and `[KTP_SPIKE_STEAM]`** (`sv_main.cpp`), beside the existing per-phase
+  spike lines and inside the same 1/sec gate. Consumers have parsed both phase names since day
+  one but the engine never emitted them, leaving both phases structurally unobservable.
+  `SEND` carries `clients`, `worst_slot` and `worst` — already collected, previously reachable
+  only on the interval `[KTP_PROFILE]` line, so a send-dominant spike could not be attributed to
+  a client. `STEAM` carries the aggregate only and says so: `ktp_t_steam` is a single span with
+  no sub-phases, and padding the line out would imply detail nobody measured.
+
+### Removed
+
+- **The pause-transition nodelta scaffolding** (`sv_main.cpp`). `s_ktp_pauseTransitionFrames`
+  forced nodelta for two send frames after every pause transition — a full entity update to every
+  client — to guard a baseline invalidation that cannot occur.
+
+  The proof, re-derived from source rather than inherited: `SV_ParseDelta` sets
+  `delta_sequence` from `MSG_ReadByte()`, i.e. from the client's own packet, and
+  `SV_CreatePacketEntities_internal` uses it to index `client->frames[]` and writes it back into
+  the message so both ends agree. The baseline is whatever frame the client acknowledged.
+  `SV_ExecuteClientMessage` resets it to `-1` at the top of every client message, so a stale
+  positive across a pause transition is not even representable. The one case that genuinely
+  needs nodelta — nothing acked yet — is still covered by the surviving `delta_sequence == -1`
+  test.
+
+  Deleted rather than narrowed. RH-10's per-slot variant was written and then dropped for this
+  same reason, and leaving scaffolding in place invites the next person to refine it instead of
+  removing it. `s_ktp_lastPauseState` went with it; it existed only to arm the counter.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.929`] - 2026-07-16
 
 Two threads land together: the `SV_ClientUserInfoChanged` re-enable (the engine root

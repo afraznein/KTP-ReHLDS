@@ -1,6 +1,6 @@
 # KTP-ReHLDS
 
-**Version 3.22.0.929** | Custom ReHLDS fork for KTP competitive Day of Defeat infrastructure
+**Version 3.22.0.930** | Custom ReHLDS fork for KTP competitive Day of Defeat infrastructure
 
 A specialized fork of [ReHLDS](https://github.com/rehlds/rehlds) that enables advanced competitive match features through engine-level pause control, real-time HUD updates during pause, and selective subsystem operation.
 
@@ -151,6 +151,40 @@ Hookchains added for KTPAMXX/DODX extension mode compatibility (no Metamod):
 | `PF_TraceLine` | TraceLine interception | DODX `TraceLine_Post` |
 | `PF_SetClientKeyValue` | Client key/value changes | DODX `SetClientKeyValue` |
 | `SV_PlayerRunPreThink` | Player PreThink loop | DODX stats tracking |
+
+### Engine Auto-Bans Restored (v3.22.0.930+)
+
+The `addip`/`removeip` console commands stay blocked — untraceable operator IP bans
+are still refused, use `.ban` in-game. But the engine's *own* protections
+(rcon brute-force, stringcmd/movecmd flood, incoming-decompression punish) used to
+reach the filter list by shelling out to that same blocked command, so they were
+silent no-ops: the log said `Banned...`, no filter was added, and the flooder
+reconnected immediately.
+
+The ban mechanism now lives in `SV_AddIPFilterInternal()`, and those protections call
+`SV_AutoBanAddress()` directly. Each auto-ban emits
+`[KTP_AUTOBAN] addr=<ip> minutes=<n>` so a ban is never silent.
+
+⚠️ **These are live again after roughly seven months inert.** Check
+`sv_rcon_banpenalty` before running this build: it defaults to `0`, which means a
+**permanent** ban, and a banned IP cannot rcon in to remove its own ban. The ban is
+applied to the base address with the port stripped, so one misconfigured tool can ban
+its whole host. `sv_rehlds_movecmdrate_avg_punish` and
+`sv_rehlds_stringcmdrate_avg_punish` also default to `5` minutes and are *not* covered
+by the fleet's existing `*_burst_punish -1` lines.
+
+### Spike Phase Attribution: SEND and STEAM (v3.22.0.930+)
+
+`[KTP_SPIKE_SEND]` and `[KTP_SPIKE_STEAM]` now emit alongside the existing
+`[KTP_SPIKE_READ]`/`[KTP_SPIKE_PHYS]`/`[KTP_SPIKE_IO]` lines, inside the same
+1/sec-rate-limited spike block. Consumers had parsed both phase names since day one;
+the engine never emitted them, so those two phases were structurally unobservable.
+
+`SEND` carries real detail — `clients`, `worst_slot`, `worst` — which was already
+being collected and only surfaced on the interval `[KTP_PROFILE] send_detail` line, so
+a send-dominant spike could not be pinned to a client. `STEAM` carries the aggregate
+only: `ktp_t_steam` is a single span with no sub-phases, and the line says so rather
+than implying detail nobody measured.
 
 ### Extension Shutdown Callback (v3.22.0.928+)
 
