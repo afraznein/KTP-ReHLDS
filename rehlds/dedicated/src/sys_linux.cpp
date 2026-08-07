@@ -380,7 +380,12 @@ static void ConsoleCtrlHandler(int signal)
 
 bool Sys_SetupConsole()
 {
+	// Unzeroed, sa_restorer is stack garbage and every signalled stop segfaults out of
+	// the handler, skipping the launcher unload path and the extension module-detach.
+	// sa_flags stays 0: SA_RESTART would buy nothing here and change semantics fleet-wide.
 	struct sigaction action;
+	memset(&action, 0, sizeof(action));
+	sigemptyset(&action.sa_mask);
 	action.sa_handler = ConsoleCtrlHandler;
 	sigaction(SIGINT, &action, NULL);
 	sigaction(SIGTERM, &action, NULL);

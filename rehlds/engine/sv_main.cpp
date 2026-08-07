@@ -9043,6 +9043,21 @@ void EXT_FUNC SV_Frame_Internal()
 					spike_file * 1000.0,
 					spike_conio * 1000.0,
 					spike_minflt, spike_majflt);
+				// KTP: Spike-frame send attribution. These per-client values were already
+				// collected but only surfaced on the interval [KTP_PROFILE] send_detail
+				// line, so a send-dominant spike could not be attributed to a client.
+				Log_Printf("[KTP_SPIKE_SEND] send=%.3fms clients=%d worst_slot=%d worst=%.3fms\n",
+					ktp_t_sendmessages * 1000.0,
+					g_ktp_send_client_count,
+					g_ktp_send_worst_client_slot,
+					g_ktp_send_worst_client_time * 1000.0);
+				// KTP: Steam phase has no sub-phase instrumentation -- ktp_t_steam is a single
+				// span around the Steam block, so this carries the aggregate only. It exists
+				// because the aggregator counts [KTP_SPIKE_STEAM] and the column was otherwise
+				// structurally zero. Add sub-phases here if a steam-dominant spike needs a
+				// culprit rather than just a count.
+				Log_Printf("[KTP_SPIKE_STEAM] steam=%.3fms\n",
+					ktp_t_steam * 1000.0);
 			}
 		}
 
