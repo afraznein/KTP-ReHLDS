@@ -596,7 +596,7 @@ void SV_ListId_f(void);
 void SV_AddIP_f(void);
 // RH-02: the ban MECHANISM, split out of the SV_AddIP_f console command so the engine's
 // own auto-bans are not disarmed by the policy block on that command.
-void SV_AddIPFilterInternal(float banTime, const ipfilter_t &tempFilter);
+void SV_AddIPFilterInternal(float banTime, const ipfilter_t &tempFilter, bool sweepClients);
 void SV_AutoBanAddress(float banMinutes, const netadr_t &adr);
 void SV_RemoveIP_f(void);
 void SV_ListIP_f(void);

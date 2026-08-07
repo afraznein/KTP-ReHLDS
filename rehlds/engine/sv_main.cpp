@@ -7964,7 +7964,7 @@ void SV_ListId_f(void)
 
 // RH-02: ban mechanism, callable without going through the console command. The
 // console path is policy-blocked below; the engine's own protections must not be.
-void SV_AddIPFilterInternal(float banTime, const ipfilter_t &tempFilter)
+void SV_AddIPFilterInternal(float banTime, const ipfilter_t &tempFilter, bool sweepClients)
 {
 	int i = 0;
 	for (; i < numipfilters; i++)
@@ -8006,6 +8006,16 @@ void SV_AddIPFilterInternal(float banTime, const ipfilter_t &tempFilter)
 		Q_sprintf(reason, "for %g minutes", banTime);
 #endif // REHLDS_FIXES
 
+	if (!sweepClients)
+		return;
+
+	// The sweep writes the globals host_client and net_from (SV_FilterPacket reads net_from),
+	// so save and restore them. Callers that reach here mid-packet -- SV_Rcon aliases the
+	// global as net_from_ -- would otherwise redirect their reply and their audit line to
+	// whichever player happened to occupy the last swept slot.
+	client_t *savedHostClient = host_client;
+	netadr_t savedNetFrom = net_from;
+
 	for (int j = 0; j < g_psvs.maxclients; j++)
 	{
 		host_client = &g_psvs.clients[j];
@@ -8024,17 +8034,31 @@ void SV_AddIPFilterInternal(float banTime, const ipfilter_t &tempFilter)
 #endif // REHLDS_FIXES
 		}
 	}
+
+	// Restored after the loop, not around each drop: the REHLDS_FIXES msg_readcount guard in
+	// SV_DropClient_internal keys off host_client == the client being dropped.
+	host_client = savedHostClient;
+	net_from = savedNetFrom;
 }
 
 // RH-02: what the engine's own protections call instead of Cbuf_AddText("addip ..."),
 // which routed them through the policy-blocked console command and silently did nothing.
 void SV_AutoBanAddress(float banMinutes, const netadr_t &adr)
 {
+	netadr_t adrCopy = adr;
+	const char *adrStr = NET_BaseAdrToString(adrCopy);
+
 	ipfilter_t filter;
-	if (!StringToFilter(NET_BaseAdrToString(*const_cast<netadr_t *>(&adr)), &filter))
+	if (!StringToFilter(adrStr, &filter))
 		return;
 
-	SV_AddIPFilterInternal(banMinutes, filter);
+	// No client sweep: every caller drops its own offender, and an rcon prober is not a
+	// client at all. Sweeping here would also clobber host_client/net_from mid-packet.
+	SV_AddIPFilterInternal(banMinutes, filter, false);
+
+	// These protections were inert for months; a permanent ban with no durable record is
+	// how that becomes "the data server randomly stopped working".
+	Log_Printf("[KTP_AUTOBAN] addr=%s minutes=%g\n", adrStr, banMinutes);
 }
 
 void SV_AddIP_f(void)
@@ -8087,64 +8111,8 @@ void SV_AddIP_f(void)
 		return;
 	}
 
-	int i = 0;
-	for (; i < numipfilters; i++)
-	{
-		if (ipfilters[i].mask == tempFilter.mask && ipfilters[i].compare.u32 == tempFilter.compare.u32)
-		{
-			ipfilters[i].banTime = banTime;
-			ipfilters[i].banEndTime = (banTime == 0.0f) ? 0.0f : banTime * 60.0f + realtime;
-#ifdef REHLDS_FIXES
-			ipfilters[i].cidr = tempFilter.cidr;
-#endif // REHLDS_FIXES
-			return;
-		}
-	}
-
-	if (numipfilters >= MAX_IPFILTERS)
-	{
-		Con_Printf("IP filter list is full\n");
-		return;
-	}
-
-	++numipfilters;
-	if (banTime < 0.0099999998f)
-		banTime = 0.0f;
-
-	ipfilters[i].banTime = banTime;
-	ipfilters[i].compare = tempFilter.compare;
-	ipfilters[i].banEndTime = (banTime == 0.0f) ? 0.0f : banTime * 60.0f + realtime;
-	ipfilters[i].mask = tempFilter.mask;
-#ifdef REHLDS_FIXES
-	ipfilters[i].cidr = tempFilter.cidr;
-#endif // REHLDS_FIXES
-
-#ifdef REHLDS_FIXES
-	char reason[32];
-	if (banTime == 0.0f)
-		Q_strcpy(reason, "permanently");
-	else
-		Q_sprintf(reason, "for %g minutes", banTime);
-#endif // REHLDS_FIXES
-
-	for (int i = 0; i < g_psvs.maxclients; i++)
-	{
-		host_client = &g_psvs.clients[i];
-		if (!host_client->connected || !host_client->active || !host_client->spawned || host_client->fakeclient)
-			continue;
-
-		Q_memcpy(&net_from, &host_client->netchan.remote_address, sizeof(net_from));
-		if (SV_FilterPacket())
-		{
-#ifdef REHLDS_FIXES
-			SV_ClientPrintf("The server operator has added you to banned list %s\n", reason);
-			SV_DropClient(host_client, 0, "Added to banned list %s", reason);
-#else // REHLDS_FIXES
-			SV_ClientPrintf("The server operator has added you to banned list\n");
-			SV_DropClient(host_client, 0, "Added to banned list");
-#endif // REHLDS_FIXES
-		}
-	}
+	// Mechanism lives in SV_AddIPFilterInternal so a fix cannot land in only one copy.
+	SV_AddIPFilterInternal(banTime, tempFilter, true);
 }
 
 void SV_RemoveIP_f(void)
