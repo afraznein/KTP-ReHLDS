@@ -3759,7 +3759,7 @@ int SV_Rcon_Validate(void)
 	if (SV_CheckRconFailure(&net_from))
 	{
 		Con_Printf("Banning %s for rcon hacking attempts\n", NET_AdrToString(net_from));
-		Cbuf_AddText(va("addip %i %s\n", (int)sv_rcon_banpenalty.value, NET_BaseAdrToString(net_from)));
+		SV_AutoBanAddress((float)(int)sv_rcon_banpenalty.value, net_from);
 		return RCON_RESULT_BANNING;
 	}
 
@@ -3776,7 +3776,7 @@ int SV_Rcon_Validate(void)
 	if (!SV_CheckRconAllowed(&net_from))
 	{
 		Con_Printf("Banning %s for rcon attempts without privileged\n", NET_AdrToString(net_from));
-		Cbuf_AddText(va("addip %i %s\n", (int)sv_rcon_banpenalty.value, NET_BaseAdrToString(net_from)));
+		SV_AutoBanAddress((float)(int)sv_rcon_banpenalty.value, net_from);
 		return RCON_RESULT_NOPRIVILEGE;
 	}
 
@@ -7965,6 +7965,81 @@ void SV_ListId_f(void)
 			Con_Printf("%i %s : %.3f min\n", i+1, SV_GetIDString(&userfilters[i].userid), userfilters[i].banTime);
 		}
 	}
+}
+
+// RH-02: ban mechanism, callable without going through the console command. The
+// console path is policy-blocked below; the engine's own protections must not be.
+void SV_AddIPFilterInternal(float banTime, const ipfilter_t &tempFilter)
+{
+	int i = 0;
+	for (; i < numipfilters; i++)
+	{
+		if (ipfilters[i].mask == tempFilter.mask && ipfilters[i].compare.u32 == tempFilter.compare.u32)
+		{
+			ipfilters[i].banTime = banTime;
+			ipfilters[i].banEndTime = (banTime == 0.0f) ? 0.0f : banTime * 60.0f + realtime;
+#ifdef REHLDS_FIXES
+			ipfilters[i].cidr = tempFilter.cidr;
+#endif // REHLDS_FIXES
+			return;
+		}
+	}
+
+	if (numipfilters >= MAX_IPFILTERS)
+	{
+		Con_Printf("IP filter list is full\n");
+		return;
+	}
+
+	++numipfilters;
+	if (banTime < 0.0099999998f)
+		banTime = 0.0f;
+
+	ipfilters[i].banTime = banTime;
+	ipfilters[i].compare = tempFilter.compare;
+	ipfilters[i].banEndTime = (banTime == 0.0f) ? 0.0f : banTime * 60.0f + realtime;
+	ipfilters[i].mask = tempFilter.mask;
+#ifdef REHLDS_FIXES
+	ipfilters[i].cidr = tempFilter.cidr;
+#endif // REHLDS_FIXES
+
+#ifdef REHLDS_FIXES
+	char reason[32];
+	if (banTime == 0.0f)
+		Q_strcpy(reason, "permanently");
+	else
+		Q_sprintf(reason, "for %g minutes", banTime);
+#endif // REHLDS_FIXES
+
+	for (int j = 0; j < g_psvs.maxclients; j++)
+	{
+		host_client = &g_psvs.clients[j];
+		if (!host_client->connected || !host_client->active || !host_client->spawned || host_client->fakeclient)
+			continue;
+
+		Q_memcpy(&net_from, &host_client->netchan.remote_address, sizeof(net_from));
+		if (SV_FilterPacket())
+		{
+#ifdef REHLDS_FIXES
+			SV_ClientPrintf("The server operator has added you to banned list %s\n", reason);
+			SV_DropClient(host_client, 0, "Added to banned list %s", reason);
+#else // REHLDS_FIXES
+			SV_ClientPrintf("The server operator has added you to banned list\n");
+			SV_DropClient(host_client, 0, "Added to banned list");
+#endif // REHLDS_FIXES
+		}
+	}
+}
+
+// RH-02: what the engine's own protections call instead of Cbuf_AddText("addip ..."),
+// which routed them through the policy-blocked console command and silently did nothing.
+void SV_AutoBanAddress(float banMinutes, const netadr_t &adr)
+{
+	ipfilter_t filter;
+	if (!StringToFilter(NET_BaseAdrToString(*const_cast<netadr_t *>(&adr)), &filter))
+		return;
+
+	SV_AddIPFilterInternal(banMinutes, filter);
 }
 
 void SV_AddIP_f(void)
