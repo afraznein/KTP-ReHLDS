@@ -64,8 +64,10 @@ nul
 rehlds/version/appversion.h
 .claude/settings.local.json
 
-# KTP maintainer-only wrappers and local build output (box-specific paths; clones use build.sh)
-/build_linux.sh
+# KTP maintainer-only wrappers and local build output.
+# build_linux.sh is now TRACKED: its staging dir is KTP_STAGING_DIR-overridable and the
+# staging block self-skips when the dir is absent, so it no longer requires a box-specific
+# path -- and every sibling C++ repo (KTPAMXX, KTPAmxxCurl, KTPReAPI) tracks its own.
 /build_linux_wsl.ps1
 /materials.txt
 /KTP_ReHLDS Files/
