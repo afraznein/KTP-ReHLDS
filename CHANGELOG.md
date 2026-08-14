@@ -71,7 +71,8 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ## [KTP-ReHLDS `3.22.0.931`] - 2026-08-14
 
-Spike telemetry that reported four numbers and only ever knew one.
+Profiling telemetry that reported things which were not true: four spike columns that were one
+number, a send-detail line that never showed a spike, and a tripwire counter that could tear.
 
 **Verify by md5, not by banner.** `appversion.h` is generated from the git commit count, so the
 console stamps a higher number than the title above. This cut ships **one** artifact,
@@ -111,6 +112,36 @@ console stamps a higher number than the title above. This cut ships **one** arti
   ⚠️ **A presence census cannot detect this class of defect.** The release check that missed it
   asked whether the columns had moved off zero — they had. Degeneracy needs an equality check
   (`SUM(spike_steam = spike_send)`), not `SUM(spike_send > 0)`.
+
+- **`[KTP_PROFILE] send_detail` reported the interval's LAST frame, never its peak**
+  (`sv_main.cpp`). `g_ktp_send_worst_client_time/slot/count` reset at the top of every profiled
+  `SV_SendClientMessages`, so the ~10s summary printed whichever frame happened to cross the
+  boundary. A mid-interval send spike was overwritten hundreds of times before the print: the
+  `peak: send=` field showed the spike while `send_detail` read baseline and never named the client
+  responsible.
+
+  Added interval-peak shadows, mirroring the `phys_detail_peak` fix that closed the identical defect
+  for the physics phase. The roll-up runs **once per frame rather than once per client**, so the peak
+  carries the client count of the frame that produced it rather than a separate maximum. The line is
+  renamed **`send_detail_peak`** so old and new logs cannot be read as the same metric.
+  `[KTP_SPIKE_SEND]` keeps the per-frame values, which is correct for a per-frame line.
+  ⚠️ The slot indexes a persistent array, so a client who disconnects mid-interval leaves a **stale
+  name**, not an invalid read.
+
+- **The `conprintf_worst` tripwire could print garbage, because its counters were racing**
+  (`sys_dll.cpp`, `sv_main.cpp`). `Con_Printf` did an unsynchronized read-modify-write on two plain
+  `double`s, and it is reachable from the **Steam background thread** (`sendto` error path, fleet-live
+  since `.913`) and from the `-netthread` receive thread. On this 32-bit build a torn 8-byte read
+  prints an absurd value on the `[KTP_PROFILE] io:` line — and `conprintf_worst` is the documented
+  tripwire for the qconsole.log synchronous-write exposure, so corruption there either **fires or
+  masks** a monitored alert.
+
+  Both counters are now `std::atomic<uint32>` **microseconds** (`g_ktp_conio_frame_us`,
+  `g_ktp_conio_worst_us`), matching the existing `g_ktp_fileq_worst_us` pattern. Storing integers
+  removes the torn-double failure entirely rather than narrowing it. The worst-value update stays a
+  relaxed load/compare/store, the same benign race as `fileq_worst`: a lost sample is possible, a torn
+  read is not. Renamed with a `_us` suffix deliberately, so the compiler had to visit every call site
+  — a silent type change under the same name would have compiled with wrong units at the print sites.
 
 ### Added
 

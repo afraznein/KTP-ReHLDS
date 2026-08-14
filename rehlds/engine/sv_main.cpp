@@ -4100,6 +4100,9 @@ extern cvar_t ktp_profile_frame;
 extern double g_ktp_send_worst_client_time;
 extern int g_ktp_send_worst_client_slot;
 extern int g_ktp_send_client_count;
+extern double g_ktp_send_worst_time_peak;   // interval peaks, reset in the summary block
+extern int g_ktp_send_worst_slot_peak;
+extern int g_ktp_send_count_peak;
 extern int g_ktp_read_pkt_count;
 extern int g_ktp_read_pkt_connectionless;
 extern int g_ktp_read_pkt_client;
@@ -5601,6 +5604,14 @@ void SV_SendClientMessages(void)
 			else
 				Netchan_Transmit(&cl->netchan, 0, NULL);
 		}
+	}
+	// KTP: Roll this frame's worst client into the interval peak. One compare per
+	// frame, and it captures the peak frame's own client count rather than a
+	// separate maximum.
+	if (ktp_send_prof && g_ktp_send_worst_client_time > g_ktp_send_worst_time_peak) {
+		g_ktp_send_worst_time_peak = g_ktp_send_worst_client_time;
+		g_ktp_send_worst_slot_peak = g_ktp_send_worst_client_slot;
+		g_ktp_send_count_peak = g_ktp_send_client_count;
 	}
 	SV_CleanupEnts();
 }
@@ -7296,9 +7307,12 @@ extern double g_ktp_phys_entloop_peak;
 // conio is a subset of logio whenever mp_logecho is on, and Log_Printf calls
 // made between frames (Cbuf_Execute) land in the next frame's bucket.
 double g_ktp_logio_frame = 0.0;
-double g_ktp_conio_frame = 0.0;
+// Atomic microseconds, not a double: Con_Printf is reachable from the Steam and
+// -netthread background threads on sendto error paths, so a plain double is a torn
+// read away from printing garbage on the conprintf_worst tripwire.
+std::atomic<uint32> g_ktp_conio_frame_us(0);
 double g_ktp_logio_worst = 0.0;
-double g_ktp_conio_worst = 0.0;
+std::atomic<uint32> g_ktp_conio_worst_us(0);
 // logio split: which sink blocks — logaddr = Netchan_OutOfBandPrint UDP sendto
 // per logaddress (HLStatsX), file = FS_FPrintf to qconsole.log on disk.
 double g_ktp_logaddr_io_frame = 0.0;
@@ -7337,6 +7351,11 @@ double g_ktp_phys_paused_hud = 0.0;
 double g_ktp_send_worst_client_time = 0.0;
 int g_ktp_send_worst_client_slot = -1;
 int g_ktp_send_client_count = 0;
+// Interval peaks. The three above reset every frame, so the interval summary was
+// printing whichever frame happened to cross the boundary and never the spike.
+double g_ktp_send_worst_time_peak = 0.0;
+int g_ktp_send_worst_slot_peak = -1;
+int g_ktp_send_count_peak = 0;
 
 // KTP: Helper function to broadcast pause state to clients
 // Respects ktp_silent_pause cvar - if enabled, skips sending svc_setpause
@@ -8797,7 +8816,7 @@ void EXT_FUNC SV_Frame_Internal()
 
 		// Reset per-frame I/O accumulators (written by Log_Printf/Con_Printf)
 		g_ktp_logio_frame = 0.0;
-		g_ktp_conio_frame = 0.0;
+		g_ktp_conio_frame_us.store(0, std::memory_order_relaxed);
 		g_ktp_logaddr_io_frame = 0.0;
 		g_ktp_file_io_frame = 0.0;
 
@@ -9024,7 +9043,7 @@ void EXT_FUNC SV_Frame_Internal()
 				// KTP: Capture frame I/O + fault counters before this block's own
 				// Log_Printf calls add to them.
 				double spike_logio = g_ktp_logio_frame;
-				double spike_conio = g_ktp_conio_frame;
+				double spike_conio = g_ktp_conio_frame_us.load(std::memory_order_relaxed) / 1000000.0;
 				double spike_logaddr = g_ktp_logaddr_io_frame;
 				double spike_file = g_ktp_file_io_frame;
 				long spike_minflt = 0, spike_majflt = 0;
@@ -9175,18 +9194,20 @@ void EXT_FUNC SV_Frame_Internal()
 			// file_worst splits the logio sink: UDP sendto to a logaddress
 			// (HLStatsX backpressure) vs FS_FPrintf to qconsole.log (disk).
 			Log_Printf("[KTP_PROFILE] io: logprintf_worst=%.3fms conprintf_worst=%.3fms logaddr_worst=%.3fms file_worst=%.3fms fileq_worst=%.3fms logq_drops=%u ctl_drops=%u writer_alive=%d\n",
-				g_ktp_logio_worst * 1000.0, g_ktp_conio_worst * 1000.0,
+				g_ktp_logio_worst * 1000.0, g_ktp_conio_worst_us.load(std::memory_order_relaxed) / 1000.0,
 				g_ktp_logaddr_io_worst * 1000.0, g_ktp_file_io_worst * 1000.0,
 				g_ktp_fileq_worst_us.load(std::memory_order_relaxed) / 1000.0,
 				g_ktp_logq_drops.load(std::memory_order_relaxed),
 				g_ktp_logq_ctl_drops.load(std::memory_order_relaxed),
 				KTP_Log_WriterAlive() ? 1 : 0);
-			// Per-client send detail
-			if (g_ktp_send_worst_client_slot >= 0) {
-				client_t *worst_cl = &g_psvs.clients[g_ktp_send_worst_client_slot];
-				Log_Printf("[KTP_PROFILE] send_detail: worst_client=%d(%s) time=%.3fms clients_sent=%d\n",
-					g_ktp_send_worst_client_slot, worst_cl->name,
-					g_ktp_send_worst_client_time * 1000.0, g_ktp_send_client_count);
+			// Per-client send detail — interval peak, not the boundary frame.
+			// The slot indexes a persistent array, so a client who left mid-interval
+			// leaves a stale name rather than an invalid read.
+			if (g_ktp_send_worst_slot_peak >= 0) {
+				client_t *worst_cl = &g_psvs.clients[g_ktp_send_worst_slot_peak];
+				Log_Printf("[KTP_PROFILE] send_detail_peak: worst_client=%d(%s) time=%.3fms clients_sent=%d\n",
+					g_ktp_send_worst_slot_peak, worst_cl->name,
+					g_ktp_send_worst_time_peak * 1000.0, g_ktp_send_count_peak);
 			}
 
 			// Inter-frame gap stats
@@ -9216,10 +9237,13 @@ void EXT_FUNC SV_Frame_Internal()
 			g_ktp_profile_peak_steam = 0.0;
 			g_ktp_profile_peak_full = 0.0;
 			g_ktp_profile_peak_interframe = 0.0;
+			g_ktp_send_worst_time_peak = 0.0;
+			g_ktp_send_worst_slot_peak = -1;
+			g_ktp_send_count_peak = 0;
 			g_ktp_phys_startframe_peak = 0.0;
 			g_ktp_phys_entloop_peak = 0.0;
 			g_ktp_logio_worst = 0.0;
-			g_ktp_conio_worst = 0.0;
+			g_ktp_conio_worst_us.store(0, std::memory_order_relaxed);
 			g_ktp_logaddr_io_worst = 0.0;
 			g_ktp_file_io_worst = 0.0;
 			g_ktp_fileq_worst_us.store(0, std::memory_order_relaxed);  // logq_drops is lifetime, not reset

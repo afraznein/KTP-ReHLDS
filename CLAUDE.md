@@ -69,7 +69,7 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 [KTP_PROFILE] gap=0.012ms (full - sum of phases)
 [KTP_PROFILE] phys_detail_peak: startframe=0.010ms entloop=0.430ms   (.929: interval peaks, tracked inside SV_Physics so paused frames contribute nothing — was an instantaneous last-frame sample)
 [KTP_PROFILE] io: logprintf_worst=… conprintf_worst=… logaddr_worst=… file_worst=… fileq_worst=… logq_drops=… ctl_drops=… writer_alive=…   (see Async Log-File Writer § for field meanings)
-[KTP_PROFILE] send_detail: worst_client=3(name) time=0.290ms clients_sent=11
+[KTP_PROFILE] send_detail_peak: worst_client=3(name) time=0.290ms clients_sent=11   (.931: interval PEAK; was send_detail, which sampled the boundary frame and never showed a spike)
 [KTP_PROFILE] interframe: avg=1.018ms peak=2.400ms
 ```
 
@@ -124,7 +124,7 @@ The synchronous log-file write in `Log_Printf` blocked the game thread up to 167
 - `logq_drops=` — lifetime count of dropped WRITE lines (queue full / writer had no file / write error).
 - `ctl_drops=` — (.928) lifetime count of dropped OPEN/CLOSE control ops. Expect 0 forever; nonzero = a whole map's log file may be missing or misrouted (control op couldn't get a ring slot within the bounded retry).
 - `writer_alive=` — (.928) 0 only if work is pending AND the writer processed nothing for a full profile interval (a wedged/dead writer). Expect 1.
-- `conprintf_worst=` — qconsole.log write cost (see the Con_DebugLog note below); `logaddr_worst=` — UDP send to a logaddress.
+- `conprintf_worst=` — qconsole.log write cost (see the Con_DebugLog note below). **(.931) Backed by `std::atomic<uint32>` microseconds** — `Con_Printf` is reachable from the Steam and `-netthread` background threads, and the previous plain `double` could tear and print garbage on this very tripwire; `logaddr_worst=` — UDP send to a logaddress.
 
 ### 3.22.0.928
 Engine-side fix wave (see `CHANGELOG.md` for detail):

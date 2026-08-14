@@ -116,6 +116,7 @@ next map change. Writer-side timings land on the `[KTP_PROFILE] io:` line; see
 | `ktp_profile_frame` | `0` | Enable frame profiling |
 | `ktp_profile_interval` | `10` | Seconds between profiling summary logs |
 | `ktp_profile_spike_threshold` | `5.0` | Log a `[KTP_SPIKE]` alert when a frame exceeds this many ms (`0` = off) |
+| `ktp_profile_spike_phase_share` | `0.25` | (.931) Minimum share of a spike frame a phase must own to emit its `[KTP_SPIKE_<phase>]` detail line; `0` = always emit (pre-.931). **Not archived — an rcon override reverts at the next restart** |
 | `ktp_profile_steam_detail` | `0` | Granular `Steam_RunFrame()` sub-timing |
 | `ktp_log_async` | `1` | Async log-file writer; `0` restores the synchronous path (rollback switch) |
 | `ktp_extension_loaded` | `0` | Sentinel — counts extensions loaded from `extensions.ini`. Assert `>= 1` after a restart |
@@ -181,7 +182,8 @@ by the fleet's existing `*_burst_punish -1` lines.
 the engine never emitted them, so those two phases were structurally unobservable.
 
 `SEND` carries real detail — `clients`, `worst_slot`, `worst` — which was already
-being collected and only surfaced on the interval `[KTP_PROFILE] send_detail` line, so
+being collected and only surfaced on the interval `[KTP_PROFILE] send_detail` line (renamed
+`send_detail_peak` in `.931`, which also made it a true interval peak), so
 a send-dominant spike could not be pinned to a client. `STEAM` carries the aggregate
 only: `ktp_t_steam` is a single span with no sub-phases, and the line says so rather
 than implying detail nobody measured.
