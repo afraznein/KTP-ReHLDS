@@ -28,7 +28,6 @@
 
 #include "precompiled.h"
 
-// KTP Modification: External flag from sv_main.cpp to track temporary unpause
 
 // KTP: profiling state from sv_main.cpp (opcode/parsemove instrumentation)
 extern bool g_ktp_profiling_enabled;  // Set by SV_Frame_Internal each frame

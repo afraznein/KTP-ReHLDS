@@ -33,7 +33,6 @@
 #include <sys/resource.h>  // KTP: per-frame page-fault counters for spike attribution
 #endif
 
-// KTP: Forward declaration for spawn sub-phase profiling (defined later in this file)
 
 typedef struct full_packet_entities_s
 {
@@ -68,7 +67,6 @@ server_t g_psv;
 // KTP Modification: Flag to track temporary unpause for chat (not static, used in rehlds_api_impl.cpp)
 int g_ktp_temporary_unpause = 0;
 
-// KTP: Per-frame cvar cache — set once in SV_Frame_Internal, used in hot per-client loops
 
 // KTP: Forward declaration — definition lower in the file (~line 7171) alongside the
 // other profiler peak globals. Written once per frame at the top of SV_Frame_Internal
@@ -4293,7 +4291,6 @@ void SV_CheckTimeouts(void)
 	client_t *cl;
 	float droptime;
 
-	// KTP: Use frame-cached cvar value instead of per-frame cvar dereference
 	droptime = realtime - sv_timeout.value;
 
 	for (i = 0, cl = g_psvs.clients; i < g_psvs.maxclients; i++, cl++)
@@ -8813,6 +8810,41 @@ void SV_UpdatePausedHUD(void)
 	g_RehldsHookchains.m_SV_UpdatePausedHUD.callChain(SV_UpdatePausedHUD_Internal);
 }
 
+// KTP: one reset list, two callers -- the interval summary and the disabled->enabled
+// transition. They were separate lists and had already drifted apart.
+static void KTP_ProfileResetInterval(void)
+{
+	g_ktp_profile_acc_readpackets = 0.0;
+	g_ktp_profile_acc_physics = 0.0;
+	g_ktp_profile_acc_misc1 = 0.0;
+	g_ktp_profile_acc_sendmessages = 0.0;
+	g_ktp_profile_acc_post = 0.0;
+	g_ktp_profile_acc_steam = 0.0;
+	g_ktp_profile_acc_full = 0.0;
+	g_ktp_profile_acc_interframe = 0.0;
+	g_ktp_profile_acc_interframe_count = 0;
+	g_ktp_profile_acc_frames = 0;
+	g_ktp_profile_acc_edicts_max = 0;
+	g_ktp_profile_peak_readpackets = 0.0;
+	g_ktp_profile_peak_physics = 0.0;
+	g_ktp_profile_peak_misc1 = 0.0;
+	g_ktp_profile_peak_sendmessages = 0.0;
+	g_ktp_profile_peak_post = 0.0;
+	g_ktp_profile_peak_steam = 0.0;
+	g_ktp_profile_peak_full = 0.0;
+	g_ktp_profile_peak_interframe = 0.0;
+	g_ktp_send_worst_time_peak = 0.0;
+	g_ktp_send_worst_slot_peak = -1;
+	g_ktp_send_count_peak = 0;
+	g_ktp_phys_startframe_peak = 0.0;
+	g_ktp_phys_entloop_peak = 0.0;
+	g_ktp_logio_worst = 0.0;
+	g_ktp_conio_worst_us.store(0, std::memory_order_relaxed);
+	g_ktp_logaddr_io_worst = 0.0;
+	g_ktp_file_io_worst = 0.0;
+	g_ktp_fileq_worst_us.store(0, std::memory_order_relaxed);  // logq_drops is lifetime, not reset
+}
+
 void SV_Frame()
 {
 	g_RehldsHookchains.m_SV_Frame.callChain(SV_Frame_Internal);
@@ -8839,9 +8871,9 @@ void EXT_FUNC SV_Frame_Internal()
 		static qboolean s_ktp_profiling_was = 0;
 		if (ktp_profiling && !s_ktp_profiling_was)
 		{
+			KTP_ProfileResetInterval();
 			g_ktp_profile_prev_frame_end = 0.0;   // suppresses the first interframe sample
 			g_ktp_profile_last_log_time = realtime;
-			g_ktp_profile_acc_frames = 0;
 		}
 		s_ktp_profiling_was = ktp_profiling;
 	}
@@ -8879,7 +8911,6 @@ void EXT_FUNC SV_Frame_Internal()
 #endif
 	}
 
-	// KTP: Cache hot cvars once per frame instead of reading per-client in loops
 
 	gGlobalVariables.frametime = host_frametime;
 	g_psv.oldtime = g_psv.time;
@@ -9152,7 +9183,14 @@ void EXT_FUNC SV_Frame_Internal()
 				// measure it against. faults= is carried on NO other line, and a
 				// major-fault stall costs no I/O time — so it must open this gate
 				// itself or it is suppressed exactly when it matters.
-				if (spike_io_worst >= spike_phase_floor || spike_majflt > 0)
+				// Also emit when nothing else did: faults= lives on no other line, and a
+				// gap/misc1-dominated spike with a fault burst would otherwise carry no
+				// detail at all. Guarantees every spike has at least one attributing line.
+				bool ktp_any_detail = (ktp_t_readpackets >= spike_phase_floor)
+					|| (ktp_t_physics >= spike_phase_floor)
+					|| (ktp_t_sendmessages >= spike_phase_floor)
+					|| (ktp_t_steam >= spike_phase_floor);
+				if (spike_io_worst >= spike_phase_floor || spike_majflt > 0 || !ktp_any_detail)
 				{
 					Log_Printf("[KTP_SPIKE_IO] logio=%.3fms logaddr=%.3fms file=%.3fms conio=%.3fms faults=%ld/%ld\n",
 						spike_logio * 1000.0,
@@ -9263,35 +9301,7 @@ void EXT_FUNC SV_Frame_Internal()
 				avg_interframe, peak_interframe);
 
 			// Reset accumulators
-			g_ktp_profile_acc_readpackets = 0.0;
-			g_ktp_profile_acc_physics = 0.0;
-			g_ktp_profile_acc_misc1 = 0.0;
-			g_ktp_profile_acc_sendmessages = 0.0;
-			g_ktp_profile_acc_post = 0.0;
-			g_ktp_profile_acc_steam = 0.0;
-			g_ktp_profile_acc_full = 0.0;
-			g_ktp_profile_acc_interframe = 0.0;
-			g_ktp_profile_acc_interframe_count = 0;
-			g_ktp_profile_acc_frames = 0;
-			g_ktp_profile_acc_edicts_max = 0;
-			g_ktp_profile_peak_readpackets = 0.0;
-			g_ktp_profile_peak_physics = 0.0;
-			g_ktp_profile_peak_misc1 = 0.0;
-			g_ktp_profile_peak_sendmessages = 0.0;
-			g_ktp_profile_peak_post = 0.0;
-			g_ktp_profile_peak_steam = 0.0;
-			g_ktp_profile_peak_full = 0.0;
-			g_ktp_profile_peak_interframe = 0.0;
-			g_ktp_send_worst_time_peak = 0.0;
-			g_ktp_send_worst_slot_peak = -1;
-			g_ktp_send_count_peak = 0;
-			g_ktp_phys_startframe_peak = 0.0;
-			g_ktp_phys_entloop_peak = 0.0;
-			g_ktp_logio_worst = 0.0;
-			g_ktp_conio_worst_us.store(0, std::memory_order_relaxed);
-			g_ktp_logaddr_io_worst = 0.0;
-			g_ktp_file_io_worst = 0.0;
-			g_ktp_fileq_worst_us.store(0, std::memory_order_relaxed);  // logq_drops is lifetime, not reset
+			KTP_ProfileResetInterval();
 			g_ktp_profile_last_log_time = current_time;
 		}
 	}

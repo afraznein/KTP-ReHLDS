@@ -148,8 +148,15 @@ console stamps a higher number than the title above. This cut ships **one** arti
 - **`quit` / `quit_restart` / `restart` over rcon killed a live server, while a comment claimed
   they were blocked** (`host_cmd.cpp`, `sv_main.cpp`). `g_bRconCommand` was set around every rcon
   command execution and **read by nothing** — the protection its own comment documented had never
-  been implemented, so anyone holding the fleet rcon password could end a match in progress. All
-  three handlers now refuse when the command came from rcon.
+  been implemented, so anyone holding the fleet rcon password could end a match in progress. `quit`, `exit`,
+  `_restart`, `restart`, `reload` and `shutdownserver` now refuse when the command came from rcon.
+  ⚠️ **Not airtight, and the message says so rather than implying otherwise:** `alias` and `exec`
+  dispatch through the Cbuf and run *after* `SV_Rcon` clears the flag, so a determined caller can
+  route around it. This stops the accidental and the scripted case, which is the incident that
+  actually happens.
+  🔻 **`shutdownserver` and `reload` were missed on the first pass** and are arguably worse than
+  `quit` — `shutdownserver` drops every client and tears the server down while the process
+  survives, so it reads as a crash rather than a shutdown.
   🟢 **Nightly restarts are unaffected, verified rather than assumed:** LinuxGSM stops via `quit` on
   the local tmux console (`src_command`), and no infra script sends rcon quit/restart — checked with
   a control confirming those scripts do use rcon for other things.
@@ -192,8 +199,7 @@ console stamps a higher number than the title above. This cut ships **one** arti
   `last_log_time` made the first summary cover an interval that never happened.
 
 - **Two `SV_ParseStringCommand` branches gated on `g_ktp_temporary_unpause` were dead**
-  (`sv_user.cpp`). The flag is set *after* `SV_ReadPackets` (line 8871 vs the call at 8844) and
-  cleared at frame end, while all string commands parse inside `SV_ReadPackets` — so it is always 0
+  (`sv_user.cpp`). The flag is set *after* `SV_ReadPackets` and cleared at frame end, while all string commands parse inside `SV_ReadPackets` — so it is always 0
   there. The pause-time rate-limiter bypass never ran and the frametime-swap arm never executed
   (both arms called the same function anyway). Deleted rather than repaired; gate on `g_psv.paused`
   if the behaviour is ever actually wanted.

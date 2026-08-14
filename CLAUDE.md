@@ -61,7 +61,7 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 - `ktp_profile_steam_detail 0/1` - Enable granular Steam_RunFrame() sub-timing (logs `[KTP_PROFILE_STEAM]` when >1ms)
 - `ktp_profile_spike_phase_share 0.25` - (.931) Minimum share of the spike frame a phase must own before its `[KTP_SPIKE_<phase>]` detail line is emitted. **`0` = always emit (pre-.931 behaviour, and the rollback lever — no binary swap).**
 
-**Summary output (to server log, every N seconds) — 8 interval lines:**
+**Summary output (to server log, every N seconds) — 8 interval lines, plus one conditional:**
 ```
 [KTP_PROFILE] frames=9823 fps=982.3 edicts_max=156
 [KTP_PROFILE] avg: read=0.120ms phys=0.450ms misc1=0.005ms send=0.080ms post=0.003ms steam=0.010ms full=0.680ms
@@ -82,6 +82,8 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 [KTP_SPIKE_SEND] send=… clients=… worst_slot=… worst=…
 [KTP_SPIKE_STEAM] steam=…
 ```
+⚠️ **`[KTP_STEAM_CB_DROPS]` is a LIFETIME counter** — once non-zero it reprints every interval forever. That is intended (the drop already happened and cannot be un-dropped), but it will read as a repeating alarm rather than a new event each time.
+
 ⚠️ **As of .931 the detail lines are GATED** on `ktp_profile_spike_phase_share` — before that they
 all fired on every spike, which made the aggregator's four per-phase columns four copies of the
 spike count. A spike dominated by `misc1`/`post`/`gap` emits **no** detail line at all, and that is

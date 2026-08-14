@@ -270,8 +270,10 @@ static void *Steam_ThreadFunc(void *)
 		CRehldsPlatformHolder::get()->SteamGameServer_RunCallbacks();
 
 		// Drain outgoing Steam packets (master server heartbeats, auth responses)
-		// NET_SendPacket uses sendto() which is atomic on Linux UDP sockets —
-		// safe to call from background thread concurrently with game traffic.
+		// The sendto() itself is atomic, but that never made the PATH safe: everything
+		// NET_SendLong touches has to be checked too. gSequenceNumber was a plain
+		// static and raced here until .931 made it atomic. Audit shared state before
+		// adding anything to this call.
 		uint16 port;
 		uint32 ip;
 		int iLen = CRehldsPlatformHolder::get()->SteamGameServer()->GetNextOutgoingPacket(szOutBuf, sizeof(szOutBuf), &ip, &port);
@@ -832,8 +834,8 @@ void CSteam3Server::RunFrame()
 	}
 
 	// KTP: SendPackets moved to background thread (Steam_ThreadFunc).
-	// NET_SendPacket uses sendto() which is atomic on Linux UDP — safe
-	// for concurrent calls from game thread and Steam thread.
+	// sendto() is atomic; the call path was not. See Steam_ThreadFunc -- shared
+	// state inside NET_SendLong needed fixing separately.
 
 	// KTP: Log steam detail when any sub-operation exceeded 1ms
 	// Note: sendpackets now runs on background thread, not measured here
