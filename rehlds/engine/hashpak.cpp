@@ -346,6 +346,18 @@ void HPAK_AddLump(qboolean bUseQueue, char *pakname, struct resource_s *pResourc
 	}
 
 	olddirectory.p_rgEntries = (hash_pack_entry_t *)Mem_Malloc(sizeof(hash_pack_entry_t) * olddirectory.nEntries);
+#ifdef REHLDS_FIXES
+	// Same reachable-OOM class the guard in HPAK_GetDataPointer covers: FS_Read
+	// would write through NULL and segfault mid-map-change.
+	if (!olddirectory.p_rgEntries)
+	{
+		Con_Printf("ERROR: HPAK_AddLump: failed to allocate %i directory entries\n", olddirectory.nEntries);
+		FS_Close(iRead);
+		FS_Close(iWrite);
+		FS_Unlink(szTempName);
+		return;
+	}
+#endif
 
 	FS_Read(olddirectory.p_rgEntries, sizeof(hash_pack_entry_t) * olddirectory.nEntries, 1, iRead);
 	FS_Close(iRead);
@@ -360,6 +372,16 @@ void HPAK_AddLump(qboolean bUseQueue, char *pakname, struct resource_s *pResourc
 
 	newdirectory.nEntries = olddirectory.nEntries + 1;
 	newdirectory.p_rgEntries = (hash_pack_entry_t *)Mem_Malloc(sizeof(hash_pack_entry_t) * newdirectory.nEntries);
+#ifdef REHLDS_FIXES
+	if (!newdirectory.p_rgEntries)
+	{
+		Con_Printf("ERROR: HPAK_AddLump: failed to allocate %i directory entries\n", newdirectory.nEntries);
+		Mem_Free(olddirectory.p_rgEntries);
+		FS_Close(iWrite);
+		FS_Unlink(szTempName);
+		return;
+	}
+#endif
 
 	Q_memset(newdirectory.p_rgEntries, 0, sizeof(hash_pack_entry_t) * newdirectory.nEntries);
 	Q_memcpy(newdirectory.p_rgEntries, olddirectory.p_rgEntries, sizeof(hash_pack_entry_t) * olddirectory.nEntries);

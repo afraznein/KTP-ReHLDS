@@ -462,8 +462,20 @@ void Host_Stats_f(void)
 	Con_Printf("CPU   In    Out   Uptime  Users   FPS    Players\n%s\n", stats);
 }
 
+extern int g_bRconCommand;  // sv_main.cpp -- set only while executing an rcon command
+
 void Host_Quit_f(void)
 {
+#ifdef REHLDS_FIXES
+	// KTP: refuse an rcon-sourced shutdown. The flag has documented this since it
+	// was introduced and nothing ever read it, so rcon quit killed a live match.
+	// LinuxGSM stops via the local tmux console, so nightly restarts are unaffected.
+	if (g_bRconCommand)
+	{
+		Con_Printf("%s: refused -- shutdown via rcon is disabled, use the host console\n", __func__);
+		return;
+	}
+#endif
 	if (Cmd_Argc() == 1)
 	{
 		giActive = DLL_CLOSE;
@@ -484,6 +496,16 @@ void Host_Quit_f(void)
 
 void Host_Quit_Restart_f(void)
 {
+#ifdef REHLDS_FIXES
+	// KTP: refuse an rcon-sourced shutdown. The flag has documented this since it
+	// was introduced and nothing ever read it, so rcon quit killed a live match.
+	// LinuxGSM stops via the local tmux console, so nightly restarts are unaffected.
+	if (g_bRconCommand)
+	{
+		Con_Printf("%s: refused -- shutdown via rcon is disabled, use the host console\n", __func__);
+		return;
+	}
+#endif
 	giActive = DLL_RESTART;
 	giStateInfo = 4;
 
@@ -1153,6 +1175,16 @@ const char *Host_FindRecentSave(char *pNameBuf)
 
 void Host_Restart_f(void)
 {
+#ifdef REHLDS_FIXES
+	// KTP: refuse an rcon-sourced shutdown. The flag has documented this since it
+	// was introduced and nothing ever read it, so rcon quit killed a live match.
+	// LinuxGSM stops via the local tmux console, so nightly restarts are unaffected.
+	if (g_bRconCommand)
+	{
+		Con_Printf("%s: refused -- shutdown via rcon is disabled, use the host console\n", __func__);
+		return;
+	}
+#endif
 	char name[MAX_PATH];
 	if (g_pcls.demoplayback || !g_psv.active || cmd_source != src_command)
 		return;

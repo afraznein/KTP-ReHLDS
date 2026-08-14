@@ -34,7 +34,6 @@
 #endif
 
 // KTP: Forward declaration for spawn sub-phase profiling (defined later in this file)
-extern cvar_t ktp_profile_frame;
 
 typedef struct full_packet_entities_s
 {
@@ -70,7 +69,6 @@ server_t g_psv;
 int g_ktp_temporary_unpause = 0;
 
 // KTP: Per-frame cvar cache — set once in SV_Frame_Internal, used in hot per-client loops
-float g_ktp_cached_sv_timeout = 65.0f;
 
 // KTP: Forward declaration — definition lower in the file (~line 7171) alongside the
 // other profiler peak globals. Written once per frame at the top of SV_Frame_Internal
@@ -4096,7 +4094,6 @@ bool EXT_FUNC NET_GetPacketPreprocessor(uint8* data, unsigned int len, const net
 
 // KTP: Forward declarations for profiling variables
 // (defined later in this file, after SV_Frame_Internal)
-extern cvar_t ktp_profile_frame;
 extern double g_ktp_send_worst_client_time;
 extern int g_ktp_send_worst_client_slot;
 extern int g_ktp_send_client_count;
@@ -4149,7 +4146,17 @@ void SV_ReadPackets(void)
 		if (SV_FilterPacket())
 		{
 			SV_SendBan();
-			if (ktp_rp) ktp_t0 = Sys_FloatTime();
+			if (ktp_rp)
+			{
+				// Charge rejected packets too -- a ban/preprocess flood is exactly
+				// what [KTP_SPIKE_READ] exists to explain, and resetting t0 here
+				// silently discarded that cost.
+				ktp_t1 = Sys_FloatTime();
+				double elapsed = ktp_t1 - ktp_t0;
+				ktp_proc_acc += elapsed;
+				if (elapsed > ktp_worst) ktp_worst = elapsed;
+				ktp_t0 = ktp_t1;
+			}
 			continue;
 		}
 #endif
@@ -4157,7 +4164,17 @@ void SV_ReadPackets(void)
 		bool pass = g_RehldsHookchains.m_PreprocessPacket.callChain(NET_GetPacketPreprocessor, net_message.data, net_message.cursize, net_from);
 		if (!pass)
 		{
-			if (ktp_rp) ktp_t0 = Sys_FloatTime();
+			if (ktp_rp)
+			{
+				// Charge rejected packets too -- a ban/preprocess flood is exactly
+				// what [KTP_SPIKE_READ] exists to explain, and resetting t0 here
+				// silently discarded that cost.
+				ktp_t1 = Sys_FloatTime();
+				double elapsed = ktp_t1 - ktp_t0;
+				ktp_proc_acc += elapsed;
+				if (elapsed > ktp_worst) ktp_worst = elapsed;
+				ktp_t0 = ktp_t1;
+			}
 			continue;
 		}
 
@@ -4171,7 +4188,17 @@ void SV_ReadPackets(void)
 				if (SV_FilterPacket())
 				{
 					SV_SendBan();
-					if (ktp_rp) ktp_t0 = Sys_FloatTime();
+					if (ktp_rp)
+			{
+				// Charge rejected packets too -- a ban/preprocess flood is exactly
+				// what [KTP_SPIKE_READ] exists to explain, and resetting t0 here
+				// silently discarded that cost.
+				ktp_t1 = Sys_FloatTime();
+				double elapsed = ktp_t1 - ktp_t0;
+				ktp_proc_acc += elapsed;
+				if (elapsed > ktp_worst) ktp_worst = elapsed;
+				ktp_t0 = ktp_t1;
+			}
 					continue;
 				}
 #endif
@@ -4267,7 +4294,7 @@ void SV_CheckTimeouts(void)
 	float droptime;
 
 	// KTP: Use frame-cached cvar value instead of per-frame cvar dereference
-	droptime = realtime - g_ktp_cached_sv_timeout;
+	droptime = realtime - sv_timeout.value;
 
 	for (i = 0, cl = g_psvs.clients; i < g_psvs.maxclients; i++, cl++)
 	{
@@ -7325,6 +7352,7 @@ double g_ktp_file_io_worst = 0.0;
 extern cvar_t ktp_log_async;
 extern std::atomic<uint32> g_ktp_logq_drops;
 extern std::atomic<uint32> g_ktp_fileq_worst_us;
+uint32 KTP_Steam_CallbackDrops(void);
 extern std::atomic<uint32> g_ktp_logq_ctl_drops;
 qboolean KTP_Log_WriterAlive(void);
 
@@ -8803,6 +8831,21 @@ void EXT_FUNC SV_Frame_Internal()
 	qboolean ktp_profiling = (ktp_profile_frame.value != 0.0f);
 	g_ktp_profiling_enabled = (ktp_profiling != 0);  // Set global for sub-functions
 
+	// KTP: Re-enabling after a disabled stretch used to carry the old lifecycle
+	// state forward -- prev_frame_end from minutes ago produced a nonsense first
+	// interframe reading, and a stale last_log_time made the first summary cover
+	// an interval that never happened.
+	{
+		static qboolean s_ktp_profiling_was = 0;
+		if (ktp_profiling && !s_ktp_profiling_was)
+		{
+			g_ktp_profile_prev_frame_end = 0.0;   // suppresses the first interframe sample
+			g_ktp_profile_last_log_time = realtime;
+			g_ktp_profile_acc_frames = 0;
+		}
+		s_ktp_profiling_was = ktp_profiling;
+	}
+
 	if (ktp_profiling)
 	{
 		ktp_t_full_start = Sys_FloatTime();
@@ -8837,7 +8880,6 @@ void EXT_FUNC SV_Frame_Internal()
 	}
 
 	// KTP: Cache hot cvars once per frame instead of reading per-client in loops
-	g_ktp_cached_sv_timeout = sv_timeout.value;
 
 	gGlobalVariables.frametime = host_frametime;
 	g_psv.oldtime = g_psv.time;
@@ -9200,6 +9242,9 @@ void EXT_FUNC SV_Frame_Internal()
 				g_ktp_logq_drops.load(std::memory_order_relaxed),
 				g_ktp_logq_ctl_drops.load(std::memory_order_relaxed),
 				KTP_Log_WriterAlive() ? 1 : 0);
+			uint32 ktp_cb_drops = KTP_Steam_CallbackDrops();
+			if (ktp_cb_drops)
+				Log_Printf("[KTP_STEAM_CB_DROPS] lifetime=%u -- auth/policy callbacks were discarded\n", ktp_cb_drops);
 			// Per-client send detail — interval peak, not the boundary frame.
 			// The slot indexes a persistent array, so a client who left mid-interval
 			// leaves a stale name rather than an invalid read.

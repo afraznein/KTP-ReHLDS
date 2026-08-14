@@ -1108,8 +1108,11 @@ void Host_Version(void)
 	}
 }
 
+void KTP_MarkGameThread(void);  // sys_dll.cpp
+
 int Host_Init(quakeparms_t *parms)
 {
+	KTP_MarkGameThread();  // everything after this may be compared against it
 	char versionString[256];
 
 	CRehldsPlatformHolder::get()->srand(CRehldsPlatformHolder::get()->time(NULL));

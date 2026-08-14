@@ -29,10 +29,8 @@
 #include "precompiled.h"
 
 // KTP Modification: External flag from sv_main.cpp to track temporary unpause
-extern int g_ktp_temporary_unpause;
 
-// KTP: Frame profiling cvar from sv_main.cpp (reused for opcode/parsemove instrumentation)
-extern cvar_t ktp_profile_frame;
+// KTP: profiling state from sv_main.cpp (opcode/parsemove instrumentation)
 extern bool g_ktp_profiling_enabled;  // Set by SV_Frame_Internal each frame
 
 // KTP: SV_RunCmd sub-phase accumulators (zeroed per SV_ParseMove call)
@@ -1525,15 +1523,14 @@ void SV_ParseStringCommand(client_t *pSenderClient)
 {
 	//check string commands rate for this player
 #ifdef REHLDS_FIXES
-	// KTP Modification: Skip rate limiting during temporary unpause ONLY for the client
-	// whose packet is being processed. Rate limiter uses realtime which continues during
-	// pause, causing false positives for the chatting client. Other clients keep rate limiting.
-	if (!g_ktp_temporary_unpause || pSenderClient != host_client) {
-		g_StringCommandsRateLimiter.StringCommandIssued(pSenderClient - g_psvs.clients);
+	// KTP: a pause-time rate-limiter bypass used to live here, gated on
+	// g_ktp_temporary_unpause. It never ran -- the flag is set after SV_ReadPackets
+	// and cleared at frame end, and all string commands parse inside SV_ReadPackets.
+	// Deleted rather than repaired: gate on g_psv.paused if it is ever wanted.
+	g_StringCommandsRateLimiter.StringCommandIssued(pSenderClient - g_psvs.clients);
 
-		if (!pSenderClient->connected) {
-			return; //return if player was kicked
-		}
+	if (!pSenderClient->connected) {
+		return; //return if player was kicked
 	}
 #endif
 
@@ -1560,19 +1557,9 @@ void SV_ParseStringCommand(client_t *pSenderClient)
 		SV_ClientCommand(sv_player);
 		break;
 	case 1:
-		// KTP Modification: Also allow engine commands during pause
-		// Check g_ktp_temporary_unpause instead of g_psv.paused because
-		// SV_Frame_Internal clears g_psv.paused for the entire frame
-		if (g_ktp_temporary_unpause) {
-			float savedFrametime = gGlobalVariables.frametime;
-			gGlobalVariables.frametime = host_frametime;
-
-			Cmd_ExecuteString(s, src_client);
-
-			gGlobalVariables.frametime = savedFrametime;
-		} else {
-			Cmd_ExecuteString(s, src_client);
-		}
+		// KTP: the frametime-swap arm here was gated on the same dead flag and
+		// never executed; both arms called this anyway.
+		Cmd_ExecuteString(s, src_client);
 		break;
 	case 2:	// TODO: Check not used path
 		Cbuf_InsertText(s);

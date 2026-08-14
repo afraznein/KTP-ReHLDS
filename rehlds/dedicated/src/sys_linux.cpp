@@ -104,9 +104,10 @@ void Sleep_Net(int msec)
 // and Host_FilterTime gates the actual frame rate via its `1.0/fps > delta` check.
 // REQUIRES exclusive CPU (isolcpus + SCHED_FIFO, or dedicated VPS).
 //
-// After Stage C (3.22.0.919), the default -pingboost 2 mode also reaches ~999 fps
-// at ~1-3% CPU via clock_nanosleep(TIMER_ABSTIME) on a 1ms grid in the main loop
-// (see sys_ded.cpp). Prefer pingboost 2 unless exclusive CPU headroom is needed.
+// Default -pingboost 2 is Sleep_Select at ~977 fps. The clock_nanosleep
+// (TIMER_ABSTIME) 1ms-grid path is opt-in via -absgrid and measured ~643 fps on the
+// fleet kernel, not the ~999 an earlier revision of this comment claimed -- the same
+// file contradicts that claim in Sys_InitPingboost.
 void Sleep_Never(int msec)
 {
 	(void)msec;

@@ -71,12 +71,14 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ## [KTP-ReHLDS `3.22.0.931`] - 2026-08-14
 
-Profiling telemetry that reported things which were not true: four spike columns that were one
-number, a send-detail line that never showed a spike, and a tripwire counter that could tear.
+Things that reported something untrue, and protections that were never wired up. Profiling telemetry
+that could not attribute a spike; a documented rcon-shutdown block that no code read; three
+cross-thread hazards left over from moving work onto the Steam thread in `.913`; and an OOM-guard
+wave that missed two allocations in a function it had already touched.
 
 **Verify by md5, not by banner.** `appversion.h` is generated from the git commit count, so the
 console stamps a higher number than the title above. This cut ships **one** artifact,
-`engine_i486.so`.
+`engine_i486.so` — confirmed by rebuilding `hlds_linux` and hashing it identical to `.930`.
 
 ### Fixed
 
@@ -142,6 +144,77 @@ console stamps a higher number than the title above. This cut ships **one** arti
   relaxed load/compare/store, the same benign race as `fileq_worst`: a lost sample is possible, a torn
   read is not. Renamed with a `_us` suffix deliberately, so the compiler had to visit every call site
   — a silent type change under the same name would have compiled with wrong units at the print sites.
+
+- **`quit` / `quit_restart` / `restart` over rcon killed a live server, while a comment claimed
+  they were blocked** (`host_cmd.cpp`, `sv_main.cpp`). `g_bRconCommand` was set around every rcon
+  command execution and **read by nothing** — the protection its own comment documented had never
+  been implemented, so anyone holding the fleet rcon password could end a match in progress. All
+  three handlers now refuse when the command came from rcon.
+  🟢 **Nightly restarts are unaffected, verified rather than assumed:** LinuxGSM stops via `quit` on
+  the local tmux console (`src_command`), and no infra script sends rcon quit/restart — checked with
+  a control confirming those scripts do use rcon for other things.
+  ⚠️ `Host_Restart_f`'s existing `cmd_source != src_command` check does **not** cover this: rcon
+  executes with `src_command` too.
+
+- **Two `Mem_Malloc` results in `HPAK_AddLump` were used unchecked** (`hashpak.cpp`), reopening the
+  `FS_Read(NULL)` segfault class the `.921` OOM-guard wave shipped to close. With an existing
+  `custom.hpk` near `MAX_FILE_ENTRIES`, each is a ~2.3MB allocation in a 32-bit process — reachable
+  under heap fragmentation, and it lands at map change while draining queued spray uploads. Both now
+  bail cleanly, closing the sibling handle and freeing the other directory buffer.
+
+- **The Steam background thread was created with `new std::thread` on a `-fno-exceptions` build**
+  (`sv_steam3.cpp`). On pthread exhaustion the constructor throws and the process aborts instead of
+  degrading — the exact class already fixed in the `.927` log writer and deliberately avoided in the
+  `-netthread` port. Now `pthread_create`/`CreateThread` with a checked return.
+  ⚠️ It fails via `Sys_Error` rather than continuing: `.913` moved **every** Steam pump onto that
+  thread, so there is no synchronous fallback left, and a silent continue would leave the server
+  unable to heartbeat or authenticate with no symptom.
+
+- **`NET_SendLong`'s `gSequenceNumber` raced between the game and Steam threads** (`net_ws.cpp`).
+  `.913` moved `NET_SendPacket` onto the Steam thread; both can take the `NS_SERVER` split-packet
+  path, and the `.913` note asserting this path is safe for concurrent calls was false. Now
+  `std::atomic<long>`. The value is also snapshotted into a local — the old code incremented and
+  re-read the global separately, so the packet header and the debug line could disagree.
+
+- **The Steam thread could corrupt or steal an operator's rcon reply** (`sys_dll.cpp`, `host.cpp`).
+  `Con_Printf` appends to the unsynchronized global `outputbuf` and can call `SV_FlushRedirect`,
+  which sends a packet — and background threads reach it on `sendto` error paths. The redirect
+  capture is now guarded by a game-thread identity check (`KTP_MarkGameThread()` at `Host_Init`).
+  🔑 **Console output still happens from any thread** — only the redirect capture is skipped, so no
+  diagnostic is lost.
+
+- **`[KTP_SPIKE_READ]` discarded the cost of rejected packets** (`sv_main.cpp`) — the ban-filter and
+  preprocess-refusal branches reset the timer without accumulating, so `recv`+`proc` could not
+  explain `read=` during exactly the flood scenarios the line exists to diagnose.
+
+- **Re-enabling `ktp_profile_frame` reused stale lifecycle state** (`sv_main.cpp`): a
+  `prev_frame_end` from minutes earlier produced a nonsense first interframe reading, and a stale
+  `last_log_time` made the first summary cover an interval that never happened.
+
+- **Two `SV_ParseStringCommand` branches gated on `g_ktp_temporary_unpause` were dead**
+  (`sv_user.cpp`). The flag is set *after* `SV_ReadPackets` (line 8871 vs the call at 8844) and
+  cleared at frame end, while all string commands parse inside `SV_ReadPackets` — so it is always 0
+  there. The pause-time rate-limiter bypass never ran and the frametime-swap arm never executed
+  (both arms called the same function anyway). Deleted rather than repaired; gate on `g_psv.paused`
+  if the behaviour is ever actually wanted.
+  ⚠️ The guard's second condition `pSenderClient != host_client` was also always false, so had the
+  flag ever been set it would have disabled rate limiting for **every** client, contradicting its
+  own comment.
+
+- **`clock_gettime` sat outside the `__linux__` guard** (`sys_ded.cpp`), breaking the Windows build.
+  Windows keeps the stock every-iteration console poll; the throttle exists for the Linux 1000fps spin.
+
+- **Steam callbacks were dropped silently on a full queue** (`sv_steam3.cpp`) — *"should never
+  happen"* with no counter is indistinguishable from *"never happened"*, and auth and policy
+  responses come through there. Now counted, and surfaced on the profile interval **only when
+  non-zero**. ⚠️ Reported from the game thread via an accessor, never `Con_Printf` from the Steam
+  thread — that is the very hazard fixed above.
+
+- Cleanups: `Q_snprintf`→`Q_strlcpy` on the per-log-line enqueue path (a full printf format-parse
+  under the mutex for a plain bounded copy); removed three dead `ktp_profile_frame` externs; deleted
+  `g_ktp_cached_sv_timeout`, a "cache" whose single consumer already read the cvar once per frame;
+  and corrected the `Sleep_Never` comment, which claimed a default-mode fps the same file
+  contradicts in `Sys_InitPingboost`.
 
 ### Added
 

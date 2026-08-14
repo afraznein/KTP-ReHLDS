@@ -153,6 +153,16 @@ Hookchains added for KTPAMXX/DODX extension mode compatibility (no Metamod):
 | `PF_SetClientKeyValue` | Client key/value changes | DODX `SetClientKeyValue` |
 | `SV_PlayerRunPreThink` | Player PreThink loop | DODX stats tracking |
 
+### RCON Shutdown Refused (v3.22.0.931+)
+
+`quit`, `quit_restart` and `restart` are refused when the command arrives over rcon.
+`g_bRconCommand` had documented this protection since it was introduced and **nothing ever
+read it**, so anyone holding the rcon password could end a live match.
+
+Local console is unaffected, which is what LinuxGSM uses to stop a server — nightly restarts
+are untouched. Note that `Host_Restart_f`'s existing `cmd_source != src_command` check does
+**not** cover rcon, which also executes with `src_command`.
+
 ### Engine Auto-Bans Restored (v3.22.0.930+)
 
 The `addip`/`removeip` console commands stay blocked — untraceable operator IP bans

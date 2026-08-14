@@ -200,7 +200,7 @@ static void KTP_LogEnqueue(int type, const char *data)
 			{
 				ktp_logop_s *op = &s_ktpLogQ[s_ktpLogQHead];
 				op->type = type;
-				Q_snprintf(op->data, sizeof(op->data), "%s", data ? data : "");
+				Q_strlcpy(op->data, data ? data : "", sizeof(op->data));
 				s_ktpLogQHead = next;
 				break;
 			}
