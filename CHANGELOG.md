@@ -69,6 +69,48 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 - README now points at the in-tree `README-UPSTREAM.md` from § Related Projects.
 
+## [KTP-ReHLDS `3.22.0.931`] - 2026-08-14
+
+Spike telemetry that reported four numbers and only ever knew one.
+
+**Verify by md5, not by banner.** `appversion.h` is generated from the git commit count, so the
+console stamps a higher number than the title above. This cut ships **one** artifact,
+`engine_i486.so`.
+
+### Fixed
+
+- **All four per-phase spike counters were the same number, so phase attribution was
+  impossible** (`sv_main.cpp`). `[KTP_SPIKE_READ]`, `[KTP_SPIKE_PHYS]`, `[KTP_SPIKE_SEND]` and
+  `[KTP_SPIKE_STEAM]` were emitted unconditionally inside the rate-limited spike block, so every
+  spike produced every line. The aggregator counts those lines into
+  `ktp_telemetry_metrics.spike_{read,phys,send,steam}` — four columns that were therefore four
+  copies of the spike count. Measured across the whole post-`.930` corpus: all four equal in
+  **5,027 of 5,027** rows, sums 1,862/1,862, maxes 20/20.
+
+  Each detail line is now gated on its phase owning at least `ktp_profile_spike_phase_share` of
+  the frame (default `0.25`); `[KTP_SPIKE_IO]` is gated on its own component total, since I/O
+  time is spread across the named phases rather than being one of them.
+
+  The umbrella `[KTP_SPIKE]` line is unchanged and still carries every phase on every spike, so
+  a gated-out phase loses no data — `spike_signatures.py` already derives the dominant phase
+  from that line alone, and its docstring already described the per-phase lines as
+  "sub-threshold-gated". This makes the engine match the contract the consumer was written
+  against.
+
+  ⚠️ **The counters change meaning, so they are not comparable across this boundary.** Before
+  this cut a column meant "spikes"; after it, "spikes this phase was material in". Historical
+  rows are not wrong, they answer a different question.
+
+  ⚠️ **A presence census cannot detect this class of defect.** The release check that missed it
+  asked whether the columns had moved off zero — they had. Degeneracy needs an equality check
+  (`SUM(spike_steam = spike_send)`), not `SUM(spike_send > 0)`.
+
+### Added
+
+- **`ktp_profile_spike_phase_share`** (default `0.25`) — minimum share of a spike frame a phase
+  must own before its detail line is emitted. **`0` restores the previous always-emit
+  behaviour**, which is the rollback lever: no binary swap needed.
+
 ## [KTP-ReHLDS `3.22.0.930`] - 2026-08-07
 
 Two live production defects and two pieces of dead weight. The theme is mechanisms that

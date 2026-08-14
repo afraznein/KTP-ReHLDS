@@ -7236,6 +7236,10 @@ cvar_t ktp_profile_frame = { "ktp_profile_frame", "0", 0, 0.0f, NULL };
 cvar_t ktp_profile_interval = { "ktp_profile_interval", "10", 0, 0.0f, NULL };
 cvar_t ktp_profile_spike_threshold = { "ktp_profile_spike_threshold", "5.0", 0, 0.0f, NULL };
 cvar_t ktp_profile_steam_detail = { "ktp_profile_steam_detail", "0", 0, 0.0f, NULL };
+// Minimum share of the spike frame a phase must own before its detail line is
+// emitted. 0 restores the pre-RH-36 always-emit behaviour, which is the rollback
+// lever — no binary swap needed.
+cvar_t ktp_profile_spike_phase_share = { "ktp_profile_spike_phase_share", "0.25", 0, 0.0f, NULL };
 
 // KTP: Profiling accumulators (static to preserve across frames)
 static double g_ktp_profile_acc_readpackets = 0.0;
@@ -9041,15 +9045,30 @@ void EXT_FUNC SV_Frame_Internal()
 					ktp_t_post * 1000.0,
 					ktp_t_steam * 1000.0,
 					gap * 1000.0);
-				// Always log read detail on spikes
-				Log_Printf("[KTP_SPIKE_READ] pkts=%d(cl=%d,conn=%d,frag=%d) recv=%.3fms proc=%.3fms worst=%.3fms\n",
-					g_ktp_read_pkt_count,
-					g_ktp_read_pkt_client,
-					g_ktp_read_pkt_connectionless,
-					g_ktp_read_pkt_fragment,
-					g_ktp_read_time_recv * 1000.0,
-					g_ktp_read_time_process * 1000.0,
-					g_ktp_read_worst_pkt * 1000.0);
+				// KTP: Each detail line is gated on its phase owning a material
+				// share of the frame. Emitted unconditionally they carried no
+				// information — every spike produced every line, so the
+				// aggregator's four per-phase counters were four copies of the
+				// spike count and a read-dominated spike was indistinguishable
+				// from a send-dominated one. The umbrella line above still
+				// carries every phase, so a gated-out phase loses no data.
+				// ktp_profile_spike_phase_share 0 restores the old always-emit
+				// behaviour without a binary swap.
+				double spike_phase_share = ktp_profile_spike_phase_share.value;
+				double spike_phase_floor = (spike_phase_share > 0.0) ? full_frame_time * spike_phase_share : 0.0;
+				double spike_io_total = spike_logio + spike_logaddr + spike_file + spike_conio;
+
+				if (ktp_t_readpackets >= spike_phase_floor)
+				{
+					Log_Printf("[KTP_SPIKE_READ] pkts=%d(cl=%d,conn=%d,frag=%d) recv=%.3fms proc=%.3fms worst=%.3fms\n",
+						g_ktp_read_pkt_count,
+						g_ktp_read_pkt_client,
+						g_ktp_read_pkt_connectionless,
+						g_ktp_read_pkt_fragment,
+						g_ktp_read_time_recv * 1000.0,
+						g_ktp_read_time_process * 1000.0,
+						g_ktp_read_worst_pkt * 1000.0);
+				}
 				// KTP: Emit spike-frame phys sub-phases. Unlike [KTP_PROFILE]
 				// phys_detail_peak (interval peak), this captures the values
 				// produced by *this* spike frame — so a phys-dominant spike
@@ -9057,37 +9076,51 @@ void EXT_FUNC SV_Frame_Internal()
 				// startframe/entloop are populated when SV_Physics ran this frame;
 				// paused_startframe/paused_hud are populated when the paused else-
 				// branch ran. On any given spike at least one pair will be zero.
-				Log_Printf("[KTP_SPIKE_PHYS] startframe=%.3fms entloop=%.3fms paused_startframe=%.3fms paused_hud=%.3fms\n",
-					g_ktp_phys_startframe * 1000.0,
-					g_ktp_phys_entloop * 1000.0,
-					g_ktp_phys_paused_startframe * 1000.0,
-					g_ktp_phys_paused_hud * 1000.0);
+				if (ktp_t_physics >= spike_phase_floor)
+				{
+					Log_Printf("[KTP_SPIKE_PHYS] startframe=%.3fms entloop=%.3fms paused_startframe=%.3fms paused_hud=%.3fms\n",
+						g_ktp_phys_startframe * 1000.0,
+						g_ktp_phys_entloop * 1000.0,
+						g_ktp_phys_paused_startframe * 1000.0,
+						g_ktp_phys_paused_hud * 1000.0);
+				}
 				// KTP: Spike I/O attribution — log/console time spent this frame,
 				// split by sink (logaddr = logaddress UDP sendto, file = qconsole.log
 				// disk), plus the frame's page-fault delta. The entloop attribution
 				// (CP-master think, closed-source DoD) was retired post-audit; the
 				// [KTP_SPIKE_PHYS] entloop= field still flags a phys-dominant spike.
-				Log_Printf("[KTP_SPIKE_IO] logio=%.3fms logaddr=%.3fms file=%.3fms conio=%.3fms faults=%ld/%ld\n",
-					spike_logio * 1000.0,
-					spike_logaddr * 1000.0,
-					spike_file * 1000.0,
-					spike_conio * 1000.0,
-					spike_minflt, spike_majflt);
+				// Gated on its own total rather than a named phase: I/O time is
+				// spread across the umbrella phases, so there is no single one to
+				// measure it against.
+				if (spike_io_total >= spike_phase_floor)
+				{
+					Log_Printf("[KTP_SPIKE_IO] logio=%.3fms logaddr=%.3fms file=%.3fms conio=%.3fms faults=%ld/%ld\n",
+						spike_logio * 1000.0,
+						spike_logaddr * 1000.0,
+						spike_file * 1000.0,
+						spike_conio * 1000.0,
+						spike_minflt, spike_majflt);
+				}
 				// KTP: Spike-frame send attribution. These per-client values were already
 				// collected but only surfaced on the interval [KTP_PROFILE] send_detail
 				// line, so a send-dominant spike could not be attributed to a client.
-				Log_Printf("[KTP_SPIKE_SEND] send=%.3fms clients=%d worst_slot=%d worst=%.3fms\n",
-					ktp_t_sendmessages * 1000.0,
-					g_ktp_send_client_count,
-					g_ktp_send_worst_client_slot,
-					g_ktp_send_worst_client_time * 1000.0);
+				if (ktp_t_sendmessages >= spike_phase_floor)
+				{
+					Log_Printf("[KTP_SPIKE_SEND] send=%.3fms clients=%d worst_slot=%d worst=%.3fms\n",
+						ktp_t_sendmessages * 1000.0,
+						g_ktp_send_client_count,
+						g_ktp_send_worst_client_slot,
+						g_ktp_send_worst_client_time * 1000.0);
+				}
 				// KTP: Steam phase has no sub-phase instrumentation -- ktp_t_steam is a single
-				// span around the Steam block, so this carries the aggregate only. It exists
-				// because the aggregator counts [KTP_SPIKE_STEAM] and the column was otherwise
-				// structurally zero. Add sub-phases here if a steam-dominant spike needs a
-				// culprit rather than just a count.
-				Log_Printf("[KTP_SPIKE_STEAM] steam=%.3fms\n",
-					ktp_t_steam * 1000.0);
+				// span around the Steam block, so this carries the aggregate only. Add
+				// sub-phases here if a steam-dominant spike needs a culprit rather than just
+				// a count.
+				if (ktp_t_steam >= spike_phase_floor)
+				{
+					Log_Printf("[KTP_SPIKE_STEAM] steam=%.3fms\n",
+						ktp_t_steam * 1000.0);
+				}
 			}
 		}
 
@@ -9447,6 +9480,7 @@ void SV_Init(void)
 	Cvar_RegisterVariable(&ktp_profile_interval);
 	Cvar_RegisterVariable(&ktp_profile_spike_threshold);
 	Cvar_RegisterVariable(&ktp_profile_steam_detail);
+	Cvar_RegisterVariable(&ktp_profile_spike_phase_share);
 
 	// KTP: Async log-file writer (mode latches at Log_Open, i.e. next map)
 	Cvar_RegisterVariable(&ktp_log_async);

@@ -59,6 +59,7 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 - `ktp_profile_interval 10` - Seconds between summary logs (default 10)
 - `ktp_profile_spike_threshold 5.0` - Log immediate `[KTP_SPIKE]` alert when any single frame exceeds this many ms (0 = disabled)
 - `ktp_profile_steam_detail 0/1` - Enable granular Steam_RunFrame() sub-timing (logs `[KTP_PROFILE_STEAM]` when >1ms)
+- `ktp_profile_spike_phase_share 0.25` - (.931) Minimum share of the spike frame a phase must own before its `[KTP_SPIKE_<phase>]` detail line is emitted. **`0` = always emit (pre-.931 behaviour, and the rollback lever — no binary swap).**
 
 **Summary output (to server log, every N seconds) — 8 interval lines:**
 ```
@@ -72,13 +73,21 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 [KTP_PROFILE] interframe: avg=1.018ms peak=2.400ms
 ```
 
-**Spike alert output (immediate, rate-limited to 1/sec) — 4 spike lines per spike frame:**
+**Spike alert output (immediate, rate-limited to 1/sec) — the umbrella line always, plus whichever detail lines cleared the phase-share gate:**
 ```
 [KTP_SPIKE] full=12.340ms read=0.150ms phys=0.500ms misc1=0.010ms send=0.100ms post=0.005ms steam=11.500ms gap=0.075ms
-[KTP_SPIKE_READ] checkcmd=… readpackets=…
+[KTP_SPIKE_READ] pkts=… recv=… proc=… worst=…
 [KTP_SPIKE_PHYS] startframe=… entloop=… paused_startframe=… paused_hud=…
 [KTP_SPIKE_IO] logio=… logaddr=… file=… conio=… faults=…   (replaced [KTP_SPIKE_ENT] in .926 — I/O-stall + page-fault attribution)
+[KTP_SPIKE_SEND] send=… clients=… worst_slot=… worst=…
+[KTP_SPIKE_STEAM] steam=…
 ```
+⚠️ **As of .931 the detail lines are GATED** on `ktp_profile_spike_phase_share` — before that they
+all fired on every spike, which made the aggregator's four per-phase columns four copies of the
+spike count. A spike dominated by `misc1`/`post`/`gap` emits **no** detail line at all, and that is
+correct: the umbrella line carries every phase unconditionally.
+⚠️ `spike_{read,phys,send,steam}` in `ktp_telemetry_metrics` **change meaning at .931** — "spikes"
+before, "spikes this phase was material in" after. Do not compare across that boundary.
 
 **Steam detail output (when ktp_profile_steam_detail=1, only when >1ms):**
 ```
