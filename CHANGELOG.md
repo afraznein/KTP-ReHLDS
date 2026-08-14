@@ -88,8 +88,15 @@ console stamps a higher number than the title above. This cut ships **one** arti
   **5,027 of 5,027** rows, sums 1,862/1,862, maxes 20/20.
 
   Each detail line is now gated on its phase owning at least `ktp_profile_spike_phase_share` of
-  the frame (default `0.25`); `[KTP_SPIKE_IO]` is gated on its own component total, since I/O
-  time is spread across the named phases rather than being one of them.
+  the frame (default `0.25`).
+
+  `[KTP_SPIKE_IO]` is gated differently, and neither difference is cosmetic. It uses the **worst
+  of its two sinks, not their sum**: `logaddr` and `file` are timed *inside* the `logio` span
+  (`sv_log.cpp` opens at function entry and closes at exit), and `Log_Printf`'s console echo puts
+  most of `conio` there too — so adding the fields double-counts and would have run the gate at
+  roughly half the configured share. It also emits whenever the frame took a **major page
+  fault**, because `faults=` is carried on no other line and a fault-driven stall costs no I/O
+  time; gating on time alone would have suppressed it in exactly the case it was added to explain.
 
   The umbrella `[KTP_SPIKE]` line is unchanged and still carries every phase on every spike, so
   a gated-out phase loses no data — `spike_signatures.py` already derives the dominant phase
@@ -110,6 +117,11 @@ console stamps a higher number than the title above. This cut ships **one** arti
 - **`ktp_profile_spike_phase_share`** (default `0.25`) — minimum share of a spike frame a phase
   must own before its detail line is emitted. **`0` restores the previous always-emit
   behaviour**, which is the rollback lever: no binary swap needed.
+
+  ⚠️ **The lever is not durable on its own.** The cvar is registered with no `FCVAR_ARCHIVE` and
+  appears in no shipped `.cfg`, so a value set over rcon reverts to `0.25` at the 03:00 restart.
+  For a rollback that survives the night, write it into `dodserver.cfg` — which is where
+  `ktp_profile_frame` already lives, for this same reason.
 
 ## [KTP-ReHLDS `3.22.0.930`] - 2026-08-07
 

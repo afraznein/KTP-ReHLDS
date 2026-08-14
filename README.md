@@ -1,6 +1,6 @@
 # KTP-ReHLDS
 
-**Version 3.22.0.930** | Custom ReHLDS fork for KTP competitive Day of Defeat infrastructure
+**Version 3.22.0.931** | Custom ReHLDS fork for KTP competitive Day of Defeat infrastructure
 
 A specialized fork of [ReHLDS](https://github.com/rehlds/rehlds) that enables advanced competitive match features through engine-level pause control, real-time HUD updates during pause, and selective subsystem operation.
 
@@ -186,6 +186,39 @@ a send-dominant spike could not be pinned to a client. `STEAM` carries the aggre
 only: `ktp_t_steam` is a single span with no sub-phases, and the line says so rather
 than implying detail nobody measured.
 
+> **Superseded by `.931` — these lines are no longer emitted unconditionally.** See
+> *Spike Detail-Line Phase Gate* below.
+
+### Spike Detail-Line Phase Gate (v3.22.0.931+)
+
+Each `[KTP_SPIKE_<phase>]` detail line is emitted only when its phase owns at least
+`ktp_profile_spike_phase_share` (default `0.25`) of the spike frame. Emitted
+unconditionally, every spike produced every line — and because the profile aggregator
+*counts* those lines into `ktp_telemetry_metrics.spike_{read,phys,send,steam}`, all four
+columns were four copies of the spike count and phase attribution was impossible.
+
+The umbrella `[KTP_SPIKE]` line is unchanged and still carries every phase on every
+spike, so a gated-out phase loses no data. A spike dominated by `misc1`/`post`/`gap`
+emits no detail line at all, which is correct — no detail line exists for those phases.
+
+`[KTP_SPIKE_IO]` is gated differently, on the worst of its own two sinks: `logaddr` and
+`file` are timed *inside* the `logio` span, so summing the fields double-counts. It also
+emits whenever the frame took a major page fault, because `faults=` appears on no other
+line and a fault-driven stall costs no I/O time — gating on time alone would suppress it
+exactly when it is the answer.
+
+| cvar | default | meaning |
+|---|---|---|
+| `ktp_profile_spike_phase_share` | `0.25` | Minimum share of the frame a phase must own to emit its detail line. **`0` = always emit (pre-`.931` behaviour).** |
+
+⚠️ **`ktp_profile_spike_phase_share` is not archived and is set in no shipped `.cfg`**, so
+an rcon override reverts to the default at the next restart. To make `0` durable, write it
+into `dodserver.cfg` the way `ktp_profile_frame` already is.
+
+⚠️ **The four `spike_*` columns change meaning at this boundary** — "spikes" before,
+"spikes this phase was material in" after. Historical rows are not wrong; they answer a
+different question. Do not compare across `.931`.
+
 ### Extension Shutdown Callback (v3.22.0.928+)
 
 Extensions may optionally export `KTP_ExtensionShutdown`. The engine `dlsym`s it
@@ -289,7 +322,7 @@ Check modules loaded: `amxx modules` in server console.
 
 ## Version Information
 
-- **Current Version**: 3.22.0.929 (2026-07)
+- **Current Version**: 3.22.0.931 (2026-08)
 - **Based on**: ReHLDS 3.14.0.857 (upstream)
 - **Platform**: Visual Studio 2022 (v143) / GCC 4.9.2+ / Clang 6.0+
 - **Compatible with**: KTP-ReAPI 5.29.0.362-ktp+, KTPAMXX 2.7.21+ (`KTP_ExtensionShutdown` requires 2.7.21+; on older KTPAMXX the .928/.929 shutdown-safety work is inert)
