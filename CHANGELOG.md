@@ -212,9 +212,12 @@ console stamps a higher number than the title above. This cut ships **one** arti
 
 - **Steam callbacks were dropped silently on a full queue** (`sv_steam3.cpp`) — *"should never
   happen"* with no counter is indistinguishable from *"never happened"*, and auth and policy
-  responses come through there. Now counted, and surfaced on the profile interval **only when
-  non-zero**. ⚠️ Reported from the game thread via an accessor, never `Con_Printf` from the Steam
-  thread — that is the very hazard fixed above.
+  responses come through there. Now counted, and emitted as **`[KTP_STEAM_CB_DROPS] lifetime=N`** on
+  the profile interval, **only when non-zero**. ⚠️ Reported from the game thread via an accessor,
+  never `Con_Printf` from the Steam thread — that is the very hazard fixed above.
+  ⚠️ **It is a LIFETIME counter, so once non-zero it reprints every interval forever.** That is
+  correct — the drop already happened and cannot be un-dropped — but it will read as a repeating
+  alarm rather than a new event each time.
 
 - Cleanups: `Q_snprintf`→`Q_strlcpy` on the per-log-line enqueue path (a full printf format-parse
   under the mutex for a plain bounded copy); removed three dead `ktp_profile_frame` externs; deleted
