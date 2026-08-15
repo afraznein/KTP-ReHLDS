@@ -191,8 +191,13 @@ console stamps a higher number than the title above. This cut ships **one** arti
   `Con_Printf` appends to the unsynchronized global `outputbuf` and can call `SV_FlushRedirect`,
   which sends a packet — and background threads reach it on `sendto` error paths. The redirect
   capture is now guarded by a game-thread identity check (`KTP_MarkGameThread()` at `Host_Init`).
-  🔑 **Console output still happens from any thread** — only the redirect capture is skipped, so no
-  diagnostic is lost.
+  ⚠️ **The console copy usually survives; the rcon caller's copy never does, and the drop is
+  uncounted.** At the default `sv_rcon_condebug 1`, `Con_Printf_internal` still reaches `Sys_Printf`
+  during a redirect, so an off-thread diagnostic lands on the console. Under `sv_rcon_condebug 0`
+  it does not: the print falls through to the non-redirect branch and survives only in
+  `qconsole.log`, and only if the server runs `-condebug` (the fleet does). Either way it is absent
+  from the rcon reply, which is the trade — a background thread's diagnostic was never the rcon
+  caller's to begin with, and racing it into `outputbuf` was the bug.
 
 - **`[KTP_SPIKE_READ]` discarded the cost of rejected packets** (`sv_main.cpp`) — the ban-filter and
   preprocess-refusal branches reset the timer without accumulating, so `recv`+`proc` could not

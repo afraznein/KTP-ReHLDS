@@ -1687,7 +1687,9 @@ void Con_Printf(const char *fmt, ...)
 // -netthread receive threads started reaching it on sendto error paths. The rcon
 // redirect buffer below is unsynchronized and SV_FlushRedirect can send a packet,
 // so a background-thread diagnostic could corrupt or steal an operator's rcon reply.
-// Console output still happens; only the redirect capture is skipped off-thread.
+// The rcon caller never sees that diagnostic, and the console only sees it at the
+// default sv_rcon_condebug 1 — set it to 0 and an off-thread line emitted inside a
+// redirect window survives only in qconsole.log, and only under -condebug.
 #ifdef _WIN32
 static DWORD s_ktpGameThreadId = 0;
 void KTP_MarkGameThread(void) { s_ktpGameThreadId = GetCurrentThreadId(); }
