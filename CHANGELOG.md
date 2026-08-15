@@ -100,6 +100,10 @@ console stamps a higher number than the title above. This cut ships **one** arti
   roughly half the configured share. It also emits whenever the frame took a **major page
   fault**, because `faults=` is carried on no other line and a fault-driven stall costs no I/O
   time; gating on time alone would have suppressed it in exactly the case it was added to explain.
+  Third, it emits whenever **none of the four phase gates opened**. `misc1`, `post` and `gap` have
+  no detail line of their own, so without that clause a spike dominated by one of them would carry
+  no attribution at all — the one shape the aggregator cannot explain. Every spike gets at least
+  one detail line.
 
   The umbrella `[KTP_SPIKE]` line is unchanged and still carries every phase on every spike, so
   a gated-out phase loses no data — `spike_signatures.py` already derives the dominant phase

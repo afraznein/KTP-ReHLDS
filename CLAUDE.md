@@ -86,8 +86,9 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 
 ⚠️ **As of .931 the detail lines are GATED** on `ktp_profile_spike_phase_share` — before that they
 all fired on every spike, which made the aggregator's four per-phase columns four copies of the
-spike count. A spike dominated by `misc1`/`post`/`gap` emits **no** detail line at all, and that is
-correct: the umbrella line carries every phase unconditionally.
+spike count. `misc1`/`post`/`gap` have no detail line of their own, so a spike dominated by one of
+them clears no phase gate and **`[KTP_SPIKE_IO]` fires as the backstop** — every spike carries at
+least one attributing line, and the umbrella line carries every phase unconditionally.
 ⚠️ `spike_{read,phys,send,steam}` in `ktp_telemetry_metrics` **change meaning at .931** — "spikes"
 before, "spikes this phase was material in" after. Do not compare across that boundary.
 
