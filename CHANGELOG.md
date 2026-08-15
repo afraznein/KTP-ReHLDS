@@ -93,14 +93,14 @@ console stamps a higher number than the title above. This cut ships **one** arti
   Each detail line is now gated on its phase owning at least `ktp_profile_spike_phase_share` of
   the frame (default `0.25`).
 
-  `[KTP_SPIKE_IO]` is gated differently, and neither difference is cosmetic. It uses the **worst
+  `[KTP_SPIKE_IO]` is gated differently, and none of the differences is cosmetic. It uses the **worst
   of its two sinks, not their sum**: `logaddr` and `file` are timed *inside* the `logio` span
   (`sv_log.cpp` opens at function entry and closes at exit), and `Log_Printf`'s console echo puts
   most of `conio` there too — so adding the fields double-counts and would have run the gate at
   roughly half the configured share. It also emits whenever the frame took a **major page
   fault**, because `faults=` is carried on no other line and a fault-driven stall costs no I/O
   time; gating on time alone would have suppressed it in exactly the case it was added to explain.
-  Third, it emits whenever **none of the four phase gates opened**. `misc1`, `post` and `gap` have
+  And it emits whenever **none of the four phase gates opened**. `misc1`, `post` and `gap` have
   no detail line of their own, so without that clause a spike dominated by one of them would carry
   no attribution at all — the one shape the aggregator cannot explain. Every spike gets at least
   one detail line.
