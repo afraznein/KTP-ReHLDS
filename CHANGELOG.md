@@ -149,6 +149,12 @@ console stamps a higher number than the title above. This cut ships **one** arti
   read is not. Renamed with a `_us` suffix deliberately, so the compiler had to visit every call site
   — a silent type change under the same name would have compiled with wrong units at the print sites.
 
+  ⚠️ **Integer microseconds quantize, which the `double` did not.** The conversion truncates, so a
+  sub-µs `Con_Printf` records `0`: `conprintf_worst` cannot resolve below 1µs, and the frame
+  accumulator behind `conio=` on `[KTP_SPIKE_IO]` under-reports a burst of cheap prints by up to
+  ~1µs each. Accepted, not overlooked — both fields exist to catch millisecond-scale write stalls,
+  and the resolution they lose is well below anything that would fire them.
+
 - **`quit` / `quit_restart` / `restart` over rcon killed a live server, while a comment claimed
   they were blocked** (`host_cmd.cpp`, `sv_main.cpp`). `g_bRconCommand` was set around every rcon
   command execution and **read by nothing** — the protection its own comment documented had never
