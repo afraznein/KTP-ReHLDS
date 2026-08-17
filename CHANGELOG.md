@@ -8,6 +8,65 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ## [Unreleased]
 
+### Fixed
+
+- **HLTV rcon replies were empty or not, depending on leftover stack contents.**
+  `Proxy::ExecuteRcon` (`HLTV/Proxy/src/Proxy.cpp`) captures command output at
+  `outputbuf + 1` — `System::RedirectOutput` (`HLTV/Console/src/System.cpp:74`)
+  memsets from the pointer it is given, so it zeroes `[1..1023]` and never touches
+  `[0]` — but then formats the reply as `"%c%s"` from `outputbuf + 0`. Nothing in
+  the program writes that byte. When it happens to be `\0` the payload truncates to
+  nothing and the caller gets a well-formed packet carrying only the `A2A_PRINT`
+  marker.
+
+  The failure is deceptive: the command still executes and still prints to the
+  console and the log, so it presents as an auth or dispatch problem rather than a
+  formatting one.
+
+  It is undefined behaviour that happens to work. Production's 2026-02-26 build
+  gets a non-zero byte and replies correctly; a clean rebuild of the same commit
+  (`bc30884`, Ubuntu 22.04, gcc-multilib) gets zero and **every** reply is empty.
+  Measured A/B on that rebuild, two proxies, `status` × 25 each, swapping only
+  `proxy.so`: stock `bc30884` produced `outputbuf[0] == 0x00`, a zero-character
+  payload and 50/50 empty replies (1400-byte packets, all NUL after the marker);
+  with this fix, `0x20`, a 410-character payload and 50/50 complete replies.
+
+  This is a live fleet risk independent of any one consumer: if a rebuild lands the
+  other way, HLTV rcon goes silent everywhere at once and anything polling it
+  blinds itself without a single error.
+
+  Fixed by making the byte deterministic rather than by sending `outputbuf + 1`.
+  The latter is tidier and matches HLTV's own readers, which skip exactly one byte
+  (`Proxy::ProcessConnectionlessMessage`, `Server.cpp` `A2A_PRINT`), but it shifts
+  the wire format — existing parsers strip a fixed 6-byte prefix and would lose the
+  first character of every reply. Keep the format, make the byte deterministic.
+
+### Added
+
+- **`status` now reports the broadcast serve clock.** It printed the live world
+  clock and the `Delay` cvar, but not `m_ClientWorldTime` — the value that actually
+  decides which frame a spectator receives. Consumers aligning to the broadcast had
+  to infer the serve point as `GetTime() - Delay`, which is the target `RunClocks`
+  aims at rather than a measurement of where the clock sits, and which is only
+  valid while the clock has not sagged (`RunClocks` carries three corrective
+  branches precisely because it can).
+
+  One line in `Proxy::CMD_Status` printing the already-exported
+  `Proxy::GetSpectatorTime()` alongside a fractional world time. Purely additive —
+  no existing field changes. Verified against the existing parser: `Game Time`,
+  `Delay`, `Map`, `Server Name` and the proxy counts all still extract unchanged.
+
+  The fractional world time matters on its own. `Game Time MM:SS` is truncated, so
+  anything deriving a clock from it runs 0–1s low, one-sided, never high. Because a
+  poller's interval is fixed and the world clock advances 1:1 with wall time, every
+  sample lands on the same sub-second phase — so the error presents as a stable
+  *per-server constant* rather than as jitter, which is easy to mistake for a
+  calibration offset. Two proxies on one host, same binary, sampled together:
+  `Game Time 07:40` against a true `460.53` (0.53s lost) and `03:49` against
+  `229.01` (0.01s lost).
+
+  No engine binary changes, so no version bump; `HLTV/Proxy` only.
+
 ### Documentation
 
 - **`extensions.ini` was documented at a path that doesn't exist, with contents
