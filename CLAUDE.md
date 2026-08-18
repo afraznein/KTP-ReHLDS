@@ -59,8 +59,9 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 - `ktp_profile_interval 10` - Seconds between summary logs (default 10)
 - `ktp_profile_spike_threshold 5.0` - Log immediate `[KTP_SPIKE]` alert when any single frame exceeds this many ms (0 = disabled)
 - `ktp_profile_steam_detail 0/1` - Enable granular Steam_RunFrame() sub-timing (logs `[KTP_PROFILE_STEAM]` when >1ms)
+- `ktp_profile_spike_phase_share 0.25` - (.931) Minimum share of the spike frame a phase must own before its `[KTP_SPIKE_<phase>]` detail line is emitted. **`0` = always emit (pre-.931 behaviour, and the rollback lever — no binary swap).**
 
-**Summary output (to server log, every N seconds) — 8 interval lines:**
+**Summary output (to server log, every N seconds) — 8 interval lines, plus one conditional:**
 ```
 [KTP_PROFILE] frames=9823 fps=982.3 edicts_max=156
 [KTP_PROFILE] avg: read=0.120ms phys=0.450ms misc1=0.005ms send=0.080ms post=0.003ms steam=0.010ms full=0.680ms
@@ -68,17 +69,27 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 [KTP_PROFILE] gap=0.012ms (full - sum of phases)
 [KTP_PROFILE] phys_detail_peak: startframe=0.010ms entloop=0.430ms   (.929: interval peaks, tracked inside SV_Physics so paused frames contribute nothing — was an instantaneous last-frame sample)
 [KTP_PROFILE] io: logprintf_worst=… conprintf_worst=… logaddr_worst=… file_worst=… fileq_worst=… logq_drops=… ctl_drops=… writer_alive=…   (see Async Log-File Writer § for field meanings)
-[KTP_PROFILE] send_detail: worst_client=3(name) time=0.290ms clients_sent=11
+[KTP_PROFILE] send_detail_peak: worst_client=3(name) time=0.290ms clients_sent=11   (.931: interval PEAK; was send_detail, which sampled the boundary frame and never showed a spike)
 [KTP_PROFILE] interframe: avg=1.018ms peak=2.400ms
 ```
 
-**Spike alert output (immediate, rate-limited to 1/sec) — 4 spike lines per spike frame:**
+**Spike alert output (immediate, rate-limited to 1/sec) — the umbrella line always, plus whichever detail lines cleared the phase-share gate:**
 ```
 [KTP_SPIKE] full=12.340ms read=0.150ms phys=0.500ms misc1=0.010ms send=0.100ms post=0.005ms steam=11.500ms gap=0.075ms
-[KTP_SPIKE_READ] checkcmd=… readpackets=…
+[KTP_SPIKE_READ] pkts=… recv=… proc=… worst=…
 [KTP_SPIKE_PHYS] startframe=… entloop=… paused_startframe=… paused_hud=…
 [KTP_SPIKE_IO] logio=… logaddr=… file=… conio=… faults=…   (replaced [KTP_SPIKE_ENT] in .926 — I/O-stall + page-fault attribution)
+[KTP_SPIKE_SEND] send=… clients=… worst_slot=… worst=…
+[KTP_SPIKE_STEAM] steam=…
 ```
+⚠️ **`[KTP_STEAM_CB_DROPS]` is a LIFETIME counter** — once non-zero it reprints every interval forever. That is intended (the drop already happened and cannot be un-dropped), but it will read as a repeating alarm rather than a new event each time.
+
+⚠️ **As of .931 the detail lines are GATED** on `ktp_profile_spike_phase_share` — before that they
+all fired on every spike, which made the aggregator's four per-phase columns four copies of the
+spike count. A spike dominated by `misc1`/`post`/`gap` emits **no** detail line at all, and that is
+correct: the umbrella line carries every phase unconditionally.
+⚠️ `spike_{read,phys,send,steam}` in `ktp_telemetry_metrics` **change meaning at .931** — "spikes"
+before, "spikes this phase was material in" after. Do not compare across that boundary.
 
 **Steam detail output (when ktp_profile_steam_detail=1, only when >1ms):**
 ```
@@ -115,7 +126,7 @@ The synchronous log-file write in `Log_Printf` blocked the game thread up to 167
 - `logq_drops=` — lifetime count of dropped WRITE lines (queue full / writer had no file / write error).
 - `ctl_drops=` — (.928) lifetime count of dropped OPEN/CLOSE control ops. Expect 0 forever; nonzero = a whole map's log file may be missing or misrouted (control op couldn't get a ring slot within the bounded retry).
 - `writer_alive=` — (.928) 0 only if work is pending AND the writer processed nothing for a full profile interval (a wedged/dead writer). Expect 1.
-- `conprintf_worst=` — qconsole.log write cost (see the Con_DebugLog note below); `logaddr_worst=` — UDP send to a logaddress.
+- `conprintf_worst=` — qconsole.log write cost (see the Con_DebugLog note below). **(.931) Backed by `std::atomic<uint32>` microseconds** — `Con_Printf` is reachable from the Steam and `-netthread` background threads, and the previous plain `double` could tear and print garbage on this very tripwire; `logaddr_worst=` — UDP send to a logaddress.
 
 ### 3.22.0.928
 Engine-side fix wave (see `CHANGELOG.md` for detail):

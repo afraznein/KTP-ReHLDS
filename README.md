@@ -1,6 +1,6 @@
 # KTP-ReHLDS
 
-**Version 3.22.0.929** | Custom ReHLDS fork for KTP competitive Day of Defeat infrastructure
+**Version 3.22.0.931** | Custom ReHLDS fork for KTP competitive Day of Defeat infrastructure
 
 A specialized fork of [ReHLDS](https://github.com/rehlds/rehlds) that enables advanced competitive match features through engine-level pause control, real-time HUD updates during pause, and selective subsystem operation.
 
@@ -116,6 +116,7 @@ next map change. Writer-side timings land on the `[KTP_PROFILE] io:` line; see
 | `ktp_profile_frame` | `0` | Enable frame profiling |
 | `ktp_profile_interval` | `10` | Seconds between profiling summary logs |
 | `ktp_profile_spike_threshold` | `5.0` | Log a `[KTP_SPIKE]` alert when a frame exceeds this many ms (`0` = off) |
+| `ktp_profile_spike_phase_share` | `0.25` | (.931) Minimum share of a spike frame a phase must own to emit its `[KTP_SPIKE_<phase>]` detail line; `0` = always emit (pre-.931). **Not archived — an rcon override reverts at the next restart** |
 | `ktp_profile_steam_detail` | `0` | Granular `Steam_RunFrame()` sub-timing |
 | `ktp_log_async` | `1` | Async log-file writer; `0` restores the synchronous path (rollback switch) |
 | `ktp_extension_loaded` | `0` | Sentinel — counts extensions loaded from `extensions.ini`. Assert `>= 1` after a restart |
@@ -151,6 +152,90 @@ Hookchains added for KTPAMXX/DODX extension mode compatibility (no Metamod):
 | `PF_TraceLine` | TraceLine interception | DODX `TraceLine_Post` |
 | `PF_SetClientKeyValue` | Client key/value changes | DODX `SetClientKeyValue` |
 | `SV_PlayerRunPreThink` | Player PreThink loop | DODX stats tracking |
+
+### RCON Shutdown Refused (v3.22.0.931+)
+
+`quit`, `exit`, `_restart`, `restart`, `reload` and `shutdownserver` are refused when the
+command arrives over rcon.
+`g_bRconCommand` had documented this protection since it was introduced and **nothing ever
+read it**, so anyone holding the rcon password could end a live match.
+
+Local console is unaffected, which is what LinuxGSM uses to stop a server — nightly restarts
+are untouched. Note that `Host_Restart_f`'s existing `cmd_source != src_command` check does
+**not** cover rcon, which also executes with `src_command`.
+
+⚠️ **Not airtight, deliberately stated rather than implied.** `alias` and `exec` dispatch
+through the Cbuf and run *after* `SV_Rcon` has cleared the flag, so a determined caller can
+still route around this. It stops the accidental and the scripted case — which is the
+incident that actually happens — not a hostile one.
+
+### Engine Auto-Bans Restored (v3.22.0.930+)
+
+The `addip`/`removeip` console commands stay blocked — untraceable operator IP bans
+are still refused, use `.ban` in-game. But the engine's *own* protections
+(rcon brute-force, stringcmd/movecmd flood, incoming-decompression punish) used to
+reach the filter list by shelling out to that same blocked command, so they were
+silent no-ops: the log said `Banned...`, no filter was added, and the flooder
+reconnected immediately.
+
+The ban mechanism now lives in `SV_AddIPFilterInternal()`, and those protections call
+`SV_AutoBanAddress()` directly. Each auto-ban emits
+`[KTP_AUTOBAN] addr=<ip> minutes=<n>` so a ban is never silent.
+
+⚠️ **These are live again after roughly seven months inert.** Check
+`sv_rcon_banpenalty` before running this build: it defaults to `0`, which means a
+**permanent** ban, and a banned IP cannot rcon in to remove its own ban. The ban is
+applied to the base address with the port stripped, so one misconfigured tool can ban
+its whole host. `sv_rehlds_movecmdrate_avg_punish` and
+`sv_rehlds_stringcmdrate_avg_punish` also default to `5` minutes and are *not* covered
+by the fleet's existing `*_burst_punish -1` lines.
+
+### Spike Phase Attribution: SEND and STEAM (v3.22.0.930+)
+
+`[KTP_SPIKE_SEND]` and `[KTP_SPIKE_STEAM]` now emit alongside the existing
+`[KTP_SPIKE_READ]`/`[KTP_SPIKE_PHYS]`/`[KTP_SPIKE_IO]` lines, inside the same
+1/sec-rate-limited spike block. Consumers had parsed both phase names since day one;
+the engine never emitted them, so those two phases were structurally unobservable.
+
+`SEND` carries real detail — `clients`, `worst_slot`, `worst` — which was already
+being collected and only surfaced on the interval `[KTP_PROFILE] send_detail` line (renamed
+`send_detail_peak` in `.931`, which also made it a true interval peak), so
+a send-dominant spike could not be pinned to a client. `STEAM` carries the aggregate
+only: `ktp_t_steam` is a single span with no sub-phases, and the line says so rather
+than implying detail nobody measured.
+
+> **Superseded by `.931` — these lines are no longer emitted unconditionally.** See
+> *Spike Detail-Line Phase Gate* below.
+
+### Spike Detail-Line Phase Gate (v3.22.0.931+)
+
+Each `[KTP_SPIKE_<phase>]` detail line is emitted only when its phase owns at least
+`ktp_profile_spike_phase_share` (default `0.25`) of the spike frame. Emitted
+unconditionally, every spike produced every line — and because the profile aggregator
+*counts* those lines into `ktp_telemetry_metrics.spike_{read,phys,send,steam}`, all four
+columns were four copies of the spike count and phase attribution was impossible.
+
+The umbrella `[KTP_SPIKE]` line is unchanged and still carries every phase on every
+spike, so a gated-out phase loses no data. A spike dominated by `misc1`/`post`/`gap`
+emits no detail line at all, which is correct — no detail line exists for those phases.
+
+`[KTP_SPIKE_IO]` is gated differently, on the worst of its own two sinks: `logaddr` and
+`file` are timed *inside* the `logio` span, so summing the fields double-counts. It also
+emits whenever the frame took a major page fault, because `faults=` appears on no other
+line and a fault-driven stall costs no I/O time — gating on time alone would suppress it
+exactly when it is the answer.
+
+| cvar | default | meaning |
+|---|---|---|
+| `ktp_profile_spike_phase_share` | `0.25` | Minimum share of the frame a phase must own to emit its detail line. **`0` = always emit (pre-`.931` behaviour).** |
+
+⚠️ **`ktp_profile_spike_phase_share` is not archived and is set in no shipped `.cfg`**, so
+an rcon override reverts to the default at the next restart. To make `0` durable, write it
+into `dodserver.cfg` the way `ktp_profile_frame` already is.
+
+⚠️ **The four `spike_*` columns change meaning at this boundary** — "spikes" before,
+"spikes this phase was material in" after. Historical rows are not wrong; they answer a
+different question. Do not compare across `.931`.
 
 ### Extension Shutdown Callback (v3.22.0.928+)
 
@@ -255,7 +340,7 @@ Check modules loaded: `amxx modules` in server console.
 
 ## Version Information
 
-- **Current Version**: 3.22.0.929 (2026-07)
+- **Current Version**: 3.22.0.931 (2026-08)
 - **Based on**: ReHLDS 3.14.0.857 (upstream)
 - **Platform**: Visual Studio 2022 (v143) / GCC 4.9.2+ / Clang 6.0+
 - **Compatible with**: KTP-ReAPI 5.29.0.362-ktp+, KTPAMXX 2.7.21+ (`KTP_ExtensionShutdown` requires 2.7.21+; on older KTPAMXX the .928/.929 shutdown-safety work is inert)

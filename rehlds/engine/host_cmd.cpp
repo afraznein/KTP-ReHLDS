@@ -462,8 +462,31 @@ void Host_Stats_f(void)
 	Con_Printf("CPU   In    Out   Uptime  Users   FPS    Players\n%s\n", stats);
 }
 
+extern int g_bRconCommand;  // sv_main.cpp -- set only while executing an rcon command
+
+#ifdef REHLDS_FIXES
+// KTP: refuse a shutdown that arrived over rcon. g_bRconCommand documented this
+// protection from the day it was added and nothing ever read it, so rcon could end
+// a live match. The local console is unaffected -- that is how LinuxGSM stops a
+// server, so nightly restarts are untouched.
+// Not airtight, and the message says so: aliases and exec run from the Cbuf after
+// SV_Rcon has already cleared the flag, so a determined caller can still get through.
+// This stops the accidental and the scripted case, which is the incident that happens.
+static bool KTP_RconShutdownRefused(const char *cmd)
+{
+	if (!g_bRconCommand)
+		return false;
+	Con_Printf("%s: refused -- this command is disabled over rcon, use the host console\n", cmd);
+	return true;
+}
+#define KTP_REFUSE_RCON_SHUTDOWN() do { if (KTP_RconShutdownRefused(__func__)) return; } while (0)
+#else
+#define KTP_REFUSE_RCON_SHUTDOWN() ((void)0)
+#endif
+
 void Host_Quit_f(void)
 {
+	KTP_REFUSE_RCON_SHUTDOWN();
 	if (Cmd_Argc() == 1)
 	{
 		giActive = DLL_CLOSE;
@@ -484,6 +507,7 @@ void Host_Quit_f(void)
 
 void Host_Quit_Restart_f(void)
 {
+	KTP_REFUSE_RCON_SHUTDOWN();
 	giActive = DLL_RESTART;
 	giStateInfo = 4;
 
@@ -1153,6 +1177,7 @@ const char *Host_FindRecentSave(char *pNameBuf)
 
 void Host_Restart_f(void)
 {
+	KTP_REFUSE_RCON_SHUTDOWN();
 	char name[MAX_PATH];
 	if (g_pcls.demoplayback || !g_psv.active || cmd_source != src_command)
 		return;
@@ -1172,6 +1197,7 @@ void Host_Restart_f(void)
 
 void Host_Reload_f(void)
 {
+	KTP_REFUSE_RCON_SHUTDOWN();
 	const char *pSaveName;
 	char name[MAX_PATH];
 	if (g_pcls.demoplayback || !g_psv.active || cmd_source != src_command)
@@ -3058,6 +3084,7 @@ void Host_Soundfade_f(void)
 
 void Host_KillServer_f(void)
 {
+	KTP_REFUSE_RCON_SHUTDOWN();
 	if (g_pcls.state != ca_dedicated)
 		CL_Disconnect_f();
 

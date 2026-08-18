@@ -128,6 +128,268 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 - README now points at the in-tree `README-UPSTREAM.md` from § Related Projects.
 
+## [KTP-ReHLDS `3.22.0.931`] - 2026-08-14
+
+Things that reported something untrue, and protections that were never wired up. Profiling telemetry
+that could not attribute a spike; a documented rcon-shutdown block that no code read; three
+cross-thread hazards left over from moving work onto the Steam thread in `.913`; and an OOM-guard
+wave that missed two allocations in a function it had already touched.
+
+**Verify by md5, not by banner.** `appversion.h` is generated from the git commit count, so the
+console stamps a higher number than the title above. This cut ships **one** artifact,
+`engine_i486.so` — confirmed by rebuilding `hlds_linux` and hashing it identical to `.930`.
+
+### Fixed
+
+- **All four per-phase spike counters were the same number, so phase attribution was
+  impossible** (`sv_main.cpp`). `[KTP_SPIKE_READ]`, `[KTP_SPIKE_PHYS]`, `[KTP_SPIKE_SEND]` and
+  `[KTP_SPIKE_STEAM]` were emitted unconditionally inside the rate-limited spike block, so every
+  spike produced every line. The aggregator counts those lines into
+  `ktp_telemetry_metrics.spike_{read,phys,send,steam}` — four columns that were therefore four
+  copies of the spike count. Measured across the whole post-`.930` corpus: all four equal in
+  **5,027 of 5,027** rows, sums 1,862/1,862, maxes 20/20.
+
+  Each detail line is now gated on its phase owning at least `ktp_profile_spike_phase_share` of
+  the frame (default `0.25`).
+
+  `[KTP_SPIKE_IO]` is gated differently, and neither difference is cosmetic. It uses the **worst
+  of its two sinks, not their sum**: `logaddr` and `file` are timed *inside* the `logio` span
+  (`sv_log.cpp` opens at function entry and closes at exit), and `Log_Printf`'s console echo puts
+  most of `conio` there too — so adding the fields double-counts and would have run the gate at
+  roughly half the configured share. It also emits whenever the frame took a **major page
+  fault**, because `faults=` is carried on no other line and a fault-driven stall costs no I/O
+  time; gating on time alone would have suppressed it in exactly the case it was added to explain.
+
+  The umbrella `[KTP_SPIKE]` line is unchanged and still carries every phase on every spike, so
+  a gated-out phase loses no data — `spike_signatures.py` already derives the dominant phase
+  from that line alone, and its docstring already described the per-phase lines as
+  "sub-threshold-gated". This makes the engine match the contract the consumer was written
+  against.
+
+  ⚠️ **The counters change meaning, so they are not comparable across this boundary.** Before
+  this cut a column meant "spikes"; after it, "spikes this phase was material in". Historical
+  rows are not wrong, they answer a different question.
+
+  ⚠️ **A presence census cannot detect this class of defect.** The release check that missed it
+  asked whether the columns had moved off zero — they had. Degeneracy needs an equality check
+  (`SUM(spike_steam = spike_send)`), not `SUM(spike_send > 0)`.
+
+- **`[KTP_PROFILE] send_detail` reported the interval's LAST frame, never its peak**
+  (`sv_main.cpp`). `g_ktp_send_worst_client_time/slot/count` reset at the top of every profiled
+  `SV_SendClientMessages`, so the ~10s summary printed whichever frame happened to cross the
+  boundary. A mid-interval send spike was overwritten hundreds of times before the print: the
+  `peak: send=` field showed the spike while `send_detail` read baseline and never named the client
+  responsible.
+
+  Added interval-peak shadows, mirroring the `phys_detail_peak` fix that closed the identical defect
+  for the physics phase. The roll-up runs **once per frame rather than once per client**, so the peak
+  carries the client count of the frame that produced it rather than a separate maximum. The line is
+  renamed **`send_detail_peak`** so old and new logs cannot be read as the same metric.
+  `[KTP_SPIKE_SEND]` keeps the per-frame values, which is correct for a per-frame line.
+  ⚠️ The slot indexes a persistent array, so a client who disconnects mid-interval leaves a **stale
+  name**, not an invalid read.
+
+- **The `conprintf_worst` tripwire could print garbage, because its counters were racing**
+  (`sys_dll.cpp`, `sv_main.cpp`). `Con_Printf` did an unsynchronized read-modify-write on two plain
+  `double`s, and it is reachable from the **Steam background thread** (`sendto` error path, fleet-live
+  since `.913`) and from the `-netthread` receive thread. On this 32-bit build a torn 8-byte read
+  prints an absurd value on the `[KTP_PROFILE] io:` line — and `conprintf_worst` is the documented
+  tripwire for the qconsole.log synchronous-write exposure, so corruption there either **fires or
+  masks** a monitored alert.
+
+  Both counters are now `std::atomic<uint32>` **microseconds** (`g_ktp_conio_frame_us`,
+  `g_ktp_conio_worst_us`), matching the existing `g_ktp_fileq_worst_us` pattern. Storing integers
+  removes the torn-double failure entirely rather than narrowing it. The worst-value update stays a
+  relaxed load/compare/store, the same benign race as `fileq_worst`: a lost sample is possible, a torn
+  read is not. Renamed with a `_us` suffix deliberately, so the compiler had to visit every call site
+  — a silent type change under the same name would have compiled with wrong units at the print sites.
+
+- **`quit` / `quit_restart` / `restart` over rcon killed a live server, while a comment claimed
+  they were blocked** (`host_cmd.cpp`, `sv_main.cpp`). `g_bRconCommand` was set around every rcon
+  command execution and **read by nothing** — the protection its own comment documented had never
+  been implemented, so anyone holding the fleet rcon password could end a match in progress. `quit`, `exit`,
+  `_restart`, `restart`, `reload` and `shutdownserver` now refuse when the command came from rcon.
+  ⚠️ **Not airtight, and the message says so rather than implying otherwise:** `alias` and `exec`
+  dispatch through the Cbuf and run *after* `SV_Rcon` clears the flag, so a determined caller can
+  route around it. This stops the accidental and the scripted case, which is the incident that
+  actually happens.
+  🔻 **`shutdownserver` and `reload` were missed on the first pass** and are arguably worse than
+  `quit` — `shutdownserver` drops every client and tears the server down while the process
+  survives, so it reads as a crash rather than a shutdown.
+  🟢 **Nightly restarts are unaffected, verified rather than assumed:** LinuxGSM stops via `quit` on
+  the local tmux console (`src_command`), and no infra script sends rcon quit/restart — checked with
+  a control confirming those scripts do use rcon for other things.
+  ⚠️ `Host_Restart_f`'s existing `cmd_source != src_command` check does **not** cover this: rcon
+  executes with `src_command` too.
+
+- **Two `Mem_Malloc` results in `HPAK_AddLump` were used unchecked** (`hashpak.cpp`), reopening the
+  `FS_Read(NULL)` segfault class the `.921` OOM-guard wave shipped to close. With an existing
+  `custom.hpk` near `MAX_FILE_ENTRIES`, each is a ~2.3MB allocation in a 32-bit process — reachable
+  under heap fragmentation, and it lands at map change while draining queued spray uploads. Both now
+  bail cleanly, closing the sibling handle and freeing the other directory buffer.
+
+- **The Steam background thread was created with `new std::thread` on a `-fno-exceptions` build**
+  (`sv_steam3.cpp`). On pthread exhaustion the constructor throws and the process aborts instead of
+  degrading — the exact class already fixed in the `.927` log writer and deliberately avoided in the
+  `-netthread` port. Now `pthread_create`/`CreateThread` with a checked return.
+  ⚠️ It fails via `Sys_Error` rather than continuing: `.913` moved **every** Steam pump onto that
+  thread, so there is no synchronous fallback left, and a silent continue would leave the server
+  unable to heartbeat or authenticate with no symptom.
+
+- **`NET_SendLong`'s `gSequenceNumber` raced between the game and Steam threads** (`net_ws.cpp`).
+  `.913` moved `NET_SendPacket` onto the Steam thread; both can take the `NS_SERVER` split-packet
+  path, and the `.913` note asserting this path is safe for concurrent calls was false. Now
+  `std::atomic<long>`. The value is also snapshotted into a local — the old code incremented and
+  re-read the global separately, so the packet header and the debug line could disagree.
+
+- **The Steam thread could corrupt or steal an operator's rcon reply** (`sys_dll.cpp`, `host.cpp`).
+  `Con_Printf` appends to the unsynchronized global `outputbuf` and can call `SV_FlushRedirect`,
+  which sends a packet — and background threads reach it on `sendto` error paths. The redirect
+  capture is now guarded by a game-thread identity check (`KTP_MarkGameThread()` at `Host_Init`).
+  🔑 **Console output still happens from any thread** — only the redirect capture is skipped, so no
+  diagnostic is lost.
+
+- **`[KTP_SPIKE_READ]` discarded the cost of rejected packets** (`sv_main.cpp`) — the ban-filter and
+  preprocess-refusal branches reset the timer without accumulating, so `recv`+`proc` could not
+  explain `read=` during exactly the flood scenarios the line exists to diagnose.
+
+- **Re-enabling `ktp_profile_frame` reused stale lifecycle state** (`sv_main.cpp`): a
+  `prev_frame_end` from minutes earlier produced a nonsense first interframe reading, and a stale
+  `last_log_time` made the first summary cover an interval that never happened.
+
+- **Two `SV_ParseStringCommand` branches gated on `g_ktp_temporary_unpause` were dead**
+  (`sv_user.cpp`). The flag is set *after* `SV_ReadPackets` and cleared at frame end, while all string commands parse inside `SV_ReadPackets` — so it is always 0
+  there. The pause-time rate-limiter bypass never ran and the frametime-swap arm never executed
+  (both arms called the same function anyway). Deleted rather than repaired; gate on `g_psv.paused`
+  if the behaviour is ever actually wanted.
+  ⚠️ The guard's second condition `pSenderClient != host_client` was also always false, so had the
+  flag ever been set it would have disabled rate limiting for **every** client, contradicting its
+  own comment.
+
+- **`clock_gettime` sat outside the `__linux__` guard** (`sys_ded.cpp`), breaking the Windows build.
+  Windows keeps the stock every-iteration console poll; the throttle exists for the Linux 1000fps spin.
+
+- **Steam callbacks were dropped silently on a full queue** (`sv_steam3.cpp`) — *"should never
+  happen"* with no counter is indistinguishable from *"never happened"*, and auth and policy
+  responses come through there. Now counted, and emitted as **`[KTP_STEAM_CB_DROPS] lifetime=N`** on
+  the profile interval, **only when non-zero**. ⚠️ Reported from the game thread via an accessor,
+  never `Con_Printf` from the Steam thread — that is the very hazard fixed above.
+  ⚠️ **It is a LIFETIME counter, so once non-zero it reprints every interval forever.** That is
+  correct — the drop already happened and cannot be un-dropped — but it will read as a repeating
+  alarm rather than a new event each time.
+
+- Cleanups: `Q_snprintf`→`Q_strlcpy` on the per-log-line enqueue path (a full printf format-parse
+  under the mutex for a plain bounded copy); removed three dead `ktp_profile_frame` externs; deleted
+  `g_ktp_cached_sv_timeout`, a "cache" whose single consumer already read the cvar once per frame;
+  and corrected the `Sleep_Never` comment, which claimed a default-mode fps the same file
+  contradicts in `Sys_InitPingboost`.
+
+### Added
+
+- **`ktp_profile_spike_phase_share`** (default `0.25`) — minimum share of a spike frame a phase
+  must own before its detail line is emitted. **`0` restores the previous always-emit
+  behaviour**, which is the rollback lever: no binary swap needed.
+
+  ⚠️ **The lever is not durable on its own.** The cvar is registered with no `FCVAR_ARCHIVE` and
+  appears in no shipped `.cfg`, so a value set over rcon reverts to `0.25` at the 03:00 restart.
+  For a rollback that survives the night, write it into `dodserver.cfg` — which is where
+  `ktp_profile_frame` already lives, for this same reason.
+
+## [KTP-ReHLDS `3.22.0.930`] - 2026-08-07
+
+Two live production defects and two pieces of dead weight. The theme is mechanisms that
+reported success while doing nothing.
+
+**Verify by md5, not by banner.** `appversion.h` is generated from the git commit count, so
+the console stamps a higher number than the title above. The md5 of the shipped binary is the
+only identity that matters — and this cut ships **two** artifacts, `engine_i486.so` *and*
+`hlds_linux`, because the signal fix lives in the launcher.
+
+### Fixed
+
+- **The engine's own auto-bans have been disarmed for roughly seven months, on 24 public
+  instances** (`sv_main.cpp`, `server.h`, `net_chan.cpp`, `rehlds_security.cpp`). The KTP policy
+  block on the `addip` console command was meant to stop untraceable operator IP bans. But
+  rcon brute-force protection, the stringcmd/movecmd flood limiters and the
+  incoming-decompression punish all reach the filter list by shelling out to that same command
+  via `Cbuf_AddText("addip ...")` — so all seven call sites were silent no-ops. Console and log
+  said `Banned...`, no filter was ever added, and the flooder reconnected instantly.
+
+  Policy is now split from mechanism: `SV_AddIPFilterInternal()` holds the mechanism,
+  `SV_AutoBanAddress()` is the entry point the protections call directly, and the console
+  command keeps its block unchanged — `addip` and `removeip` are still refused.
+
+  **Auto-bans do not run the client kick sweep.** Every caller already drops its own offender,
+  and an rcon prober is not a client. That matters beyond tidiness: the sweep writes the globals
+  `host_client` and `net_from`, and `SV_Rcon` is called as `SV_Rcon(&net_from)` — the parameter
+  *aliases the global*. Sweeping inline would have redirected the `Bad rcon_password.` reply to
+  whichever player occupied the last swept slot, and made the audit line and hookchain name that
+  player's IP as the rcon attacker. Under the old deferred `Cbuf` path the sweep ran later, where
+  both globals are dead, which is why the hazard appeared only on inlining. It is also invisible
+  on an empty server. The sweep survives for the console path with both globals saved and
+  restored around it.
+
+  Each auto-ban now logs `[KTP_AUTOBAN] addr=<ip> minutes=<n>`. Previously the only trace was a
+  `Con_DPrintf` needing `developer 1` — a mechanism that can permanently ban an IP should not be
+  silent.
+
+  ⚠️ **Config prerequisites, not optional.** `sv_rcon_banpenalty` defaults to `0` and `0` means
+  *permanent*; a banned IP cannot rcon in to lift its own ban. The ban is keyed on the base
+  address with the port stripped while the failure table is keyed adr+port, so a tool reusing one
+  socket can permanently ban its entire host. `sv_rehlds_movecmdrate_avg_punish` and
+  `sv_rehlds_stringcmdrate_avg_punish` default to `5` minutes and are not covered by the fleet's
+  existing `*_burst_punish -1` lines — and the stringcmd limiter is documented in-tree as
+  false-positiving during pause, which after this cut turns a kick into a timed ban mid-match.
+
+- **Every signalled stop segfaults, fleet-wide** (`dedicated/src/sys_linux.cpp`).
+  `Sys_SetupConsole` built a `struct sigaction` on the stack and set only `sa_handler`, leaving
+  `sa_mask`, `sa_flags` and `sa_restorer` as garbage. The handler ran, set the terminate flag,
+  then returned through a garbage restorer.
+
+  The core is the lesser cost. The launcher's orderly exit — `Unmount()` and both
+  `Sys_UnloadModule()` — never ran, so a signalled stop bypassed the `KTP_ExtensionShutdown`
+  module-detach path that `.928` and KTPAMXX 2.7.21 exist to guarantee.
+
+  It stayed invisible because LinuxGSM stops a server by typing `quit` into tmux, never by
+  signalling. Only `pkill` / `kill` / `systemctl stop` / Ctrl+C reach it, which is why the
+  2026-07-31 LAN monitor kills all read as crashes.
+
+  `sa_flags` is deliberately left `0`: no `SA_RESTART`. This handler sets a flag and returns, so
+  `SA_RESTART` would only mask the `EINTR` that lets the loop notice the shutdown request.
+  Verified in the built `hlds_linux` at instruction level — `rep stos` zeroing 140 bytes
+  (`sizeof(struct sigaction)` on i386), then `sigemptyset`, then the handler store.
+
+### Added
+
+- **`[KTP_SPIKE_SEND]` and `[KTP_SPIKE_STEAM]`** (`sv_main.cpp`), beside the existing per-phase
+  spike lines and inside the same 1/sec gate. Consumers have parsed both phase names since day
+  one but the engine never emitted them, leaving both phases structurally unobservable.
+  `SEND` carries `clients`, `worst_slot` and `worst` — already collected, previously reachable
+  only on the interval `[KTP_PROFILE]` line, so a send-dominant spike could not be attributed to
+  a client. `STEAM` carries the aggregate only and says so: `ktp_t_steam` is a single span with
+  no sub-phases, and padding the line out would imply detail nobody measured.
+
+### Removed
+
+- **The pause-transition nodelta scaffolding** (`sv_main.cpp`). `s_ktp_pauseTransitionFrames`
+  forced nodelta for two send frames after every pause transition — a full entity update to every
+  client — to guard a baseline invalidation that cannot occur.
+
+  The proof, re-derived from source rather than inherited: `SV_ParseDelta` sets
+  `delta_sequence` from `MSG_ReadByte()`, i.e. from the client's own packet, and
+  `SV_CreatePacketEntities_internal` uses it to index `client->frames[]` and writes it back into
+  the message so both ends agree. The baseline is whatever frame the client acknowledged.
+  `SV_ExecuteClientMessage` resets it to `-1` at the top of every client message, so a stale
+  positive across a pause transition is not even representable. The one case that genuinely
+  needs nodelta — nothing acked yet — is still covered by the surviving `delta_sequence == -1`
+  test.
+
+  Deleted rather than narrowed. RH-10's per-slot variant was written and then dropped for this
+  same reason, and leaving scaffolding in place invites the next person to refine it instead of
+  removing it. `s_ktp_lastPauseState` went with it; it existed only to arm the counter.
+
+---
+
 ## [KTP-ReHLDS `3.22.0.929`] - 2026-07-16
 
 Two threads land together: the `SV_ClientUserInfoChanged` re-enable (the engine root

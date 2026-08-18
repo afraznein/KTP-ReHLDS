@@ -33,8 +33,6 @@
 #include <sys/resource.h>  // KTP: per-frame page-fault counters for spike attribution
 #endif
 
-// KTP: Forward declaration for spawn sub-phase profiling (defined later in this file)
-extern cvar_t ktp_profile_frame;
 
 typedef struct full_packet_entities_s
 {
@@ -69,13 +67,6 @@ server_t g_psv;
 // KTP Modification: Flag to track temporary unpause for chat (not static, used in rehlds_api_impl.cpp)
 int g_ktp_temporary_unpause = 0;
 
-// KTP: Track pause state transitions for nodelta — only force nodelta for a few frames
-// after pause state changes, not every frame while paused
-static int s_ktp_pauseTransitionFrames = 0;
-static int s_ktp_lastPauseState = 0;
-
-// KTP: Per-frame cvar cache — set once in SV_Frame_Internal, used in hot per-client loops
-float g_ktp_cached_sv_timeout = 65.0f;
 
 // KTP: Forward declaration — definition lower in the file (~line 7171) alongside the
 // other profiler peak globals. Written once per frame at the top of SV_Frame_Internal
@@ -3759,7 +3750,7 @@ int SV_Rcon_Validate(void)
 	if (SV_CheckRconFailure(&net_from))
 	{
 		Con_Printf("Banning %s for rcon hacking attempts\n", NET_AdrToString(net_from));
-		Cbuf_AddText(va("addip %i %s\n", (int)sv_rcon_banpenalty.value, NET_BaseAdrToString(net_from)));
+		SV_AutoBanAddress((float)(int)sv_rcon_banpenalty.value, net_from);
 		return RCON_RESULT_BANNING;
 	}
 
@@ -3776,7 +3767,7 @@ int SV_Rcon_Validate(void)
 	if (!SV_CheckRconAllowed(&net_from))
 	{
 		Con_Printf("Banning %s for rcon attempts without privileged\n", NET_AdrToString(net_from));
-		Cbuf_AddText(va("addip %i %s\n", (int)sv_rcon_banpenalty.value, NET_BaseAdrToString(net_from)));
+		SV_AutoBanAddress((float)(int)sv_rcon_banpenalty.value, net_from);
 		return RCON_RESULT_NOPRIVILEGE;
 	}
 
@@ -4101,10 +4092,12 @@ bool EXT_FUNC NET_GetPacketPreprocessor(uint8* data, unsigned int len, const net
 
 // KTP: Forward declarations for profiling variables
 // (defined later in this file, after SV_Frame_Internal)
-extern cvar_t ktp_profile_frame;
 extern double g_ktp_send_worst_client_time;
 extern int g_ktp_send_worst_client_slot;
 extern int g_ktp_send_client_count;
+extern double g_ktp_send_worst_time_peak;   // interval peaks, reset in the summary block
+extern int g_ktp_send_worst_slot_peak;
+extern int g_ktp_send_count_peak;
 extern int g_ktp_read_pkt_count;
 extern int g_ktp_read_pkt_connectionless;
 extern int g_ktp_read_pkt_client;
@@ -4151,7 +4144,17 @@ void SV_ReadPackets(void)
 		if (SV_FilterPacket())
 		{
 			SV_SendBan();
-			if (ktp_rp) ktp_t0 = Sys_FloatTime();
+			if (ktp_rp)
+			{
+				// Charge rejected packets too -- a ban/preprocess flood is exactly
+				// what [KTP_SPIKE_READ] exists to explain, and resetting t0 here
+				// silently discarded that cost.
+				ktp_t1 = Sys_FloatTime();
+				double elapsed = ktp_t1 - ktp_t0;
+				ktp_proc_acc += elapsed;
+				if (elapsed > ktp_worst) ktp_worst = elapsed;
+				ktp_t0 = ktp_t1;
+			}
 			continue;
 		}
 #endif
@@ -4159,7 +4162,17 @@ void SV_ReadPackets(void)
 		bool pass = g_RehldsHookchains.m_PreprocessPacket.callChain(NET_GetPacketPreprocessor, net_message.data, net_message.cursize, net_from);
 		if (!pass)
 		{
-			if (ktp_rp) ktp_t0 = Sys_FloatTime();
+			if (ktp_rp)
+			{
+				// Charge rejected packets too -- a ban/preprocess flood is exactly
+				// what [KTP_SPIKE_READ] exists to explain, and resetting t0 here
+				// silently discarded that cost.
+				ktp_t1 = Sys_FloatTime();
+				double elapsed = ktp_t1 - ktp_t0;
+				ktp_proc_acc += elapsed;
+				if (elapsed > ktp_worst) ktp_worst = elapsed;
+				ktp_t0 = ktp_t1;
+			}
 			continue;
 		}
 
@@ -4173,7 +4186,17 @@ void SV_ReadPackets(void)
 				if (SV_FilterPacket())
 				{
 					SV_SendBan();
-					if (ktp_rp) ktp_t0 = Sys_FloatTime();
+					if (ktp_rp)
+			{
+				// Charge rejected packets too -- a ban/preprocess flood is exactly
+				// what [KTP_SPIKE_READ] exists to explain, and resetting t0 here
+				// silently discarded that cost.
+				ktp_t1 = Sys_FloatTime();
+				double elapsed = ktp_t1 - ktp_t0;
+				ktp_proc_acc += elapsed;
+				if (elapsed > ktp_worst) ktp_worst = elapsed;
+				ktp_t0 = ktp_t1;
+			}
 					continue;
 				}
 #endif
@@ -4268,8 +4291,7 @@ void SV_CheckTimeouts(void)
 	client_t *cl;
 	float droptime;
 
-	// KTP: Use frame-cached cvar value instead of per-frame cvar dereference
-	droptime = realtime - g_ktp_cached_sv_timeout;
+	droptime = realtime - sv_timeout.value;
 
 	for (i = 0, cl = g_psvs.clients; i < g_psvs.maxclients; i++, cl++)
 	{
@@ -5011,11 +5033,11 @@ int SV_CreatePacketEntities_internal(sv_delta_t type, client_t *client, packet_e
 
 void SV_EmitPacketEntities(client_t *client, packet_entities_t *to, sizebuf_t *msg)
 {
-	// KTP Modification: Force nodelta only on pause state transitions (not every paused frame)
-	// During transition, delta sequences may be stale — flush with nodelta for a few frames
-	// After transition, resume delta compression to avoid flooding clients at 1000Hz
+	// The delta baseline is ack-driven: delta_sequence comes from the client's own packet
+	// and indexes client->frames[], so a pause transition cannot staleness it. -1 (nothing
+	// acked yet) is the only case that needs nodelta.
 	sv_delta_t deltaType;
-	if (client->delta_sequence == -1 || s_ktp_pauseTransitionFrames > 0) {
+	if (client->delta_sequence == -1) {
 		deltaType = sv_packet_nodelta;
 	} else {
 		deltaType = sv_packet_delta;
@@ -5606,6 +5628,14 @@ void SV_SendClientMessages(void)
 			else
 				Netchan_Transmit(&cl->netchan, 0, NULL);
 		}
+	}
+	// KTP: Roll this frame's worst client into the interval peak. One compare per
+	// frame, and it captures the peak frame's own client count rather than a
+	// separate maximum.
+	if (ktp_send_prof && g_ktp_send_worst_client_time > g_ktp_send_worst_time_peak) {
+		g_ktp_send_worst_time_peak = g_ktp_send_worst_client_time;
+		g_ktp_send_worst_slot_peak = g_ktp_send_worst_client_slot;
+		g_ktp_send_count_peak = g_ktp_send_client_count;
 	}
 	SV_CleanupEnts();
 }
@@ -7241,6 +7271,10 @@ cvar_t ktp_profile_frame = { "ktp_profile_frame", "0", 0, 0.0f, NULL };
 cvar_t ktp_profile_interval = { "ktp_profile_interval", "10", 0, 0.0f, NULL };
 cvar_t ktp_profile_spike_threshold = { "ktp_profile_spike_threshold", "5.0", 0, 0.0f, NULL };
 cvar_t ktp_profile_steam_detail = { "ktp_profile_steam_detail", "0", 0, 0.0f, NULL };
+// Minimum share of the spike frame a phase must own before its detail line is
+// emitted. 0 restores the pre-.931 always-emit behaviour. Not archived and set in
+// no shipped cfg, so an rcon override reverts at the next restart.
+cvar_t ktp_profile_spike_phase_share = { "ktp_profile_spike_phase_share", "0.25", 0, 0.0f, NULL };
 
 // KTP: Profiling accumulators (static to preserve across frames)
 static double g_ktp_profile_acc_readpackets = 0.0;
@@ -7297,9 +7331,12 @@ extern double g_ktp_phys_entloop_peak;
 // conio is a subset of logio whenever mp_logecho is on, and Log_Printf calls
 // made between frames (Cbuf_Execute) land in the next frame's bucket.
 double g_ktp_logio_frame = 0.0;
-double g_ktp_conio_frame = 0.0;
+// Atomic microseconds, not a double: Con_Printf is reachable from the Steam and
+// -netthread background threads on sendto error paths, so a plain double is a torn
+// read away from printing garbage on the conprintf_worst tripwire.
+std::atomic<uint32> g_ktp_conio_frame_us(0);
 double g_ktp_logio_worst = 0.0;
-double g_ktp_conio_worst = 0.0;
+std::atomic<uint32> g_ktp_conio_worst_us(0);
 // logio split: which sink blocks — logaddr = Netchan_OutOfBandPrint UDP sendto
 // per logaddress (HLStatsX), file = FS_FPrintf to qconsole.log on disk.
 double g_ktp_logaddr_io_frame = 0.0;
@@ -7312,6 +7349,7 @@ double g_ktp_file_io_worst = 0.0;
 extern cvar_t ktp_log_async;
 extern std::atomic<uint32> g_ktp_logq_drops;
 extern std::atomic<uint32> g_ktp_fileq_worst_us;
+uint32 KTP_Steam_CallbackDrops(void);
 extern std::atomic<uint32> g_ktp_logq_ctl_drops;
 qboolean KTP_Log_WriterAlive(void);
 
@@ -7338,6 +7376,11 @@ double g_ktp_phys_paused_hud = 0.0;
 double g_ktp_send_worst_client_time = 0.0;
 int g_ktp_send_worst_client_slot = -1;
 int g_ktp_send_client_count = 0;
+// Interval peaks. The three above reset every frame, so the interval summary was
+// printing whichever frame happened to cross the boundary and never the spike.
+double g_ktp_send_worst_time_peak = 0.0;
+int g_ktp_send_worst_slot_peak = -1;
+int g_ktp_send_count_peak = 0;
 
 // KTP: Helper function to broadcast pause state to clients
 // Respects ktp_silent_pause cvar - if enabled, skips sending svc_setpause
@@ -7967,6 +8010,105 @@ void SV_ListId_f(void)
 	}
 }
 
+// RH-02: ban mechanism, callable without going through the console command. The
+// console path is policy-blocked below; the engine's own protections must not be.
+void SV_AddIPFilterInternal(float banTime, const ipfilter_t &tempFilter, bool sweepClients)
+{
+	int i = 0;
+	for (; i < numipfilters; i++)
+	{
+		if (ipfilters[i].mask == tempFilter.mask && ipfilters[i].compare.u32 == tempFilter.compare.u32)
+		{
+			ipfilters[i].banTime = banTime;
+			ipfilters[i].banEndTime = (banTime == 0.0f) ? 0.0f : banTime * 60.0f + realtime;
+#ifdef REHLDS_FIXES
+			ipfilters[i].cidr = tempFilter.cidr;
+#endif // REHLDS_FIXES
+			return;
+		}
+	}
+
+	if (numipfilters >= MAX_IPFILTERS)
+	{
+		Con_Printf("IP filter list is full\n");
+		return;
+	}
+
+	++numipfilters;
+	if (banTime < 0.0099999998f)
+		banTime = 0.0f;
+
+	ipfilters[i].banTime = banTime;
+	ipfilters[i].compare = tempFilter.compare;
+	ipfilters[i].banEndTime = (banTime == 0.0f) ? 0.0f : banTime * 60.0f + realtime;
+	ipfilters[i].mask = tempFilter.mask;
+#ifdef REHLDS_FIXES
+	ipfilters[i].cidr = tempFilter.cidr;
+#endif // REHLDS_FIXES
+
+#ifdef REHLDS_FIXES
+	char reason[32];
+	if (banTime == 0.0f)
+		Q_strcpy(reason, "permanently");
+	else
+		Q_sprintf(reason, "for %g minutes", banTime);
+#endif // REHLDS_FIXES
+
+	if (!sweepClients)
+		return;
+
+	// The sweep writes the globals host_client and net_from (SV_FilterPacket reads net_from),
+	// so save and restore them. Callers that reach here mid-packet -- SV_Rcon aliases the
+	// global as net_from_ -- would otherwise redirect their reply and their audit line to
+	// whichever player happened to occupy the last swept slot.
+	client_t *savedHostClient = host_client;
+	netadr_t savedNetFrom = net_from;
+
+	for (int j = 0; j < g_psvs.maxclients; j++)
+	{
+		host_client = &g_psvs.clients[j];
+		if (!host_client->connected || !host_client->active || !host_client->spawned || host_client->fakeclient)
+			continue;
+
+		Q_memcpy(&net_from, &host_client->netchan.remote_address, sizeof(net_from));
+		if (SV_FilterPacket())
+		{
+#ifdef REHLDS_FIXES
+			SV_ClientPrintf("The server operator has added you to banned list %s\n", reason);
+			SV_DropClient(host_client, 0, "Added to banned list %s", reason);
+#else // REHLDS_FIXES
+			SV_ClientPrintf("The server operator has added you to banned list\n");
+			SV_DropClient(host_client, 0, "Added to banned list");
+#endif // REHLDS_FIXES
+		}
+	}
+
+	// Restored after the loop, not around each drop: the REHLDS_FIXES msg_readcount guard in
+	// SV_DropClient_internal keys off host_client == the client being dropped.
+	host_client = savedHostClient;
+	net_from = savedNetFrom;
+}
+
+// RH-02: what the engine's own protections call instead of Cbuf_AddText("addip ..."),
+// which routed them through the policy-blocked console command and silently did nothing.
+void SV_AutoBanAddress(float banMinutes, const netadr_t &adr)
+{
+	netadr_t adrCopy = adr;
+	const char *adrStr = NET_BaseAdrToString(adrCopy);
+
+	ipfilter_t filter;
+	if (!StringToFilter(adrStr, &filter))
+		return;
+
+	// No client sweep: every caller drops its own offender, and an rcon prober is not a
+	// client at all. Sweeping here would also clobber host_client/net_from mid-packet.
+	SV_AddIPFilterInternal(banMinutes, filter, false);
+
+	// These protections were inert for months; a permanent ban with no durable record is
+	// how that becomes "the data server randomly stopped working".
+	Log_Printf("[KTP_AUTOBAN] addr=%s minutes=%g\n", adrStr, banMinutes);
+}
+
 void SV_AddIP_f(void)
 {
 	// KTP: Block addip command - require connected player via AMX plugin
@@ -8017,64 +8159,8 @@ void SV_AddIP_f(void)
 		return;
 	}
 
-	int i = 0;
-	for (; i < numipfilters; i++)
-	{
-		if (ipfilters[i].mask == tempFilter.mask && ipfilters[i].compare.u32 == tempFilter.compare.u32)
-		{
-			ipfilters[i].banTime = banTime;
-			ipfilters[i].banEndTime = (banTime == 0.0f) ? 0.0f : banTime * 60.0f + realtime;
-#ifdef REHLDS_FIXES
-			ipfilters[i].cidr = tempFilter.cidr;
-#endif // REHLDS_FIXES
-			return;
-		}
-	}
-
-	if (numipfilters >= MAX_IPFILTERS)
-	{
-		Con_Printf("IP filter list is full\n");
-		return;
-	}
-
-	++numipfilters;
-	if (banTime < 0.0099999998f)
-		banTime = 0.0f;
-
-	ipfilters[i].banTime = banTime;
-	ipfilters[i].compare = tempFilter.compare;
-	ipfilters[i].banEndTime = (banTime == 0.0f) ? 0.0f : banTime * 60.0f + realtime;
-	ipfilters[i].mask = tempFilter.mask;
-#ifdef REHLDS_FIXES
-	ipfilters[i].cidr = tempFilter.cidr;
-#endif // REHLDS_FIXES
-
-#ifdef REHLDS_FIXES
-	char reason[32];
-	if (banTime == 0.0f)
-		Q_strcpy(reason, "permanently");
-	else
-		Q_sprintf(reason, "for %g minutes", banTime);
-#endif // REHLDS_FIXES
-
-	for (int i = 0; i < g_psvs.maxclients; i++)
-	{
-		host_client = &g_psvs.clients[i];
-		if (!host_client->connected || !host_client->active || !host_client->spawned || host_client->fakeclient)
-			continue;
-
-		Q_memcpy(&net_from, &host_client->netchan.remote_address, sizeof(net_from));
-		if (SV_FilterPacket())
-		{
-#ifdef REHLDS_FIXES
-			SV_ClientPrintf("The server operator has added you to banned list %s\n", reason);
-			SV_DropClient(host_client, 0, "Added to banned list %s", reason);
-#else // REHLDS_FIXES
-			SV_ClientPrintf("The server operator has added you to banned list\n");
-			SV_DropClient(host_client, 0, "Added to banned list");
-#endif // REHLDS_FIXES
-		}
-	}
+	// Mechanism lives in SV_AddIPFilterInternal so a fix cannot land in only one copy.
+	SV_AddIPFilterInternal(banTime, tempFilter, true);
 }
 
 void SV_RemoveIP_f(void)
@@ -8724,6 +8810,41 @@ void SV_UpdatePausedHUD(void)
 	g_RehldsHookchains.m_SV_UpdatePausedHUD.callChain(SV_UpdatePausedHUD_Internal);
 }
 
+// KTP: one reset list, two callers -- the interval summary and the disabled->enabled
+// transition. They were separate lists and had already drifted apart.
+static void KTP_ProfileResetInterval(void)
+{
+	g_ktp_profile_acc_readpackets = 0.0;
+	g_ktp_profile_acc_physics = 0.0;
+	g_ktp_profile_acc_misc1 = 0.0;
+	g_ktp_profile_acc_sendmessages = 0.0;
+	g_ktp_profile_acc_post = 0.0;
+	g_ktp_profile_acc_steam = 0.0;
+	g_ktp_profile_acc_full = 0.0;
+	g_ktp_profile_acc_interframe = 0.0;
+	g_ktp_profile_acc_interframe_count = 0;
+	g_ktp_profile_acc_frames = 0;
+	g_ktp_profile_acc_edicts_max = 0;
+	g_ktp_profile_peak_readpackets = 0.0;
+	g_ktp_profile_peak_physics = 0.0;
+	g_ktp_profile_peak_misc1 = 0.0;
+	g_ktp_profile_peak_sendmessages = 0.0;
+	g_ktp_profile_peak_post = 0.0;
+	g_ktp_profile_peak_steam = 0.0;
+	g_ktp_profile_peak_full = 0.0;
+	g_ktp_profile_peak_interframe = 0.0;
+	g_ktp_send_worst_time_peak = 0.0;
+	g_ktp_send_worst_slot_peak = -1;
+	g_ktp_send_count_peak = 0;
+	g_ktp_phys_startframe_peak = 0.0;
+	g_ktp_phys_entloop_peak = 0.0;
+	g_ktp_logio_worst = 0.0;
+	g_ktp_conio_worst_us.store(0, std::memory_order_relaxed);
+	g_ktp_logaddr_io_worst = 0.0;
+	g_ktp_file_io_worst = 0.0;
+	g_ktp_fileq_worst_us.store(0, std::memory_order_relaxed);  // logq_drops is lifetime, not reset
+}
+
 void SV_Frame()
 {
 	g_RehldsHookchains.m_SV_Frame.callChain(SV_Frame_Internal);
@@ -8742,6 +8863,21 @@ void EXT_FUNC SV_Frame_Internal()
 	qboolean ktp_profiling = (ktp_profile_frame.value != 0.0f);
 	g_ktp_profiling_enabled = (ktp_profiling != 0);  // Set global for sub-functions
 
+	// KTP: Re-enabling after a disabled stretch used to carry the old lifecycle
+	// state forward -- prev_frame_end from minutes ago produced a nonsense first
+	// interframe reading, and a stale last_log_time made the first summary cover
+	// an interval that never happened.
+	{
+		static qboolean s_ktp_profiling_was = 0;
+		if (ktp_profiling && !s_ktp_profiling_was)
+		{
+			KTP_ProfileResetInterval();
+			g_ktp_profile_prev_frame_end = 0.0;   // suppresses the first interframe sample
+			g_ktp_profile_last_log_time = realtime;
+		}
+		s_ktp_profiling_was = ktp_profiling;
+	}
+
 	if (ktp_profiling)
 	{
 		ktp_t_full_start = Sys_FloatTime();
@@ -8755,7 +8891,7 @@ void EXT_FUNC SV_Frame_Internal()
 
 		// Reset per-frame I/O accumulators (written by Log_Printf/Con_Printf)
 		g_ktp_logio_frame = 0.0;
-		g_ktp_conio_frame = 0.0;
+		g_ktp_conio_frame_us.store(0, std::memory_order_relaxed);
 		g_ktp_logaddr_io_frame = 0.0;
 		g_ktp_file_io_frame = 0.0;
 
@@ -8775,8 +8911,6 @@ void EXT_FUNC SV_Frame_Internal()
 #endif
 	}
 
-	// KTP: Cache hot cvars once per frame instead of reading per-client in loops
-	g_ktp_cached_sv_timeout = sv_timeout.value;
 
 	gGlobalVariables.frametime = host_frametime;
 	g_psv.oldtime = g_psv.time;
@@ -8801,14 +8935,6 @@ void EXT_FUNC SV_Frame_Internal()
 	// This lets us distinguish between temporary (for chat) and permanent (plugin) unpause
 	int wasPaused = g_psv.paused;
 	g_ktp_temporary_unpause = 0;  // Reset flag
-
-	// KTP: Track pause state transitions for nodelta flushing
-	if (wasPaused != s_ktp_lastPauseState) {
-		s_ktp_pauseTransitionFrames = 3;  // = 2 nodelta send frames (decrement below runs before the send)
-	}
-	s_ktp_lastPauseState = wasPaused;
-	if (s_ktp_pauseTransitionFrames > 0)
-		s_ktp_pauseTransitionFrames--;
 
 	// Store the restore decision NOW to prevent race condition
 	// If we check g_ktp_temporary_unpause later, a plugin could change it mid-frame
@@ -8990,7 +9116,7 @@ void EXT_FUNC SV_Frame_Internal()
 				// KTP: Capture frame I/O + fault counters before this block's own
 				// Log_Printf calls add to them.
 				double spike_logio = g_ktp_logio_frame;
-				double spike_conio = g_ktp_conio_frame;
+				double spike_conio = g_ktp_conio_frame_us.load(std::memory_order_relaxed) / 1000000.0;
 				double spike_logaddr = g_ktp_logaddr_io_frame;
 				double spike_file = g_ktp_file_io_frame;
 				long spike_minflt = 0, spike_majflt = 0;
@@ -9011,15 +9137,27 @@ void EXT_FUNC SV_Frame_Internal()
 					ktp_t_post * 1000.0,
 					ktp_t_steam * 1000.0,
 					gap * 1000.0);
-				// Always log read detail on spikes
-				Log_Printf("[KTP_SPIKE_READ] pkts=%d(cl=%d,conn=%d,frag=%d) recv=%.3fms proc=%.3fms worst=%.3fms\n",
-					g_ktp_read_pkt_count,
-					g_ktp_read_pkt_client,
-					g_ktp_read_pkt_connectionless,
-					g_ktp_read_pkt_fragment,
-					g_ktp_read_time_recv * 1000.0,
-					g_ktp_read_time_process * 1000.0,
-					g_ktp_read_worst_pkt * 1000.0);
+				// KTP: Gate each detail line on its phase owning a share of the
+				// frame — emitted unconditionally, every spike produced every
+				// line and the aggregator's per-phase counters were all the same
+				// number. The umbrella line above still carries every phase.
+				double spike_phase_floor = full_frame_time * ktp_profile_spike_phase_share.value;
+				// Not a sum: logaddr and file are timed INSIDE the logio span
+				// (sv_log.cpp), and Log_Printf's echo puts most of conio there too,
+				// so adding them double-counts. Worst single sink is the honest one.
+				double spike_io_worst = (spike_logio > spike_conio) ? spike_logio : spike_conio;
+
+				if (ktp_t_readpackets >= spike_phase_floor)
+				{
+					Log_Printf("[KTP_SPIKE_READ] pkts=%d(cl=%d,conn=%d,frag=%d) recv=%.3fms proc=%.3fms worst=%.3fms\n",
+						g_ktp_read_pkt_count,
+						g_ktp_read_pkt_client,
+						g_ktp_read_pkt_connectionless,
+						g_ktp_read_pkt_fragment,
+						g_ktp_read_time_recv * 1000.0,
+						g_ktp_read_time_process * 1000.0,
+						g_ktp_read_worst_pkt * 1000.0);
+				}
 				// KTP: Emit spike-frame phys sub-phases. Unlike [KTP_PROFILE]
 				// phys_detail_peak (interval peak), this captures the values
 				// produced by *this* spike frame — so a phys-dominant spike
@@ -9027,22 +9165,60 @@ void EXT_FUNC SV_Frame_Internal()
 				// startframe/entloop are populated when SV_Physics ran this frame;
 				// paused_startframe/paused_hud are populated when the paused else-
 				// branch ran. On any given spike at least one pair will be zero.
-				Log_Printf("[KTP_SPIKE_PHYS] startframe=%.3fms entloop=%.3fms paused_startframe=%.3fms paused_hud=%.3fms\n",
-					g_ktp_phys_startframe * 1000.0,
-					g_ktp_phys_entloop * 1000.0,
-					g_ktp_phys_paused_startframe * 1000.0,
-					g_ktp_phys_paused_hud * 1000.0);
+				if (ktp_t_physics >= spike_phase_floor)
+				{
+					Log_Printf("[KTP_SPIKE_PHYS] startframe=%.3fms entloop=%.3fms paused_startframe=%.3fms paused_hud=%.3fms\n",
+						g_ktp_phys_startframe * 1000.0,
+						g_ktp_phys_entloop * 1000.0,
+						g_ktp_phys_paused_startframe * 1000.0,
+						g_ktp_phys_paused_hud * 1000.0);
+				}
 				// KTP: Spike I/O attribution — log/console time spent this frame,
 				// split by sink (logaddr = logaddress UDP sendto, file = qconsole.log
 				// disk), plus the frame's page-fault delta. The entloop attribution
 				// (CP-master think, closed-source DoD) was retired post-audit; the
 				// [KTP_SPIKE_PHYS] entloop= field still flags a phys-dominant spike.
-				Log_Printf("[KTP_SPIKE_IO] logio=%.3fms logaddr=%.3fms file=%.3fms conio=%.3fms faults=%ld/%ld\n",
-					spike_logio * 1000.0,
-					spike_logaddr * 1000.0,
-					spike_file * 1000.0,
-					spike_conio * 1000.0,
-					spike_minflt, spike_majflt);
+				// Gated on its own worst sink rather than a named phase: I/O time is
+				// spread across the umbrella phases, so there is no single one to
+				// measure it against. faults= is carried on NO other line, and a
+				// major-fault stall costs no I/O time — so it must open this gate
+				// itself or it is suppressed exactly when it matters.
+				// Also emit when nothing else did: faults= lives on no other line, and a
+				// gap/misc1-dominated spike with a fault burst would otherwise carry no
+				// detail at all. Guarantees every spike has at least one attributing line.
+				bool ktp_any_detail = (ktp_t_readpackets >= spike_phase_floor)
+					|| (ktp_t_physics >= spike_phase_floor)
+					|| (ktp_t_sendmessages >= spike_phase_floor)
+					|| (ktp_t_steam >= spike_phase_floor);
+				if (spike_io_worst >= spike_phase_floor || spike_majflt > 0 || !ktp_any_detail)
+				{
+					Log_Printf("[KTP_SPIKE_IO] logio=%.3fms logaddr=%.3fms file=%.3fms conio=%.3fms faults=%ld/%ld\n",
+						spike_logio * 1000.0,
+						spike_logaddr * 1000.0,
+						spike_file * 1000.0,
+						spike_conio * 1000.0,
+						spike_minflt, spike_majflt);
+				}
+				// KTP: Spike-frame send attribution. These per-client values were already
+				// collected but only surfaced on the interval [KTP_PROFILE] send_detail
+				// line, so a send-dominant spike could not be attributed to a client.
+				if (ktp_t_sendmessages >= spike_phase_floor)
+				{
+					Log_Printf("[KTP_SPIKE_SEND] send=%.3fms clients=%d worst_slot=%d worst=%.3fms\n",
+						ktp_t_sendmessages * 1000.0,
+						g_ktp_send_client_count,
+						g_ktp_send_worst_client_slot,
+						g_ktp_send_worst_client_time * 1000.0);
+				}
+				// KTP: No sub-phase instrumentation -- ktp_t_steam is one span around the
+				// Steam block, so this carries the aggregate only. It exists because the
+				// aggregator counts the line and the column was otherwise structurally zero.
+				// Add sub-phases here if a steam-dominant spike needs a culprit.
+				if (ktp_t_steam >= spike_phase_floor)
+				{
+					Log_Printf("[KTP_SPIKE_STEAM] steam=%.3fms\n",
+						ktp_t_steam * 1000.0);
+				}
 			}
 		}
 
@@ -9098,18 +9274,23 @@ void EXT_FUNC SV_Frame_Internal()
 			// file_worst splits the logio sink: UDP sendto to a logaddress
 			// (HLStatsX backpressure) vs FS_FPrintf to qconsole.log (disk).
 			Log_Printf("[KTP_PROFILE] io: logprintf_worst=%.3fms conprintf_worst=%.3fms logaddr_worst=%.3fms file_worst=%.3fms fileq_worst=%.3fms logq_drops=%u ctl_drops=%u writer_alive=%d\n",
-				g_ktp_logio_worst * 1000.0, g_ktp_conio_worst * 1000.0,
+				g_ktp_logio_worst * 1000.0, g_ktp_conio_worst_us.load(std::memory_order_relaxed) / 1000.0,
 				g_ktp_logaddr_io_worst * 1000.0, g_ktp_file_io_worst * 1000.0,
 				g_ktp_fileq_worst_us.load(std::memory_order_relaxed) / 1000.0,
 				g_ktp_logq_drops.load(std::memory_order_relaxed),
 				g_ktp_logq_ctl_drops.load(std::memory_order_relaxed),
 				KTP_Log_WriterAlive() ? 1 : 0);
-			// Per-client send detail
-			if (g_ktp_send_worst_client_slot >= 0) {
-				client_t *worst_cl = &g_psvs.clients[g_ktp_send_worst_client_slot];
-				Log_Printf("[KTP_PROFILE] send_detail: worst_client=%d(%s) time=%.3fms clients_sent=%d\n",
-					g_ktp_send_worst_client_slot, worst_cl->name,
-					g_ktp_send_worst_client_time * 1000.0, g_ktp_send_client_count);
+			uint32 ktp_cb_drops = KTP_Steam_CallbackDrops();
+			if (ktp_cb_drops)
+				Log_Printf("[KTP_STEAM_CB_DROPS] lifetime=%u -- auth/policy callbacks were discarded\n", ktp_cb_drops);
+			// Per-client send detail — interval peak, not the boundary frame.
+			// The slot indexes a persistent array, so a client who left mid-interval
+			// leaves a stale name rather than an invalid read.
+			if (g_ktp_send_worst_slot_peak >= 0) {
+				client_t *worst_cl = &g_psvs.clients[g_ktp_send_worst_slot_peak];
+				Log_Printf("[KTP_PROFILE] send_detail_peak: worst_client=%d(%s) time=%.3fms clients_sent=%d\n",
+					g_ktp_send_worst_slot_peak, worst_cl->name,
+					g_ktp_send_worst_time_peak * 1000.0, g_ktp_send_count_peak);
 			}
 
 			// Inter-frame gap stats
@@ -9120,32 +9301,7 @@ void EXT_FUNC SV_Frame_Internal()
 				avg_interframe, peak_interframe);
 
 			// Reset accumulators
-			g_ktp_profile_acc_readpackets = 0.0;
-			g_ktp_profile_acc_physics = 0.0;
-			g_ktp_profile_acc_misc1 = 0.0;
-			g_ktp_profile_acc_sendmessages = 0.0;
-			g_ktp_profile_acc_post = 0.0;
-			g_ktp_profile_acc_steam = 0.0;
-			g_ktp_profile_acc_full = 0.0;
-			g_ktp_profile_acc_interframe = 0.0;
-			g_ktp_profile_acc_interframe_count = 0;
-			g_ktp_profile_acc_frames = 0;
-			g_ktp_profile_acc_edicts_max = 0;
-			g_ktp_profile_peak_readpackets = 0.0;
-			g_ktp_profile_peak_physics = 0.0;
-			g_ktp_profile_peak_misc1 = 0.0;
-			g_ktp_profile_peak_sendmessages = 0.0;
-			g_ktp_profile_peak_post = 0.0;
-			g_ktp_profile_peak_steam = 0.0;
-			g_ktp_profile_peak_full = 0.0;
-			g_ktp_profile_peak_interframe = 0.0;
-			g_ktp_phys_startframe_peak = 0.0;
-			g_ktp_phys_entloop_peak = 0.0;
-			g_ktp_logio_worst = 0.0;
-			g_ktp_conio_worst = 0.0;
-			g_ktp_logaddr_io_worst = 0.0;
-			g_ktp_file_io_worst = 0.0;
-			g_ktp_fileq_worst_us.store(0, std::memory_order_relaxed);  // logq_drops is lifetime, not reset
+			KTP_ProfileResetInterval();
 			g_ktp_profile_last_log_time = current_time;
 		}
 	}
@@ -9402,6 +9558,7 @@ void SV_Init(void)
 	Cvar_RegisterVariable(&ktp_profile_interval);
 	Cvar_RegisterVariable(&ktp_profile_spike_threshold);
 	Cvar_RegisterVariable(&ktp_profile_steam_detail);
+	Cvar_RegisterVariable(&ktp_profile_spike_phase_share);
 
 	// KTP: Async log-file writer (mode latches at Log_Open, i.e. next map)
 	Cvar_RegisterVariable(&ktp_log_async);

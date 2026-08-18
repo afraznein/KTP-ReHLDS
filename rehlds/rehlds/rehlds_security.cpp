@@ -68,7 +68,7 @@ void CMoveCommandRateLimiter::CheckBurstRate(unsigned int clientId) {
 		else
 		{
 			Con_DPrintf("%s Banned for move commands flooding (burst) (%.1f)\n", cl->name, (m_CurrentMoveCmds[clientId] / dt));
-			Cbuf_AddText(va("addip %.1f %s\n", sv_rehlds_movecmdrate_burst_punish.value, NET_BaseAdrToString(cl->netchan.remote_address)));
+			SV_AutoBanAddress(sv_rehlds_movecmdrate_burst_punish.value, cl->netchan.remote_address);
 			SV_DropClient(cl, false, "Banned for move commands flooding (burst)");
 		}
 	}
@@ -88,7 +88,7 @@ void CMoveCommandRateLimiter::CheckAverageRate(unsigned int clientId) {
 		else
 		{
 			Con_DPrintf("%s Banned for move commands flooding (Avg) (%.1f)\n", cl->name, m_AverageMoveCmdRate[clientId]);
-			Cbuf_AddText(va("addip %.1f %s\n", sv_rehlds_movecmdrate_avg_punish.value, NET_BaseAdrToString(cl->netchan.remote_address)));
+			SV_AutoBanAddress(sv_rehlds_movecmdrate_avg_punish.value, cl->netchan.remote_address);
 			SV_DropClient(cl, false, "Banned for move commands flooding (Avg)");
 		}
 	}
@@ -149,7 +149,7 @@ void CStringCommandsRateLimiter::CheckBurstRate(unsigned int clientId) {
 		else
 		{
 			Con_DPrintf("%s Banned for string commands flooding (burst) (%.1f)\n", cl->name, (m_CurrentStringCmds[clientId] / dt));
-			Cbuf_AddText(va("addip %.1f %s\n", sv_rehlds_stringcmdrate_burst_punish.value, NET_BaseAdrToString(cl->netchan.remote_address)));
+			SV_AutoBanAddress(sv_rehlds_stringcmdrate_burst_punish.value, cl->netchan.remote_address);
 			SV_DropClient(cl, false, "Banned for string commands flooding (burst)");
 		}
 	}
@@ -169,7 +169,7 @@ void CStringCommandsRateLimiter::CheckAverageRate(unsigned int clientId) {
 		else
 		{
 			Con_DPrintf("%s Banned for string commands flooding (Avg) (%.1f)\n", cl->name, m_AverageStringCmdRate[clientId]);
-			Cbuf_AddText(va("addip %.1f %s\n", sv_rehlds_stringcmdrate_avg_punish.value, NET_BaseAdrToString(cl->netchan.remote_address)));
+			SV_AutoBanAddress(sv_rehlds_stringcmdrate_avg_punish.value, cl->netchan.remote_address);
 			SV_DropClient(cl, false, "Banned for string commands flooding (Avg)");
 		}
 	}

@@ -1417,22 +1417,27 @@ void NET_FlushQueues()
 
 int NET_SendLong(netsrc_t sock, SOCKET s, const char *buf, int len, int flags, const struct sockaddr *to, int tolen)
 {
-	static long gSequenceNumber = 1;
+	// Atomic: the Steam background thread (.913) also reaches this split path, so a
+	// plain static raced the game thread. The local snapshot below matters too --
+	// the old code incremented and re-read separately, so the header and the log line
+	// could disagree under concurrency.
+	static std::atomic<long> gSequenceNumber(1);
 
 	// Do we need to break this packet up?
 	if (sock == NS_SERVER && len > MAX_ROUTEABLE_PACKET)
 	{
 		// yep
-		gSequenceNumber++;
-		if (gSequenceNumber < 0)
+		long ktp_seq = gSequenceNumber.fetch_add(1, std::memory_order_relaxed) + 1;
+		if (ktp_seq < 0)
 		{
-			gSequenceNumber = 1;
+			gSequenceNumber.store(1, std::memory_order_relaxed);
+			ktp_seq = 1;
 		}
 
 		char packet[MAX_ROUTEABLE_PACKET];
 		SPLITPACKET *pPacket = (SPLITPACKET *)packet;
 		pPacket->netID = NET_HEADER_FLAG_SPLITPACKET;
-		pPacket->sequenceNumber = gSequenceNumber;
+		pPacket->sequenceNumber = ktp_seq;
 		int packetNumber = 0;
 		int totalSent = 0;
 		int packetCount = (len + SPLIT_SIZE - 1) / SPLIT_SIZE;
@@ -1456,7 +1461,7 @@ int NET_SendLong(netsrc_t sock, SOCKET s, const char *buf, int len, int flags, c
 					packetNumber + 1,
 					packetCount,
 					size,
-					gSequenceNumber,
+					ktp_seq,
 					NET_AdrToString(adr));
 			}
 

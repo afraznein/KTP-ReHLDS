@@ -158,7 +158,9 @@ int RunEngine()
 	// pingboost modes (4, 5) the unthrottled poll rate (~100k/sec) dominates
 	// kernel CPU time. 50ms cadence (~20 polls/sec) is imperceptible for admin
 	// input and collapses the syscall overhead by ~5000x.
+#ifdef __linux__
 	static int64_t s_last_console_poll_ns = 0;
+#endif
 
 #ifdef __linux__
 	// KTP Stage C: absolute-time 1ms grid for pingboost 2. Each iteration
@@ -242,12 +244,18 @@ int RunEngine()
 		sys->Sleep(1);
 #endif
 
+#ifdef __linux__
 		struct timespec cts;
 		clock_gettime(CLOCK_MONOTONIC, &cts);
 		int64_t now_ns = (int64_t)cts.tv_sec * 1000000000LL + (int64_t)cts.tv_nsec;
 		bool poll_console = (now_ns - s_last_console_poll_ns) >= 50000000LL;
 		if (poll_console)
 			s_last_console_poll_ns = now_ns;
+#else
+		// Windows keeps the stock every-iteration poll: the throttle exists for the
+		// Linux 1000fps spin, and clock_gettime is not available here.
+		bool poll_console = true;
+#endif
 
 		if (poll_console)
 			Sys_PrepareConsoleInput();

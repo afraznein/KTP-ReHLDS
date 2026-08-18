@@ -28,6 +28,9 @@
 
 #include "precompiled.h"
 #include <thread>
+#ifndef _WIN32
+#include <pthread.h>
+#endif
 #include <chrono>
 #include <atomic>
 
@@ -72,7 +75,16 @@ static const int CALLBACK_QUEUE_SIZE = 256;
 static QueuedCallback s_callbackQueue[CALLBACK_QUEUE_SIZE];
 static std::atomic<int> s_queueHead{0};
 static std::atomic<int> s_queueTail{0};
-static std::thread* s_steamThread = nullptr;
+static std::atomic<uint32> s_callbackDrops{0};  // lifetime; expect 0 forever
+// pthread/CreateThread rather than std::thread: this engine builds -fno-exceptions,
+// so a failed std::thread ctor aborts the process instead of degrading. Same
+// convention as the async log writer and the -netthread port.
+#ifdef _WIN32
+static HANDLE s_steamThreadHandle = nullptr;
+#else
+static pthread_t s_steamThreadId;
+#endif
+static bool s_steamThreadCreated = false;
 static std::atomic<bool> s_steamThreadRunning{false};
 
 // ============================================================
@@ -228,12 +240,27 @@ static void SteamCallbackQueue_Push(const QueuedCallback &cb)
 	int head = s_queueHead.load(std::memory_order_relaxed);
 	int next = (head + 1) % CALLBACK_QUEUE_SIZE;
 	if (next == s_queueTail.load(std::memory_order_acquire))
-		return; // Queue full — drop callback (should never happen)
+	{
+		// "Should never happen" with no counter is indistinguishable from
+		// "never happened". Auth and policy responses come through here.
+		s_callbackDrops.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
 	s_callbackQueue[head] = cb;
 	s_queueHead.store(next, std::memory_order_release);
 }
 
-static void Steam_ThreadFunc()
+// Read from the game thread only -- the Steam thread must never reach Con_Printf.
+uint32 KTP_Steam_CallbackDrops(void)
+{
+	return s_callbackDrops.load(std::memory_order_relaxed);
+}
+
+#ifdef _WIN32
+static DWORD WINAPI Steam_ThreadFunc(LPVOID)
+#else
+static void *Steam_ThreadFunc(void *)
+#endif
 {
 	char szOutBuf[4096];
 
@@ -243,8 +270,10 @@ static void Steam_ThreadFunc()
 		CRehldsPlatformHolder::get()->SteamGameServer_RunCallbacks();
 
 		// Drain outgoing Steam packets (master server heartbeats, auth responses)
-		// NET_SendPacket uses sendto() which is atomic on Linux UDP sockets —
-		// safe to call from background thread concurrently with game traffic.
+		// The sendto() itself is atomic, but that never made the PATH safe: everything
+		// NET_SendLong touches has to be checked too. gSequenceNumber was a plain
+		// static and raced here until .931 made it atomic. Audit shared state before
+		// adding anything to this call.
 		uint16 port;
 		uint32 ip;
 		int iLen = CRehldsPlatformHolder::get()->SteamGameServer()->GetNextOutgoingPacket(szOutBuf, sizeof(szOutBuf), &ip, &port);
@@ -267,6 +296,11 @@ static void Steam_ThreadFunc()
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	}
+#ifdef _WIN32
+	return 0;
+#else
+	return nullptr;
+#endif
 }
 
 // ============================================================
@@ -800,8 +834,8 @@ void CSteam3Server::RunFrame()
 	}
 
 	// KTP: SendPackets moved to background thread (Steam_ThreadFunc).
-	// NET_SendPacket uses sendto() which is atomic on Linux UDP — safe
-	// for concurrent calls from game thread and Steam thread.
+	// sendto() is atomic; the call path was not. See Steam_ThreadFunc -- shared
+	// state inside NET_SendLong needed fixing separately.
 
 	// KTP: Log steam detail when any sub-operation exceeded 1ms
 	// Note: sendpackets now runs on background thread, not measured here
@@ -1060,11 +1094,16 @@ void Steam_Shutdown()
 {
 	// KTP: Stop background callback thread before shutdown
 	s_steamThreadRunning.store(false, std::memory_order_relaxed);
-	if (s_steamThread)
+	if (s_steamThreadCreated)
 	{
-		s_steamThread->join();
-		delete s_steamThread;
-		s_steamThread = nullptr;
+#ifdef _WIN32
+		WaitForSingleObject(s_steamThreadHandle, INFINITE);
+		CloseHandle(s_steamThreadHandle);
+		s_steamThreadHandle = nullptr;
+#else
+		pthread_join(s_steamThreadId, nullptr);
+#endif
+		s_steamThreadCreated = false;
 	}
 
 	if (Steam3Server())
@@ -1087,10 +1126,23 @@ void Steam_Activate()
 	Steam3Server()->Activate();
 
 	// KTP: Start background callback thread
-	if (!s_steamThread)
+	if (!s_steamThreadCreated)
 	{
 		s_steamThreadRunning.store(true, std::memory_order_relaxed);
-		s_steamThread = new std::thread(Steam_ThreadFunc);
+#ifdef _WIN32
+		s_steamThreadHandle = CreateThread(0, 0, Steam_ThreadFunc, 0, 0, nullptr);
+		if (!s_steamThreadHandle)
+#else
+		if (pthread_create(&s_steamThreadId, nullptr, Steam_ThreadFunc, nullptr) != 0)
+#endif
+		{
+			// No synchronous fallback exists -- .913 moved every Steam pump onto this
+			// thread -- so a silent continue would leave the server unable to heartbeat
+			// or authenticate with no symptom. Fail loudly, as NET_StartThread does.
+			s_steamThreadRunning.store(false, std::memory_order_relaxed);
+			Sys_Error("%s: couldn't create the Steam callback thread\n", __func__);
+		}
+		s_steamThreadCreated = true;
 	}
 }
 

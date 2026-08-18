@@ -1504,7 +1504,7 @@ qboolean Netchan_ValidateDecompress(netchan_t *chan, int stream, unsigned int co
 		if (sv_net_incoming_decompression_punish.value >= 0)
 		{
 			Con_DPrintf("%s:Banned for malformed/abnormal bzip2 fragments from %s\n", NET_AdrToString(chan->remote_address), host_client->name);
-			Cbuf_AddText(va("addip %.1f %s\n", sv_net_incoming_decompression_punish.value, NET_BaseAdrToString(chan->remote_address)));
+			SV_AutoBanAddress(sv_net_incoming_decompression_punish.value, chan->remote_address);
 		}
 
 		return FALSE;

@@ -27,6 +27,10 @@
 */
 
 #include "precompiled.h"
+#include <atomic>  // KTP: conio telemetry is cross-thread
+#ifndef _WIN32
+#include <pthread.h>
+#endif
 
 void(*Launcher_ConsolePrintf)(char *, ...);
 char *(*Launcher_GetLocalizedString)(unsigned int);
@@ -1648,8 +1652,9 @@ void Con_DebugLog(const char *file, const char *fmt, ...)
 // KTP: I/O timing for the profiler — covers the stdout (tmux pty) write and
 // the qconsole.log condebug flush, both of which can block on backpressure.
 extern bool g_ktp_profiling_enabled;
-extern double g_ktp_conio_frame;  // accumulated Con_Printf time this frame
-extern double g_ktp_conio_worst;  // worst single Con_Printf this interval
+// Atomic us: Con_Printf runs on background threads too (see the definition).
+extern std::atomic<uint32> g_ktp_conio_frame_us;  // accumulated Con_Printf time this frame
+extern std::atomic<uint32> g_ktp_conio_worst_us;  // worst single Con_Printf this interval
 
 void Con_Printf(const char *fmt, ...)
 {
@@ -1669,11 +1674,30 @@ void Con_Printf(const char *fmt, ...)
 	if (ktp_con_prof)
 	{
 		double ktp_con_dt = Sys_FloatTime() - ktp_con_t0;
-		g_ktp_conio_frame += ktp_con_dt;
-		if (ktp_con_dt > g_ktp_conio_worst)
-			g_ktp_conio_worst = ktp_con_dt;
+		uint32 ktp_con_us = (uint32)(ktp_con_dt * 1000000.0);
+		g_ktp_conio_frame_us.fetch_add(ktp_con_us, std::memory_order_relaxed);
+		// Load/compare/store, same benign race as g_ktp_fileq_worst_us: a lost
+		// sample is possible, a torn read is not.
+		if (ktp_con_us > g_ktp_conio_worst_us.load(std::memory_order_relaxed))
+			g_ktp_conio_worst_us.store(ktp_con_us, std::memory_order_relaxed);
 	}
 }
+
+// KTP: Con_Printf was main-thread-only by construction until the Steam (.913) and
+// -netthread receive threads started reaching it on sendto error paths. The rcon
+// redirect buffer below is unsynchronized and SV_FlushRedirect can send a packet,
+// so a background-thread diagnostic could corrupt or steal an operator's rcon reply.
+// Console output still happens; only the redirect capture is skipped off-thread.
+#ifdef _WIN32
+static DWORD s_ktpGameThreadId = 0;
+void KTP_MarkGameThread(void) { s_ktpGameThreadId = GetCurrentThreadId(); }
+static bool KTP_IsGameThread(void) { return s_ktpGameThreadId == 0 || GetCurrentThreadId() == s_ktpGameThreadId; }
+#else
+static pthread_t s_ktpGameThread;
+static bool s_ktpGameThreadSet = false;
+void KTP_MarkGameThread(void) { s_ktpGameThread = pthread_self(); s_ktpGameThreadSet = true; }
+static bool KTP_IsGameThread(void) { return !s_ktpGameThreadSet || pthread_equal(pthread_self(), s_ktpGameThread); }
+#endif
 
 void EXT_FUNC Con_Printf_internal(const char *Dest)
 {
@@ -1688,7 +1712,7 @@ void EXT_FUNC Con_Printf_internal(const char *Dest)
 		Sys_Printf("%s", Dest);
 	}
 
-	if (sv_redirected)
+	if (sv_redirected && KTP_IsGameThread())
 	{
 		if ((Q_strlen(outputbuf) + Q_strlen(Dest)) > sizeof(outputbuf) - 1)
 			SV_FlushRedirect();
