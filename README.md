@@ -216,14 +216,17 @@ unconditionally, every spike produced every line — and because the profile agg
 columns were four copies of the spike count and phase attribution was impossible.
 
 The umbrella `[KTP_SPIKE]` line is unchanged and still carries every phase on every
-spike, so a gated-out phase loses no data. A spike dominated by `misc1`/`post`/`gap`
-emits no detail line at all, which is correct — no detail line exists for those phases.
+spike, so a gated-out phase loses no data. `misc1`, `post` and `gap` have no detail line
+of their own, so a spike dominated by one of them clears no phase gate — `[KTP_SPIKE_IO]`
+then fires as the backstop, and every spike carries at least one attributing line.
 
 `[KTP_SPIKE_IO]` is gated differently, on the worst of its own two sinks: `logaddr` and
 `file` are timed *inside* the `logio` span, so summing the fields double-counts. It also
 emits whenever the frame took a major page fault, because `faults=` appears on no other
 line and a fault-driven stall costs no I/O time — gating on time alone would suppress it
-exactly when it is the answer.
+exactly when it is the answer. And it emits whenever none of the four phase gates opened,
+which is the backstop above: a spike with no attributing line at all is the one shape the
+aggregator cannot explain.
 
 | cvar | default | meaning |
 |---|---|---|
