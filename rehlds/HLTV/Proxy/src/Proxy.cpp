@@ -1516,11 +1516,15 @@ void Proxy::ExecuteRcon(NetAddress *from, char *command)
 	// depends on leftover stack contents. It held on the production build and broke
 	// on a 22.04 rebuild of the same commit, where every reply came back empty.
 	//
-	// A space (not \0) because consumers strip a fixed 6-byte prefix — 4 magic
-	// bytes, the A2A_PRINT marker, and this byte. Sending outputbuf + 1 would be
-	// the tidier fix and matches what the HLTV-side readers expect (they skip one
-	// byte), but it shifts the wire format and would break every existing parser in
-	// the KTP stack. Keep the format, make the byte deterministic.
+	// A space, not a NUL, rather than sending outputbuf + 1. The extra byte is a
+	// pre-existing HLTV-only quirk, not a convention — the engine's own A2A_PRINT
+	// replies (sv_main.cpp) carry no such byte, and both HLTV-side readers skip
+	// exactly one (ProcessConnectionlessMessage below, Server.cpp A2A_PRINT). So
+	// outputbuf + 1 is the tidier fix, would make this reply byte-identical to the
+	// engine's, and is a reasonable follow-up. It is not done here only because it
+	// shifts the wire format for consumers already written against HLTV's current
+	// shape — KTP's overlay clock poller strips six bytes, not five. Keep the
+	// format, make the byte deterministic.
 	outputbuf[0] = ' ';
 
 	m_System->Printf("Executing rcon \"%s\" from %s.\n", command, from->ToString());

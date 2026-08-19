@@ -28,18 +28,31 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
   (`bc30884`, Ubuntu 22.04, gcc-multilib) gets zero and **every** reply is empty.
   Measured A/B on that rebuild, two proxies, `status` × 25 each, swapping only
   `proxy.so`: stock `bc30884` produced `outputbuf[0] == 0x00`, a zero-character
-  payload and 50/50 empty replies (1400-byte packets, all NUL after the marker);
-  with this fix, `0x20`, a 410-character payload and 50/50 complete replies.
+  payload and 50/50 empty replies (6-byte packets: `NetSocket::OutOfBandPrintf`
+  sends `Q_strlen(string) + 1`, so an empty payload puts 4 magic bytes, the marker
+  and a NUL on the wire and nothing else); with this fix, `0x20`, a 410-character
+  payload and 50/50 complete replies.
 
-  This is a live fleet risk independent of any one consumer: if a rebuild lands the
-  other way, HLTV rcon goes silent everywhere at once and anything polling it
-  blinds itself without a single error.
+  Worth fixing on undefined-behaviour grounds alone, but it is not purely
+  theoretical either. `hltv-api.py` is unaffected — it writes `status` to the
+  cmdpipe FIFO and reads journald rather than speaking network rcon — while the
+  DoD HUD overlay's broadcast-clock poller (`DoD-hud-observer`,
+  `backend/src/handler/hltvSync.ts`) does poll the proxy over network rcon on a
+  heartbeat. If a rebuild lands the other way, HLTV rcon goes silent on every
+  instance at once and that poller blinds itself without a single error in any
+  log.
 
   Fixed by making the byte deterministic rather than by sending `outputbuf + 1`.
-  The latter is tidier and matches HLTV's own readers, which skip exactly one byte
-  (`Proxy::ProcessConnectionlessMessage`, `Server.cpp` `A2A_PRINT`), but it shifts
-  the wire format — existing parsers strip a fixed 6-byte prefix and would lose the
-  first character of every reply. Keep the format, make the byte deterministic.
+  That extra byte is a pre-existing HLTV-only quirk, not a stack-wide convention:
+  the engine's own `A2A_PRINT` replies (`sv_main.cpp`) carry no such byte, HLTV's
+  own readers skip exactly one (`Proxy::ProcessConnectionlessMessage`,
+  `Server.cpp` `A2A_PRINT`), and the KTP rcon parsers in `KTPInfrastructure`
+  (`tests/smoke/rcon.py`, `scripts/ktp-verify-deploy.py`) strip five. So
+  `outputbuf + 1` would make this reply byte-identical to the game server's and is
+  a reasonable follow-up. It is not taken here only because it shifts the wire
+  format for consumers already written against HLTV's current shape — the overlay
+  clock poller above strips six — which is a separate change needing its own
+  consumer sweep. Keep the format, make the byte deterministic.
 
 ### Added
 
