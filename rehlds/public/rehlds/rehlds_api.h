@@ -37,8 +37,11 @@
 #include "ObjectList.h"
 #include "pr_dlls.h"
 
+// 16 = KTP's bump off upstream 15: IRehldsHookchains has 13 entries upstream lacks,
+// one INSERTED at slot 42, so an upstream-15 consumer miscalls every slot past 41.
+// Byte-mirrored across KTPReHLDS/KTPReAPI/KTPAMXX - edit all three together.
 #define REHLDS_API_VERSION_MAJOR 3
-#define REHLDS_API_VERSION_MINOR 15
+#define REHLDS_API_VERSION_MINOR 16
 
 //Steam_NotifyClientConnect hook
 typedef IHookChain<qboolean, IGameClient*, const void*, unsigned int> IRehldsHook_Steam_NotifyClientConnect;
