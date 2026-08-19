@@ -1,0 +1,3 @@
+# Pin the checkout eol for shell scripts. With core.autocrlf=true a Windows
+# clone materializes CRLF and WSL bash dies on `do` before the build starts.
+*.sh text eol=lf
