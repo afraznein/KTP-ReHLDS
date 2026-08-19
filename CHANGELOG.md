@@ -38,6 +38,78 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
   advertising 15 against an engine at 16 — which still loads, silently, because the
   guard only checks the engine side.
 
+### Fixed
+
+- **HLTV rcon replies were empty or not, depending on leftover stack contents.**
+  `Proxy::ExecuteRcon` (`HLTV/Proxy/src/Proxy.cpp`) captures command output at
+  `outputbuf + 1` — `System::RedirectOutput` (`HLTV/Console/src/System.cpp:74`)
+  memsets from the pointer it is given, so it zeroes `[1..1023]` and never touches
+  `[0]` — but then formats the reply as `"%c%s"` from `outputbuf + 0`. Nothing in
+  the program writes that byte. When it happens to be `\0` the payload truncates to
+  nothing and the caller gets a well-formed packet carrying only the `A2A_PRINT`
+  marker.
+
+  The failure is deceptive: the command still executes and still prints to the
+  console and the log, so it presents as an auth or dispatch problem rather than a
+  formatting one.
+
+  It is undefined behaviour that happens to work. Production's 2026-02-26 build
+  gets a non-zero byte and replies correctly; a clean rebuild of the same commit
+  (`bc30884`, Ubuntu 22.04, gcc-multilib) gets zero and **every** reply is empty.
+  Measured A/B on that rebuild, two proxies, `status` × 25 each, swapping only
+  `proxy.so`: stock `bc30884` produced `outputbuf[0] == 0x00`, a zero-character
+  payload and 50/50 empty replies (6-byte packets: `NetSocket::OutOfBandPrintf`
+  sends `Q_strlen(string) + 1`, so an empty payload puts 4 magic bytes, the marker
+  and a NUL on the wire and nothing else); with this fix, `0x20`, a 410-character
+  payload and 50/50 complete replies.
+
+  Worth fixing on undefined-behaviour grounds alone, but it is not purely
+  theoretical either. `hltv-api.py` is unaffected — it writes `status` to the
+  cmdpipe FIFO and reads journald rather than speaking network rcon — while the
+  DoD HUD overlay's broadcast-clock poller (`DoD-hud-observer`,
+  `backend/src/handler/hltvSync.ts`) does poll the proxy over network rcon on a
+  heartbeat. If a rebuild lands the other way, HLTV rcon goes silent on every
+  instance at once and that poller blinds itself without a single error in any
+  log.
+
+  Fixed by making the byte deterministic rather than by sending `outputbuf + 1`.
+  That extra byte is a pre-existing HLTV-only quirk, not a stack-wide convention:
+  the engine's own `A2A_PRINT` replies (`sv_main.cpp`) carry no such byte, HLTV's
+  own readers skip exactly one (`Proxy::ProcessConnectionlessMessage`,
+  `Server.cpp` `A2A_PRINT`), and the KTP rcon parsers in `KTPInfrastructure`
+  (`tests/smoke/rcon.py`, `scripts/ktp-verify-deploy.py`) strip five. So
+  `outputbuf + 1` would make this reply byte-identical to the game server's and is
+  a reasonable follow-up. It is not taken here only because it shifts the wire
+  format for consumers already written against HLTV's current shape — the overlay
+  clock poller above strips six — which is a separate change needing its own
+  consumer sweep. Keep the format, make the byte deterministic.
+
+### Added
+
+- **`status` now reports the broadcast serve clock.** It printed the live world
+  clock and the `Delay` cvar, but not `m_ClientWorldTime` — the value that actually
+  decides which frame a spectator receives. Consumers aligning to the broadcast had
+  to infer the serve point as `GetTime() - Delay`, which is the target `RunClocks`
+  aims at rather than a measurement of where the clock sits, and which is only
+  valid while the clock has not sagged (`RunClocks` carries three corrective
+  branches precisely because it can).
+
+  One line in `Proxy::CMD_Status` printing the already-exported
+  `Proxy::GetSpectatorTime()` alongside a fractional world time. Purely additive —
+  no existing field changes. Verified against the existing parser: `Game Time`,
+  `Delay`, `Map`, `Server Name` and the proxy counts all still extract unchanged.
+
+  The fractional world time matters on its own. `Game Time MM:SS` is truncated, so
+  anything deriving a clock from it runs 0–1s low, one-sided, never high. Because a
+  poller's interval is fixed and the world clock advances 1:1 with wall time, every
+  sample lands on the same sub-second phase — so the error presents as a stable
+  *per-server constant* rather than as jitter, which is easy to mistake for a
+  calibration offset. Two proxies on one host, same binary, sampled together:
+  `Game Time 07:40` against a true `460.53` (0.53s lost) and `03:49` against
+  `229.01` (0.01s lost).
+
+  No engine binary changes, so no version bump; `HLTV/Proxy` only.
+
 ### Documentation
 
 - **`extensions.ini` was documented at a path that doesn't exist, with contents
@@ -123,13 +195,17 @@ console stamps a higher number than the title above. This cut ships **one** arti
   Each detail line is now gated on its phase owning at least `ktp_profile_spike_phase_share` of
   the frame (default `0.25`).
 
-  `[KTP_SPIKE_IO]` is gated differently, and neither difference is cosmetic. It uses the **worst
+  `[KTP_SPIKE_IO]` is gated differently, and none of the differences is cosmetic. It uses the **worst
   of its two sinks, not their sum**: `logaddr` and `file` are timed *inside* the `logio` span
   (`sv_log.cpp` opens at function entry and closes at exit), and `Log_Printf`'s console echo puts
   most of `conio` there too — so adding the fields double-counts and would have run the gate at
   roughly half the configured share. It also emits whenever the frame took a **major page
   fault**, because `faults=` is carried on no other line and a fault-driven stall costs no I/O
   time; gating on time alone would have suppressed it in exactly the case it was added to explain.
+  And it emits whenever **none of the four phase gates opened**. `misc1`, `post` and `gap` have
+  no detail line of their own, so without that clause a spike dominated by one of them would carry
+  no attribution at all — the one shape the aggregator cannot explain. Every spike gets at least
+  one detail line.
 
   The umbrella `[KTP_SPIKE]` line is unchanged and still carries every phase on every spike, so
   a gated-out phase loses no data — `spike_signatures.py` already derives the dominant phase
@@ -175,6 +251,12 @@ console stamps a higher number than the title above. This cut ships **one** arti
   read is not. Renamed with a `_us` suffix deliberately, so the compiler had to visit every call site
   — a silent type change under the same name would have compiled with wrong units at the print sites.
 
+  ⚠️ **Integer microseconds quantize, which the `double` did not.** The conversion truncates, so a
+  sub-µs `Con_Printf` records `0`: `conprintf_worst` cannot resolve below 1µs, and the frame
+  accumulator behind `conio=` on `[KTP_SPIKE_IO]` under-reports a burst of cheap prints by up to
+  ~1µs each. Accepted, not overlooked — both fields exist to catch millisecond-scale write stalls,
+  and the resolution they lose is well below anything that would fire them.
+
 - **`quit` / `quit_restart` / `restart` over rcon killed a live server, while a comment claimed
   they were blocked** (`host_cmd.cpp`, `sv_main.cpp`). `g_bRconCommand` was set around every rcon
   command execution and **read by nothing** — the protection its own comment documented had never
@@ -217,8 +299,13 @@ console stamps a higher number than the title above. This cut ships **one** arti
   `Con_Printf` appends to the unsynchronized global `outputbuf` and can call `SV_FlushRedirect`,
   which sends a packet — and background threads reach it on `sendto` error paths. The redirect
   capture is now guarded by a game-thread identity check (`KTP_MarkGameThread()` at `Host_Init`).
-  🔑 **Console output still happens from any thread** — only the redirect capture is skipped, so no
-  diagnostic is lost.
+  ⚠️ **The console copy usually survives; the rcon caller's copy never does, and the drop is
+  uncounted.** At the default `sv_rcon_condebug 1`, `Con_Printf_internal` still reaches `Sys_Printf`
+  during a redirect, so an off-thread diagnostic lands on the console. Under `sv_rcon_condebug 0`
+  it does not: the print falls through to the non-redirect branch and survives only in
+  `qconsole.log`, and only if the server runs `-condebug` (the fleet does). Either way it is absent
+  from the rcon reply, which is the trade — a background thread's diagnostic was never the rcon
+  caller's to begin with, and racing it into `outputbuf` was the bug.
 
 - **`[KTP_SPIKE_READ]` discarded the cost of rejected packets** (`sv_main.cpp`) — the ban-filter and
   preprocess-refusal branches reset the timer without accumulating, so `recv`+`proc` could not

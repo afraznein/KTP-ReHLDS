@@ -86,8 +86,9 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 
 ⚠️ **As of .931 the detail lines are GATED** on `ktp_profile_spike_phase_share` — before that they
 all fired on every spike, which made the aggregator's four per-phase columns four copies of the
-spike count. A spike dominated by `misc1`/`post`/`gap` emits **no** detail line at all, and that is
-correct: the umbrella line carries every phase unconditionally.
+spike count. `misc1`/`post`/`gap` have no detail line of their own, so a spike dominated by one of
+them clears no phase gate and **`[KTP_SPIKE_IO]` fires as the backstop** — every spike carries at
+least one attributing line, and the umbrella line carries every phase unconditionally.
 ⚠️ `spike_{read,phys,send,steam}` in `ktp_telemetry_metrics` **change meaning at .931** — "spikes"
 before, "spikes this phase was material in" after. Do not compare across that boundary.
 
@@ -126,7 +127,7 @@ The synchronous log-file write in `Log_Printf` blocked the game thread up to 167
 - `logq_drops=` — lifetime count of dropped WRITE lines (queue full / writer had no file / write error).
 - `ctl_drops=` — (.928) lifetime count of dropped OPEN/CLOSE control ops. Expect 0 forever; nonzero = a whole map's log file may be missing or misrouted (control op couldn't get a ring slot within the bounded retry).
 - `writer_alive=` — (.928) 0 only if work is pending AND the writer processed nothing for a full profile interval (a wedged/dead writer). Expect 1.
-- `conprintf_worst=` — qconsole.log write cost (see the Con_DebugLog note below). **(.931) Backed by `std::atomic<uint32>` microseconds** — `Con_Printf` is reachable from the Steam and `-netthread` background threads, and the previous plain `double` could tear and print garbage on this very tripwire; `logaddr_worst=` — UDP send to a logaddress.
+- `conprintf_worst=` — qconsole.log write cost (see the Con_DebugLog note below). **(.931) Backed by `std::atomic<uint32>` microseconds** — `Con_Printf` is reachable from the Steam and `-netthread` background threads, and the previous plain `double` could tear and print garbage on this very tripwire. ⚠️ Whole microseconds, so a sub-µs call records 0 and this field cannot resolve below 1µs — fine for the millisecond stalls it exists to catch; `logaddr_worst=` — UDP send to a logaddress.
 
 ### 3.22.0.928
 Engine-side fix wave (see `CHANGELOG.md` for detail):

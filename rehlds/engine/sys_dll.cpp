@@ -1674,6 +1674,8 @@ void Con_Printf(const char *fmt, ...)
 	if (ktp_con_prof)
 	{
 		double ktp_con_dt = Sys_FloatTime() - ktp_con_t0;
+		// Truncates: a sub-microsecond call records 0, so a burst of cheap prints
+		// under-reports. Deliberate — the tripwire watches millisecond stalls.
 		uint32 ktp_con_us = (uint32)(ktp_con_dt * 1000000.0);
 		g_ktp_conio_frame_us.fetch_add(ktp_con_us, std::memory_order_relaxed);
 		// Load/compare/store, same benign race as g_ktp_fileq_worst_us: a lost
@@ -1687,7 +1689,9 @@ void Con_Printf(const char *fmt, ...)
 // -netthread receive threads started reaching it on sendto error paths. The rcon
 // redirect buffer below is unsynchronized and SV_FlushRedirect can send a packet,
 // so a background-thread diagnostic could corrupt or steal an operator's rcon reply.
-// Console output still happens; only the redirect capture is skipped off-thread.
+// The rcon caller never sees that diagnostic, and the console only sees it at the
+// default sv_rcon_condebug 1 — set it to 0 and an off-thread line emitted inside a
+// redirect window survives only in qconsole.log, and only under -condebug.
 #ifdef _WIN32
 static DWORD s_ktpGameThreadId = 0;
 void KTP_MarkGameThread(void) { s_ktpGameThreadId = GetCurrentThreadId(); }
