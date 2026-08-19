@@ -165,13 +165,17 @@ console stamps a higher number than the title above. This cut ships **one** arti
   Each detail line is now gated on its phase owning at least `ktp_profile_spike_phase_share` of
   the frame (default `0.25`).
 
-  `[KTP_SPIKE_IO]` is gated differently, and neither difference is cosmetic. It uses the **worst
+  `[KTP_SPIKE_IO]` is gated differently, and none of the differences is cosmetic. It uses the **worst
   of its two sinks, not their sum**: `logaddr` and `file` are timed *inside* the `logio` span
   (`sv_log.cpp` opens at function entry and closes at exit), and `Log_Printf`'s console echo puts
   most of `conio` there too — so adding the fields double-counts and would have run the gate at
   roughly half the configured share. It also emits whenever the frame took a **major page
   fault**, because `faults=` is carried on no other line and a fault-driven stall costs no I/O
   time; gating on time alone would have suppressed it in exactly the case it was added to explain.
+  And it emits whenever **none of the four phase gates opened**. `misc1`, `post` and `gap` have
+  no detail line of their own, so without that clause a spike dominated by one of them would carry
+  no attribution at all — the one shape the aggregator cannot explain. Every spike gets at least
+  one detail line.
 
   The umbrella `[KTP_SPIKE]` line is unchanged and still carries every phase on every spike, so
   a gated-out phase loses no data — `spike_signatures.py` already derives the dominant phase
@@ -217,6 +221,12 @@ console stamps a higher number than the title above. This cut ships **one** arti
   read is not. Renamed with a `_us` suffix deliberately, so the compiler had to visit every call site
   — a silent type change under the same name would have compiled with wrong units at the print sites.
 
+  ⚠️ **Integer microseconds quantize, which the `double` did not.** The conversion truncates, so a
+  sub-µs `Con_Printf` records `0`: `conprintf_worst` cannot resolve below 1µs, and the frame
+  accumulator behind `conio=` on `[KTP_SPIKE_IO]` under-reports a burst of cheap prints by up to
+  ~1µs each. Accepted, not overlooked — both fields exist to catch millisecond-scale write stalls,
+  and the resolution they lose is well below anything that would fire them.
+
 - **`quit` / `quit_restart` / `restart` over rcon killed a live server, while a comment claimed
   they were blocked** (`host_cmd.cpp`, `sv_main.cpp`). `g_bRconCommand` was set around every rcon
   command execution and **read by nothing** — the protection its own comment documented had never
@@ -259,8 +269,13 @@ console stamps a higher number than the title above. This cut ships **one** arti
   `Con_Printf` appends to the unsynchronized global `outputbuf` and can call `SV_FlushRedirect`,
   which sends a packet — and background threads reach it on `sendto` error paths. The redirect
   capture is now guarded by a game-thread identity check (`KTP_MarkGameThread()` at `Host_Init`).
-  🔑 **Console output still happens from any thread** — only the redirect capture is skipped, so no
-  diagnostic is lost.
+  ⚠️ **The console copy usually survives; the rcon caller's copy never does, and the drop is
+  uncounted.** At the default `sv_rcon_condebug 1`, `Con_Printf_internal` still reaches `Sys_Printf`
+  during a redirect, so an off-thread diagnostic lands on the console. Under `sv_rcon_condebug 0`
+  it does not: the print falls through to the non-redirect branch and survives only in
+  `qconsole.log`, and only if the server runs `-condebug` (the fleet does). Either way it is absent
+  from the rcon reply, which is the trade — a background thread's diagnostic was never the rcon
+  caller's to begin with, and racing it into `outputbuf` was the bug.
 
 - **`[KTP_SPIKE_READ]` discarded the cost of rejected packets** (`sv_main.cpp`) — the ban-filter and
   preprocess-refusal branches reset the timer without accumulating, so `recv`+`proc` could not
