@@ -694,6 +694,17 @@ void Proxy::CMD_Status(char *cmdLine)
 
 		const char *mapname = m_World->GetLevelName() + sizeof("maps/") - 1; // skip 'maps/'
 		m_System->Printf("Game Time %s, Mod \"%s\", Map \"%s\", Players %i\n", activeTime, m_World->GetGameDir(), mapname, m_World->GetNumPlayers());
+
+		// KTP: the line above is the LIVE world clock. Spectators are served
+		// m_ClientWorldTime, which RunClocks advances on THIS proxy's system clock
+		// and only snaps back toward (GetTime() - delay) at its three corrective
+		// branches — the first of which fires only once it overruns live, so the
+		// feed is free to sit fresher than the Delay cvar implies and routinely
+		// does. Consumers aligning an overlay to the broadcast must read this
+		// rather than deriving GetTime() - Delay, which is a target, not a
+		// measurement. Fractional because the MM:SS field above truncates, a
+		// one-sided sub-second error on top.
+		m_System->Printf("Spectator Time %.2f, World Time %.2f\n", GetSpectatorTime(), (double)m_World->GetTime());
 	}
 
 	if (m_DemoClient.IsActive())
@@ -1493,6 +1504,29 @@ void Proxy::StopBroadcast(const char *message)
 void Proxy::ExecuteRcon(NetAddress *from, char *command)
 {
 	char outputbuf[1024];
+
+	// KTP: outputbuf[0] MUST be initialized. RedirectOutput captures the command's
+	// text at outputbuf + 1, but the reply below formats "%s" from outputbuf + 0 —
+	// so an uninitialized zero byte there truncates the payload to nothing and the
+	// caller receives a well-formed packet containing only the A2A_PRINT marker.
+	// The command still runs and still prints to the console, which makes it look
+	// like an auth or dispatch failure rather than a formatting one.
+	//
+	// This is undefined behaviour that happens to work: whether rcon replies at all
+	// depends on leftover stack contents. It held on the production build and broke
+	// on a 22.04 rebuild of the same commit, where every reply came back empty.
+	//
+	// A space, not a NUL, rather than sending outputbuf + 1. The extra byte is a
+	// pre-existing HLTV-only quirk, not a convention — the engine's own A2A_PRINT
+	// replies (sv_main.cpp) carry no such byte, and both HLTV-side readers skip
+	// exactly one (ProcessConnectionlessMessage below, Server.cpp A2A_PRINT). So
+	// outputbuf + 1 is the tidier fix, would make this reply byte-identical to the
+	// engine's, and is a reasonable follow-up. It is not done here only because it
+	// shifts the wire format for consumers already written against HLTV's current
+	// shape — KTP's overlay clock poller strips six bytes, not five. Keep the
+	// format, make the byte deterministic.
+	outputbuf[0] = ' ';
+
 	m_System->Printf("Executing rcon \"%s\" from %s.\n", command, from->ToString());
 
 	m_System->RedirectOutput(outputbuf + 1, sizeof(outputbuf) - 1);
