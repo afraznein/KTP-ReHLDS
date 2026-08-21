@@ -6,6 +6,9 @@
 #    calls with NO compile error (KTP hooks were historically inserted
 #    mid-vtable). The append-only rule's enforcement is this byte-diff.
 #    A failure here is ALWAYS treated as Critical.
+#    Compares against a same-named branch on KTP-ReAPI when one exists, else its
+#    default branch. The byte-diff is unconditional either way, and the run
+#    on main after merge still compares main against main.
 #  - build-linux: compile gate only. Fleet binaries are built locally and
 #    verified by md5 (builds are not reproducible) — the CI artifact is never
 #    the deploy artifact.
@@ -17,12 +20,18 @@ name: KTP CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, preprod]
     paths-ignore:
       - '**.md'
   pull_request:
-    branches: [main]
+    branches: [main, preprod]
   workflow_dispatch:
+    inputs:
+      reapi_ref:
+        description: 'KTP-ReAPI ref to diff rehlds_api.h against. Blank = the same-named branch if it exists, else its default branch.'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   header-drift:
@@ -32,18 +41,45 @@ jobs:
       - name: Checkout KTP-ReHLDS
         uses: actions/checkout@v6
 
+      # Checking out the counterpart with no ref reads its DEFAULT branch, so a
+      # coordinated header change on feature branches in both repos failed on both
+      # sides until one merged. Prefer a same-named branch; else the default.
+      - name: Resolve KTP-ReAPI ref
+        id: counterpart
+        env:
+          COUNTERPART: https://github.com/afraznein/KTP-ReAPI.git
+          OVERRIDE: ${{ inputs.reapi_ref }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "$OVERRIDE" ]; then
+            REF="$OVERRIDE"
+            echo "dispatch override: $REF"
+          elif [ -n "$BRANCH" ] && git ls-remote --exit-code --heads "$COUNTERPART" "refs/heads/$BRANCH" >/dev/null 2>&1; then
+            REF="$BRANCH"
+            echo "matched same-named branch on KTP-ReAPI: $REF"
+          else
+            REF=$(git ls-remote --symref "$COUNTERPART" HEAD | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')
+            echo "no matching branch on KTP-ReAPI; using its default branch: $REF"
+          fi
+          # An empty ref makes checkout take the default branch, so a probe that
+          # died would read as a passing comparison instead of a failure.
+          test -n "$REF" || { echo "::error::could not resolve a KTP-ReAPI ref to compare against"; exit 1; }
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
       - name: Checkout KTP-ReAPI
         uses: actions/checkout@v6
         with:
           repository: afraznein/KTP-ReAPI
+          ref: ${{ steps.counterpart.outputs.ref }}
           path: ktpreapi
 
       - name: Diff the dual copies
         run: |
           if diff -u rehlds/public/rehlds/rehlds_api.h ktpreapi/reapi/include/cssdk/engine/rehlds_api.h; then
-            echo "rehlds_api.h copies are byte-identical"
+            echo "rehlds_api.h copies are byte-identical (KTP-ReAPI @ ${{ steps.counterpart.outputs.ref }})"
           else
-            echo "::error::rehlds_api.h has DRIFTED between KTP-ReHLDS and KTP-ReAPI. Vtable drift = silent wrong-function calls at runtime. Hook slots are APPEND-ONLY; sync both copies in the same change window."
+            echo "::error::rehlds_api.h has DRIFTED between KTP-ReHLDS and KTP-ReAPI. Vtable drift = silent wrong-function calls at runtime. Hook slots are APPEND-ONLY; sync both copies in the same change window. Compared against KTP-ReAPI @ ${{ steps.counterpart.outputs.ref }}."
             exit 1
           fi
 

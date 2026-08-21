@@ -8,6 +8,36 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ## [Unreleased]
 
+### Changed
+
+- **`REHLDS_API_VERSION_MINOR` 15 → 16 — the fork's vtable has never matched the
+  version it advertises.** `IRehldsHookchains` carries 69 pure virtuals against
+  upstream's 56: `SV_UpdatePausedHUD` is **inserted at slot 42**, and 12 more are
+  appended. Minor stayed at upstream's 15 throughout, so the handshake asserted a
+  compatibility the layout does not have.
+
+  This is not symbol resolution. `IRehldsHookchains` is pure-virtual and consumers
+  call `vtable[N]` with `N` baked in at compile time; the only dynamic lookup is the
+  `VREHLDS_HLDS_API_VERSION001` factory string, which succeeds either way. A
+  mismatched pairing is therefore a **silent wrong-virtual-call**, not a load
+  failure — anything past slot 41 dispatches to the neighbouring registry.
+
+  The only guard is `minorVersion < REHLDS_API_VERSION_MINOR`, and it is
+  one-directional: it fires when the **engine** is behind, never when a consumer is.
+  With minor equal on both sides, both activation orders corrupted silently. Raising
+  the engine to 16 converts the *modules-lead* order (new ReAPI/AMXX against the old
+  engine) into a clean refuse-to-load. Engine-lead stays silent, so **the sanctioned
+  activation order is modules-first.**
+
+  Version-number only — no virtual was added, removed or reordered here, so the
+  layout is byte-identical to `3.22.0.931`.
+
+  ⚠️ **The next activation is a coordinated all-four-artifacts-in-one-swap wave**:
+  engine + KTPAMXX core + ReAPI + DODX must stage together and swap at the same
+  nightly restart. A partial wave that lands the engine alone leaves consumers
+  advertising 15 against an engine at 16 — which still loads, silently, because the
+  guard only checks the engine side.
+
 ### Fixed
 
 - **HLTV rcon replies were empty or not, depending on leftover stack contents.**
