@@ -20,11 +20,11 @@ name: KTP CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, preprod]
     paths-ignore:
       - '**.md'
   pull_request:
-    branches: [main]
+    branches: [main, preprod]
   workflow_dispatch:
     inputs:
       reapi_ref:
