@@ -37,7 +37,7 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
     (no usable ping sample): zero rewind for every shot in that packet.
   - `choke_peak` — worst consecutive `chokecount` run (tracked at the increment;
     the counter resets on every successful send, so a boundary sample reads ~0).
-  - `loss_worst` — worst client-reported downstream loss %% (untrusted, but it is
+  - `loss_worst` — worst client-reported downstream loss % (untrusted, but it is
     the client's own view of the path).
   - `latency_worst` / `jitter_worst` — interval peak single-packet latency, and
     the widest per-client min/max latency spread. At `sv_unlagsamples 1`,
