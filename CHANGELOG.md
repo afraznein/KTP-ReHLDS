@@ -8,6 +8,76 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ## [Unreleased]
 
+### Added
+
+- **`[KTP_PROFILE] net:` — per-interval network / lag-compensation health record.**
+  Every existing record type measures CPU time the server spent; none measures
+  whether packets arrived or in what state the client is, which is where the
+  recurring "not hittable / inconsistent hitreg" reports live. The new record
+  surfaces state the engine already maintains per client — this is a formatting
+  change, not new bookkeeping:
+
+  ```
+  [KTP_PROFILE] net: clients=10 unlag=1 lagcomp_off=1 ignorecmd_hits=2 drops=14 latzero=3 choke_peak=4 loss_worst=6 latency_worst=87.3ms jitter_worst=22.1ms
+  [KTP_PROFILE] net_detail: lagcomp_first=3(PlayerA) latency_worst=7(PlayerB) jitter_worst=7(PlayerB)
+  ```
+
+  Fakeclients and HLTV proxies are excluded from every field — a proxy's WAN
+  link would otherwise dominate the loss/choke figures and read as a player
+  problem. `clients`, `lagcomp_off` and the per-client windows are interval
+  aggregates built at the packet sites, never a boundary-frame scan (the
+  documented `send_detail` trap): a client who toggled `cl_lc 0` mid-interval
+  or left before the boundary still shows up, and a new connection reusing a
+  slot mid-interval starts a fresh window (generation-stamped by
+  `connection_started`).
+
+  - `clients` — slots that carried human traffic this interval.
+  - `unlag` — `sv_unlag` state; without it, `lagcomp_off=0` under `sv_unlag 0`
+    would read as "compensation is working" when it is off for everyone.
+  - `lagcomp_off` — clients that ever had `!lw || !lc` this interval:
+    `SV_SetupMove` bails before any rewind for them, so **their own shots get
+    zero lag compensation**. The flags are userinfo-derived and an absent key
+    reads as 0, so this can be nonzero on a client who changed nothing knowingly.
+  - `ignorecmd_hits` — penalty-seconds under the `SV_CheckCmdTimes` clockwindow
+    penalty (its loop is 1 Hz and re-fires while drift persists). Any nonzero
+    value means `SV_RunCmd` discarded that client's movement for up to
+    `clockwindow` (0.5 s) — the textbook rubber-band case, previously counted
+    nowhere.
+  - `drops` — residual `net_drop` summed over move packets: commands the engine
+    synthesized from `lastcmd` because the real ones never arrived. Clamped to
+    the engine's own `< 24` replay gate per packet, which also caps what a
+    crafted sequence number could add.
+  - `latzero` — packets from established clients processed with `latency == 0`
+    (no usable ping sample): zero rewind for every shot in that packet. The
+    first 5 s of a map are muted — `SV_SpawnServer` reallocates the frames
+    ring, so every client legitimately reads zero until an update round-trips.
+  - `choke_peak` — worst consecutive `chokecount` run (tracked at the increment;
+    the counter resets on every successful send, so a boundary sample reads ~0).
+  - `loss_worst` — worst client-reported downstream loss % (untrusted, but it is
+    the client's own view of the path).
+  - `latency_worst` / `jitter_worst` — interval peak single-packet latency, and
+    the widest per-client min/max latency spread. At `sv_unlagsamples 1`,
+    `latency` is one packet's RTT, so the spread is the per-shot rewind wobble
+    the removed shadow-20 estimator tried to measure — obtained here for two
+    float compares per packet instead of a 20-slot ring rescan.
+
+  Gated on the `ktp_profile_frame` master plus new sub-toggle **`ktp_profile_net`
+  (default 1)** — default-on so the record appears wherever profiling is already
+  enabled; `0` suppresses the lines only. `net_detail` is emitted only when it has
+  a slot to name; slot names index a persistent array and share
+  `send_detail_peak`'s stale-name caveat for clients who left mid-interval. All
+  counters reset per interval in `KTP_ProfileResetInterval` (which also runs on
+  the profiling enable transition), so nothing leaks across intervals or enable
+  cycles; an interval that spans a changelevel covers both maps, and the ping
+  windows deliberately survive the changelevel with the connections they belong
+  to. Per-client state is a parallel array — `client_t` is ABI-exposed and gains
+  no field; no vtable or `REHLDS_API_VERSION` change.
+
+  Hot-path cost: one branch on the cached profiling bool plus a handful of
+  compares and mask ops per incoming client packet, one compare on the (rare)
+  choked-send path, one increment in the once-per-second `SV_CheckCmdTimes`
+  loop, and a 32-slot scan once per interval. No `frames[]` walk anywhere.
+
 ### Changed
 
 - **`REHLDS_API_VERSION_MINOR` 15 → 16 — the fork's vtable has never matched the

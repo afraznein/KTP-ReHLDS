@@ -60,8 +60,9 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 - `ktp_profile_spike_threshold 5.0` - Log immediate `[KTP_SPIKE]` alert when any single frame exceeds this many ms (0 = disabled)
 - `ktp_profile_steam_detail 0/1` - Enable granular Steam_RunFrame() sub-timing (logs `[KTP_PROFILE_STEAM]` when >1ms)
 - `ktp_profile_spike_phase_share 0.25` - (.931) Minimum share of the spike frame a phase must own before its `[KTP_SPIKE_<phase>]` detail line is emitted. **`0` = always emit (pre-.931 behaviour, and the rollback lever — no binary swap).**
+- `ktp_profile_net 0/1` - Sub-toggle for the `[KTP_PROFILE] net:` record (default **1** — appears wherever profiling is already on). `0` suppresses the lines only; the counters still accumulate at negligible cost.
 
-**Summary output (to server log, every N seconds) — 8 interval lines, plus one conditional:**
+**Summary output (to server log, every N seconds) — interval lines, plus conditionals:**
 ```
 [KTP_PROFILE] frames=9823 fps=982.3 edicts_max=156
 [KTP_PROFILE] avg: read=0.120ms phys=0.450ms misc1=0.005ms send=0.080ms post=0.003ms steam=0.010ms full=0.680ms
@@ -71,6 +72,8 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 [KTP_PROFILE] io: logprintf_worst=… conprintf_worst=… logaddr_worst=… file_worst=… fileq_worst=… logq_drops=… ctl_drops=… writer_alive=…   (see Async Log-File Writer § for field meanings)
 [KTP_PROFILE] send_detail_peak: worst_client=3(name) time=0.290ms clients_sent=11   (.931: interval PEAK; was send_detail, which sampled the boundary frame and never showed a spike)
 [KTP_PROFILE] interframe: avg=1.018ms peak=2.400ms
+[KTP_PROFILE] net: clients=10 unlag=1 lagcomp_off=1 ignorecmd_hits=2 drops=14 latzero=3 choke_peak=4 loss_worst=6 latency_worst=87.3ms jitter_worst=22.1ms   (gated on ktp_profile_net; the half of the shot pipeline the CPU records cannot see — see CHANGELOG for field meanings)
+[KTP_PROFILE] net_detail: lagcomp_first=3(PlayerA) latency_worst=7(PlayerB) jitter_worst=7(PlayerB)   (conditional: only when a slot exists to name; latency/jitter names share send_detail_peak's stale-name caveat)
 ```
 
 **Spike alert output (immediate, rate-limited to 1/sec) — the umbrella line always, plus whichever detail lines cleared the phase-share gate:**
