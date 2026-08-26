@@ -2046,7 +2046,7 @@ void SV_ExecuteClientMessage(client_t *cl)
 	// SV_CalcClientTime; do not move this into a ring walk). At
 	// sv_unlagsamples 1, latency IS this packet's RTT, so the interval
 	// min/max per client measures the rewind wobble SV_SetupMove sees.
-	if (g_ktp_profiling_enabled && !cl->fakeclient)
+	if (g_ktp_profiling_enabled && !cl->fakeclient && !cl->proxy)
 	{
 		int ktp_net_slot = cl - g_psvs.clients;
 		if (cl->latency > 0.0f)
