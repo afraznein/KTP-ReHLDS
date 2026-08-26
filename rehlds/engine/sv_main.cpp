@@ -5603,6 +5603,11 @@ void SV_SendClientMessages(void)
 			if (!Netchan_CanPacket(&cl->netchan))
 			{
 				++cl->chokecount;
+				// KTP: chokecount resets on every successful send, so a boundary
+				// sample reads ~0 forever; track the interval peak at the
+				// increment instead. Costs nothing on the unchoked path.
+				if (ktp_send_prof && cl->chokecount > g_ktp_net_choke_peak)
+					g_ktp_net_choke_peak = cl->chokecount;
 				continue;
 			}
 
@@ -7275,6 +7280,12 @@ cvar_t ktp_profile_steam_detail = { "ktp_profile_steam_detail", "0", 0, 0.0f, NU
 // emitted. 0 restores the pre-.931 always-emit behaviour. Not archived and set in
 // no shipped cfg, so an rcon override reverts at the next restart.
 cvar_t ktp_profile_spike_phase_share = { "ktp_profile_spike_phase_share", "0.25", 0, 0.0f, NULL };
+// Sub-toggle for the [KTP_PROFILE] net: record, under the ktp_profile_frame
+// master. Default 1 so the record appears wherever profiling is already on —
+// it exists to explain hitreg reports the CPU records cannot see, and a
+// default-0 field nobody enables measures nothing. 0 = suppress the line only;
+// the counters still accumulate (cost is a few compares per client packet).
+cvar_t ktp_profile_net = { "ktp_profile_net", "1", 0, 0.0f, NULL };
 
 // KTP: Profiling accumulators (static to preserve across frames)
 static double g_ktp_profile_acc_readpackets = 0.0;
@@ -7337,6 +7348,21 @@ double g_ktp_logio_frame = 0.0;
 std::atomic<uint32> g_ktp_conio_frame_us(0);
 double g_ktp_logio_worst = 0.0;
 std::atomic<uint32> g_ktp_conio_worst_us(0);
+
+// KTP: Net-health accumulators for the [KTP_PROFILE] net: record. Running
+// peaks/counters updated at the packet sites, never boundary-frame samples;
+// all reset in KTP_ProfileResetInterval. Game thread only. The per-client
+// ping window is a parallel array — client_t is ABI-exposed to the game DLL
+// and ReAPI, so it never grows a field.
+uint32 g_ktp_net_ignorecmd_hits = 0;    // clockwindow penalties imposed (SV_CheckCmdTimes)
+uint32 g_ktp_net_drops = 0;             // move packets replayed from lastcmd (SV_ParseMove net_drop)
+uint32 g_ktp_net_latzero = 0;           // packets from active clients with latency 0 = no lagcomp rewind
+int g_ktp_net_choke_peak = 0;           // worst consecutive choke run on any client
+float g_ktp_net_loss_peak = 0.0f;       // worst client-reported packet loss %
+float g_ktp_net_latency_peak = 0.0f;    // worst single-packet latency
+int g_ktp_net_latency_peak_slot = -1;
+float g_ktp_net_ping_min[MAX_CLIENTS];
+float g_ktp_net_ping_max[MAX_CLIENTS];
 // logio split: which sink blocks — logaddr = Netchan_OutOfBandPrint UDP sendto
 // per logaddress (HLStatsX), file = FS_FPrintf to qconsole.log on disk.
 double g_ktp_logaddr_io_frame = 0.0;
@@ -8729,6 +8755,10 @@ void SV_CheckCmdTimes(void)
 		float dif = cl->connecttime + cl->cmdtime - realtime;
 		if (dif > clockwindow.value)
 		{
+			// KTP: SV_RunCmd will now discard this client's movement for up to
+			// clockwindow (0.5s) — the rubber-band case the net: record counts.
+			if (g_ktp_profiling_enabled)
+				++g_ktp_net_ignorecmd_hits;
 			cl->ignorecmdtime = clockwindow.value + realtime;
 			cl->cmdtime = realtime - cl->connecttime;
 		}
@@ -8843,6 +8873,18 @@ static void KTP_ProfileResetInterval(void)
 	g_ktp_logaddr_io_worst = 0.0;
 	g_ktp_file_io_worst = 0.0;
 	g_ktp_fileq_worst_us.store(0, std::memory_order_relaxed);  // logq_drops is lifetime, not reset
+	g_ktp_net_ignorecmd_hits = 0;
+	g_ktp_net_drops = 0;
+	g_ktp_net_latzero = 0;
+	g_ktp_net_choke_peak = 0;
+	g_ktp_net_loss_peak = 0.0f;
+	g_ktp_net_latency_peak = 0.0f;
+	g_ktp_net_latency_peak_slot = -1;
+	for (int i = 0; i < MAX_CLIENTS; i++)
+	{
+		g_ktp_net_ping_min[i] = 9999.0f;
+		g_ktp_net_ping_max[i] = -9999.0f;
+	}
 }
 
 void SV_Frame()
@@ -9300,6 +9342,65 @@ void EXT_FUNC SV_Frame_Internal()
 			Log_Printf("[KTP_PROFILE] interframe: avg=%.3fms peak=%.3fms\n",
 				avg_interframe, peak_interframe);
 
+			// Net-health record: did packets arrive, and in what state is the
+			// client — the half of the shot pipeline the CPU records cannot see.
+			// Aggregates are running peaks/counters from the packet sites; this
+			// scan is once per interval over maxclients.
+			if (ktp_profile_net.value != 0.0f)
+			{
+				int net_clients = 0;
+				int net_lagcomp_off = 0;
+				int net_lagcomp_slot = -1;
+				float net_jitter_worst = 0.0f;
+				int net_jitter_slot = -1;
+				for (int i = 0; i < g_psvs.maxclients; i++)
+				{
+					client_t *ncl = &g_psvs.clients[i];
+					if (ncl->fakeclient || ncl->proxy || !ncl->active)
+						continue;
+					net_clients++;
+					// lw/lc come from userinfo; an absent key parses as 0, and
+					// either flag 0 means SV_SetupMove never rewinds for this
+					// client's shots.
+					if (!ncl->lw || !ncl->lc)
+					{
+						net_lagcomp_off++;
+						if (net_lagcomp_slot < 0)
+							net_lagcomp_slot = i;
+					}
+					if (i < MAX_CLIENTS && g_ktp_net_ping_max[i] >= g_ktp_net_ping_min[i])
+					{
+						float spread = g_ktp_net_ping_max[i] - g_ktp_net_ping_min[i];
+						if (spread > net_jitter_worst)
+						{
+							net_jitter_worst = spread;
+							net_jitter_slot = i;
+						}
+					}
+				}
+				Log_Printf("[KTP_PROFILE] net: clients=%d lagcomp_off=%d ignorecmd_hits=%u drops=%u latzero=%u choke_peak=%d loss_worst=%.0f latency_worst=%.1fms jitter_worst=%.1fms\n",
+					net_clients, net_lagcomp_off,
+					g_ktp_net_ignorecmd_hits, g_ktp_net_drops, g_ktp_net_latzero,
+					g_ktp_net_choke_peak, g_ktp_net_loss_peak,
+					g_ktp_net_latency_peak * 1000.0,
+					net_jitter_worst * 1000.0);
+				// Slot→name detail so the aggregates are actionable without a
+				// status query. lagcomp_slot was scanned this instant so its
+				// name is fresh; latency/jitter slots index a persistent array,
+				// so a client who left mid-interval leaves a stale name — same
+				// caveat as send_detail_peak.
+				if (net_lagcomp_slot >= 0 || net_jitter_slot >= 0 || g_ktp_net_latency_peak_slot >= 0)
+				{
+					Log_Printf("[KTP_PROFILE] net_detail: lagcomp_first=%d(%s) latency_worst=%d(%s) jitter_worst=%d(%s)\n",
+						net_lagcomp_slot,
+						net_lagcomp_slot >= 0 ? g_psvs.clients[net_lagcomp_slot].name : "-",
+						g_ktp_net_latency_peak_slot,
+						g_ktp_net_latency_peak_slot >= 0 ? g_psvs.clients[g_ktp_net_latency_peak_slot].name : "-",
+						net_jitter_slot,
+						net_jitter_slot >= 0 ? g_psvs.clients[net_jitter_slot].name : "-");
+				}
+			}
+
 			// Reset accumulators
 			KTP_ProfileResetInterval();
 			g_ktp_profile_last_log_time = current_time;
@@ -9556,6 +9657,7 @@ void SV_Init(void)
 	// KTP: Frame profiling system
 	Cvar_RegisterVariable(&ktp_profile_frame);
 	Cvar_RegisterVariable(&ktp_profile_interval);
+	Cvar_RegisterVariable(&ktp_profile_net);
 	Cvar_RegisterVariable(&ktp_profile_spike_threshold);
 	Cvar_RegisterVariable(&ktp_profile_steam_detail);
 	Cvar_RegisterVariable(&ktp_profile_spike_phase_share);

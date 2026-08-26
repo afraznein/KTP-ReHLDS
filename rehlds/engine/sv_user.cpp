@@ -32,6 +32,15 @@
 // KTP: profiling state from sv_main.cpp (opcode/parsemove instrumentation)
 extern bool g_ktp_profiling_enabled;  // Set by SV_Frame_Internal each frame
 
+// KTP: net-health accumulators from sv_main.cpp ([KTP_PROFILE] net: record)
+extern uint32 g_ktp_net_drops;
+extern uint32 g_ktp_net_latzero;
+extern float g_ktp_net_loss_peak;
+extern float g_ktp_net_latency_peak;
+extern int g_ktp_net_latency_peak_slot;
+extern float g_ktp_net_ping_min[MAX_CLIENTS];
+extern float g_ktp_net_ping_max[MAX_CLIENTS];
+
 // KTP: SV_RunCmd sub-phase accumulators (zeroed per SV_ParseMove call)
 double g_ktp_runcmd_acc_prethink = 0.0;  // pfnCmdStart + PreThink + Think
 double g_ktp_runcmd_acc_pmove = 0.0;     // PM setup + pfnPM_Move + movevars sync
@@ -1721,6 +1730,11 @@ void SV_ParseMove(client_t *pSenderClient)
 	if (ktp_pm_prof)
 		ktp_pm_t0 = Sys_FloatTime();
 
+	// KTP: Client-reported downstream loss (7-bit % from the move packet).
+	// Untrusted, but it is the client's own view of the path the shots ride.
+	if (ktp_pm_prof && packet_loss > g_ktp_net_loss_peak)
+		g_ktp_net_loss_peak = packet_loss;
+
 	if (!g_psv.paused && (g_psvs.maxclients > 1 || !key_dest) && !(sv_player->v.flags & FL_FROZEN))
 	{
 		sv_player->v.v_angle[0] = cmds[0].viewangles[0];
@@ -1785,6 +1799,11 @@ void SV_ParseMove(client_t *pSenderClient)
 	// targettime depends on client latency + interp, which is constant across all cmds
 	if (!host_client->fakeclient)
 		SV_SetupMove(host_client);
+
+	// KTP: Residual net_drop after backup compensation = movement the loops
+	// below must synthesize from lastcmd. Counted before they consume it.
+	if (ktp_pm_prof && net_drop > 0)
+		g_ktp_net_drops += net_drop;
 
 	if (net_drop < 24)
 	{
@@ -2022,6 +2041,36 @@ void SV_ExecuteClientMessage(client_t *cl)
 		frame->ping_time = 0;
 
 	SV_ComputeLatency(cl);
+	// KTP: Net-health sampling, O(1) per packet — no frames[] rescan (the
+	// shadow-20 estimator was removed for being the dominant cost in
+	// SV_CalcClientTime; do not move this into a ring walk). At
+	// sv_unlagsamples 1, latency IS this packet's RTT, so the interval
+	// min/max per client measures the rewind wobble SV_SetupMove sees.
+	if (g_ktp_profiling_enabled && !cl->fakeclient)
+	{
+		int ktp_net_slot = cl - g_psvs.clients;
+		if (cl->latency > 0.0f)
+		{
+			if (cl->latency > g_ktp_net_latency_peak)
+			{
+				g_ktp_net_latency_peak = cl->latency;
+				g_ktp_net_latency_peak_slot = ktp_net_slot;
+			}
+			if (ktp_net_slot < MAX_CLIENTS)
+			{
+				if (cl->latency < g_ktp_net_ping_min[ktp_net_slot])
+					g_ktp_net_ping_min[ktp_net_slot] = cl->latency;
+				if (cl->latency > g_ktp_net_ping_max[ktp_net_slot])
+					g_ktp_net_ping_max[ktp_net_slot] = cl->latency;
+			}
+		}
+		else if (cl->active && realtime - cl->connection_started > 2.0)
+		{
+			// Zero latency on an established client: SV_SetupMove rewinds to
+			// now — zero lag compensation for every shot in this packet.
+			++g_ktp_net_latzero;
+		}
+	}
 	host_client = cl;
 	sv_player = cl->edict;
 	cl->delta_sequence = -1;

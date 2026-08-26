@@ -8,6 +8,58 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ## [Unreleased]
 
+### Added
+
+- **`[KTP_PROFILE] net:` — per-interval network / lag-compensation health record.**
+  All nine existing record types measure CPU time the server spent; none measures
+  whether packets arrived or in what state the client is, which is where the
+  recurring "not hittable / inconsistent hitreg" reports live. The new record
+  surfaces state the engine already maintains per client — this is a formatting
+  change, not new bookkeeping:
+
+  ```
+  [KTP_PROFILE] net: clients=10 lagcomp_off=1 ignorecmd_hits=2 drops=14 latzero=3 choke_peak=4 loss_worst=6 latency_worst=87.3ms jitter_worst=22.1ms
+  [KTP_PROFILE] net_detail: lagcomp_first=3(PlayerA) latency_worst=7(PlayerB) jitter_worst=7(PlayerB)
+  ```
+
+  - `clients` — active human clients (fakeclients and HLTV proxies excluded).
+  - `lagcomp_off` — clients with `!lw || !lc`: `SV_SetupMove` bails before any
+    rewind for them, so **their own shots get zero lag compensation**. The flags
+    are userinfo-derived and an absent key reads as 0, so this can be nonzero on
+    a client who changed nothing knowingly.
+  - `ignorecmd_hits` — clockwindow penalties imposed by `SV_CheckCmdTimes`
+    this interval; each one means `SV_RunCmd` discards that client's movement
+    for up to `clockwindow` (0.5 s) — the textbook rubber-band case, previously
+    counted nowhere.
+  - `drops` — residual `net_drop` summed over move packets: commands the engine
+    had to synthesize from `lastcmd` because the real ones never arrived.
+  - `latzero` — packets from established clients processed with `latency == 0`
+    (no usable ping sample): zero rewind for every shot in that packet.
+  - `choke_peak` — worst consecutive `chokecount` run (tracked at the increment;
+    the counter resets on every successful send, so a boundary sample reads ~0).
+  - `loss_worst` — worst client-reported downstream loss %% (untrusted, but it is
+    the client's own view of the path).
+  - `latency_worst` / `jitter_worst` — interval peak single-packet latency, and
+    the widest per-client min/max latency spread. At `sv_unlagsamples 1`,
+    `latency` is one packet's RTT, so the spread is the per-shot rewind wobble
+    the removed shadow-20 estimator tried to measure — obtained here for two
+    float compares per packet instead of a 20-slot ring rescan.
+
+  Gated on the `ktp_profile_frame` master plus new sub-toggle **`ktp_profile_net`
+  (default 1)** — default-on so the record appears wherever profiling is already
+  enabled; `0` suppresses the lines only. `net_detail` is emitted only when it has
+  a slot to name; latency/jitter slot names share `send_detail_peak`'s stale-name
+  caveat for clients who left mid-interval. All counters reset per interval in
+  `KTP_ProfileResetInterval` (which also runs on the profiling enable transition),
+  so nothing leaks across intervals, enable cycles, or map changes. Per-client
+  state is a parallel array — `client_t` is ABI-exposed and gains no field; no
+  vtable or `REHLDS_API_VERSION` change.
+
+  Hot-path cost: one branch on the cached profiling bool plus at most four float
+  compares per incoming client packet, one compare on the (rare) choked-send
+  path, one increment in the once-per-second `SV_CheckCmdTimes` loop, and a
+  `maxclients` scan once per interval. No `frames[]` walk anywhere.
+
 ### Changed
 
 - **`REHLDS_API_VERSION_MINOR` 15 → 16 — the fork's vtable has never matched the
