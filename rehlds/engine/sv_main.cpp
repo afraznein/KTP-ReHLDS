@@ -73,6 +73,9 @@ int g_ktp_temporary_unpause = 0;
 // (line ~8603) and read by sub-functions (SV_WriteSpawn, SV_ReadPackets, etc.) to avoid
 // redundant `ktp_profile_frame.value` cvar struct dereferences in hot paths.
 extern bool g_ktp_profiling_enabled;
+// KTP: net-health choke peak (defined with the other net accumulators below;
+// forward-declared because the choke site precedes them)
+extern int g_ktp_net_choke_peak;
 
 // KTP: Flag to track if current command is from RCON (vs local console/LinuxGSM)
 // Used to block quit/restart via RCON while allowing local console
@@ -5606,7 +5609,9 @@ void SV_SendClientMessages(void)
 				// KTP: chokecount resets on every successful send, so a boundary
 				// sample reads ~0 forever; track the interval peak at the
 				// increment instead. Costs nothing on the unchoked path.
-				if (ktp_send_prof && cl->chokecount > g_ktp_net_choke_peak)
+				// Proxies excluded: the paired HLTV proxy's WAN link would
+				// dominate and read as a player problem.
+				if (ktp_send_prof && !cl->proxy && cl->chokecount > g_ktp_net_choke_peak)
 					g_ktp_net_choke_peak = cl->chokecount;
 				continue;
 			}
@@ -7363,6 +7368,16 @@ float g_ktp_net_latency_peak = 0.0f;    // worst single-packet latency
 int g_ktp_net_latency_peak_slot = -1;
 float g_ktp_net_ping_min[MAX_CLIENTS];
 float g_ktp_net_ping_max[MAX_CLIENTS];
+// Interval slot masks, set at the packet site — a boundary-frame scan misses a
+// client who toggled cl_lc off mid-interval or left before the boundary, which
+// is exactly the population this record exists to catch. MAX_CLIENTS is 32, so
+// one uint32 covers the fleet's slot space.
+uint32 g_ktp_net_seen_mask = 0;         // slots that carried human traffic this interval
+uint32 g_ktp_net_lagcomp_mask = 0;      // seen slots that ever had !lw || !lc this interval
+// Connection generation per slot: a new occupant must not inherit the previous
+// player's ping window or lagcomp flag mid-interval. Deliberately NOT reset per
+// interval — connection_started survives changelevel, so the window does too.
+double g_ktp_net_ping_stamp[MAX_CLIENTS];
 // logio split: which sink blocks — logaddr = Netchan_OutOfBandPrint UDP sendto
 // per logaddress (HLStatsX), file = FS_FPrintf to qconsole.log on disk.
 double g_ktp_logaddr_io_frame = 0.0;
@@ -8757,7 +8772,9 @@ void SV_CheckCmdTimes(void)
 		{
 			// KTP: SV_RunCmd will now discard this client's movement for up to
 			// clockwindow (0.5s) — the rubber-band case the net: record counts.
-			if (g_ktp_profiling_enabled)
+			// Re-fires each second the drift persists (this loop is 1 Hz), so
+			// the field is penalty-seconds, not distinct incidents.
+			if (g_ktp_profiling_enabled && !cl->fakeclient && !cl->proxy)
 				++g_ktp_net_ignorecmd_hits;
 			cl->ignorecmdtime = clockwindow.value + realtime;
 			cl->cmdtime = realtime - cl->connecttime;
@@ -8880,6 +8897,9 @@ static void KTP_ProfileResetInterval(void)
 	g_ktp_net_loss_peak = 0.0f;
 	g_ktp_net_latency_peak = 0.0f;
 	g_ktp_net_latency_peak_slot = -1;
+	g_ktp_net_seen_mask = 0;
+	g_ktp_net_lagcomp_mask = 0;
+	// ping_stamp survives on purpose: it tracks connection identity, not the interval
 	for (int i = 0; i < MAX_CLIENTS; i++)
 	{
 		g_ktp_net_ping_min[i] = 9999.0f;
@@ -9353,22 +9373,20 @@ void EXT_FUNC SV_Frame_Internal()
 				int net_lagcomp_slot = -1;
 				float net_jitter_worst = 0.0f;
 				int net_jitter_slot = -1;
-				for (int i = 0; i < g_psvs.maxclients; i++)
+				// Interval masks, not a boundary scan: a client who toggled
+				// cl_lc off or left before the boundary still shows up.
+				for (int i = 0; i < MAX_CLIENTS; i++)
 				{
-					client_t *ncl = &g_psvs.clients[i];
-					if (ncl->fakeclient || ncl->proxy || !ncl->active)
+					if (!(g_ktp_net_seen_mask & (1u << i)))
 						continue;
 					net_clients++;
-					// lw/lc come from userinfo; an absent key parses as 0, and
-					// either flag 0 means SV_SetupMove never rewinds for this
-					// client's shots.
-					if (!ncl->lw || !ncl->lc)
+					if (g_ktp_net_lagcomp_mask & (1u << i))
 					{
 						net_lagcomp_off++;
 						if (net_lagcomp_slot < 0)
 							net_lagcomp_slot = i;
 					}
-					if (i < MAX_CLIENTS && g_ktp_net_ping_max[i] >= g_ktp_net_ping_min[i])
+					if (g_ktp_net_ping_max[i] >= g_ktp_net_ping_min[i])
 					{
 						float spread = g_ktp_net_ping_max[i] - g_ktp_net_ping_min[i];
 						if (spread > net_jitter_worst)
@@ -9378,17 +9396,19 @@ void EXT_FUNC SV_Frame_Internal()
 						}
 					}
 				}
-				Log_Printf("[KTP_PROFILE] net: clients=%d lagcomp_off=%d ignorecmd_hits=%u drops=%u latzero=%u choke_peak=%d loss_worst=%.0f latency_worst=%.1fms jitter_worst=%.1fms\n",
-					net_clients, net_lagcomp_off,
+				// unlag= is the global kill state: lagcomp_off=0 under sv_unlag 0
+				// would otherwise read as "compensation is working" when it is
+				// off for everyone.
+				Log_Printf("[KTP_PROFILE] net: clients=%d unlag=%d lagcomp_off=%d ignorecmd_hits=%u drops=%u latzero=%u choke_peak=%d loss_worst=%.0f latency_worst=%.1fms jitter_worst=%.1fms\n",
+					net_clients, sv_unlag.value != 0.0f ? 1 : 0, net_lagcomp_off,
 					g_ktp_net_ignorecmd_hits, g_ktp_net_drops, g_ktp_net_latzero,
 					g_ktp_net_choke_peak, g_ktp_net_loss_peak,
 					g_ktp_net_latency_peak * 1000.0,
 					net_jitter_worst * 1000.0);
 				// Slot→name detail so the aggregates are actionable without a
-				// status query. lagcomp_slot was scanned this instant so its
-				// name is fresh; latency/jitter slots index a persistent array,
-				// so a client who left mid-interval leaves a stale name — same
-				// caveat as send_detail_peak.
+				// status query. Slots index a persistent array, so a client who
+				// left mid-interval leaves a stale name — same caveat as
+				// send_detail_peak.
 				if (net_lagcomp_slot >= 0 || net_jitter_slot >= 0 || g_ktp_net_latency_peak_slot >= 0)
 				{
 					Log_Printf("[KTP_PROFILE] net_detail: lagcomp_first=%d(%s) latency_worst=%d(%s) jitter_worst=%d(%s)\n",

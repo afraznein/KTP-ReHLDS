@@ -40,6 +40,9 @@ extern float g_ktp_net_latency_peak;
 extern int g_ktp_net_latency_peak_slot;
 extern float g_ktp_net_ping_min[MAX_CLIENTS];
 extern float g_ktp_net_ping_max[MAX_CLIENTS];
+extern uint32 g_ktp_net_seen_mask;
+extern uint32 g_ktp_net_lagcomp_mask;
+extern double g_ktp_net_ping_stamp[MAX_CLIENTS];
 
 // KTP: SV_RunCmd sub-phase accumulators (zeroed per SV_ParseMove call)
 double g_ktp_runcmd_acc_prethink = 0.0;  // pfnCmdStart + PreThink + Think
@@ -1732,7 +1735,8 @@ void SV_ParseMove(client_t *pSenderClient)
 
 	// KTP: Client-reported downstream loss (7-bit % from the move packet).
 	// Untrusted, but it is the client's own view of the path the shots ride.
-	if (ktp_pm_prof && packet_loss > g_ktp_net_loss_peak)
+	// Proxies excluded — the HLTV proxy's WAN loss is not a player problem.
+	if (ktp_pm_prof && !host_client->proxy && packet_loss > g_ktp_net_loss_peak)
 		g_ktp_net_loss_peak = packet_loss;
 
 	if (!g_psv.paused && (g_psvs.maxclients > 1 || !key_dest) && !(sv_player->v.flags & FL_FROZEN))
@@ -1801,8 +1805,10 @@ void SV_ParseMove(client_t *pSenderClient)
 		SV_SetupMove(host_client);
 
 	// KTP: Residual net_drop after backup compensation = movement the loops
-	// below must synthesize from lastcmd. Counted before they consume it.
-	if (ktp_pm_prof && net_drop > 0)
+	// below must synthesize from lastcmd; counted before they consume it.
+	// The < 24 clamp mirrors the replay gate below and caps what a crafted
+	// sequence number can add — net_drop is client-influenced, 30-bit.
+	if (ktp_pm_prof && !host_client->proxy && net_drop > 0 && net_drop < 24)
 		g_ktp_net_drops += net_drop;
 
 	if (net_drop < 24)
@@ -2046,29 +2052,48 @@ void SV_ExecuteClientMessage(client_t *cl)
 	// SV_CalcClientTime; do not move this into a ring walk). At
 	// sv_unlagsamples 1, latency IS this packet's RTT, so the interval
 	// min/max per client measures the rewind wobble SV_SetupMove sees.
-	if (g_ktp_profiling_enabled && !cl->fakeclient && !cl->proxy)
+	if (g_ktp_profiling_enabled && cl->active && !cl->fakeclient && !cl->proxy)
 	{
 		int ktp_net_slot = cl - g_psvs.clients;
-		if (cl->latency > 0.0f)
+		if (ktp_net_slot < MAX_CLIENTS)
 		{
-			if (cl->latency > g_ktp_net_latency_peak)
+			uint32 ktp_net_bit = 1u << ktp_net_slot;
+			// New occupant in a reused slot must not inherit the previous
+			// player's ping window or lagcomp flag mid-interval.
+			if (g_ktp_net_ping_stamp[ktp_net_slot] != cl->connection_started)
 			{
-				g_ktp_net_latency_peak = cl->latency;
-				g_ktp_net_latency_peak_slot = ktp_net_slot;
+				g_ktp_net_ping_stamp[ktp_net_slot] = cl->connection_started;
+				g_ktp_net_ping_min[ktp_net_slot] = 9999.0f;
+				g_ktp_net_ping_max[ktp_net_slot] = -9999.0f;
+				g_ktp_net_lagcomp_mask &= ~ktp_net_bit;
 			}
-			if (ktp_net_slot < MAX_CLIENTS)
+			g_ktp_net_seen_mask |= ktp_net_bit;
+			// Sticky for the interval: lw/lc are re-derived on every userinfo
+			// update, so a mid-interval cl_lc 0 stretch must not vanish by the
+			// time the boundary scan runs.
+			if (!cl->lw || !cl->lc)
+				g_ktp_net_lagcomp_mask |= ktp_net_bit;
+			if (cl->latency > 0.0f)
 			{
+				if (cl->latency > g_ktp_net_latency_peak)
+				{
+					g_ktp_net_latency_peak = cl->latency;
+					g_ktp_net_latency_peak_slot = ktp_net_slot;
+				}
 				if (cl->latency < g_ktp_net_ping_min[ktp_net_slot])
 					g_ktp_net_ping_min[ktp_net_slot] = cl->latency;
 				if (cl->latency > g_ktp_net_ping_max[ktp_net_slot])
 					g_ktp_net_ping_max[ktp_net_slot] = cl->latency;
 			}
-		}
-		else if (cl->active && realtime - cl->connection_started > 2.0)
-		{
-			// Zero latency on an established client: SV_SetupMove rewinds to
-			// now — zero lag compensation for every shot in this packet.
-			++g_ktp_net_latzero;
+			else if (g_psv.time > 5.0 && realtime - cl->connection_started > 2.0)
+			{
+				// Zero latency on an established client: SV_SetupMove rewinds
+				// to now — zero lag compensation for every shot in this packet.
+				// The g_psv.time grace mutes the post-changelevel storm from
+				// SV_SpawnServer reallocating the frames ring (senttime 0 for
+				// every client until an update round-trips).
+				++g_ktp_net_latzero;
+			}
 		}
 	}
 	host_client = cl;
