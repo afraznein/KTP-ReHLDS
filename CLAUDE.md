@@ -215,3 +215,35 @@ See `N:\Nein_\KTP Git Projects\CLAUDE.md` for paramiko SSH documentation.
 - Wall penetration breaks when using ReHLDS + Metamod together
 - KTP bypasses this by loading KTPAMXX as a ReHLDS extension directly
 - This is the foundation of the "No Metamod Required" architecture
+
+## Lag compensation — `sv_unlagsamples` (do not raise it)
+
+*(Relocated 2026-08-29 from the operator's global project context — the engine mechanics belong with
+the engine. The live-fleet state stays in the global context: the cvar is set nowhere and is effective
+by this engine's default of 1.)*
+
+The engine default is `sv_unlagsamples 1` (`rehlds/engine/sv_user.cpp:68`), and that default is
+deliberate. The prior fleet value of 20 was based on a wrong premise: `cl->frames[]` advances per
+**client packet** (~100/s), NOT per server frame, so 20 samples = ~200ms of latency smoothing. It also
+made the `SV_CalcClientTime` jitter-guard window 20 packets wide — one ping spike in 20 packets
+silently returned latency 0.0 = **zero lag compensation for that shot**. Prime suspect for the historic
+"random hitreg / high-ping players harder to hit vs legacy" reports.
+
+🔻 **The `[KTP_PROFILE] unlag:` shadow estimator is GONE — do not send anyone to read it.** *(measured
+2026-08-26: 0 log files contain `unlag` against a control of 616,161 `KTP_PROFILE` lines in one day;
+the live and staged engines carry 9 identical format strings, none unlag, and no gating cvar.)* It was
+built, did its job and was **deliberately removed** — see `CHANGELOG.md`: the shadow-20 estimator
+validated the `20 → 1` change (**`guard_zero=0` fleet-wide vs `shadow20_zero` in the thousands**), and
+it was the dominant cost in `SV_CalcClientTime` while profiling was on.
+
+🔴 **DO NOT READ `guard_zero=0` AS "the guard is fine" — it was guaranteed by construction.** *(traced
+2026-08-26, `sv_user.cpp:1124`.)* With `sv_unlagsamples` at 1, `backtrack = 1`; `jitterWindow` is then
+1, `minping == maxping`, and the guard `fabs(maxping-minping) <= 0.2` is `0 <= 0.2` — **always true, so
+it can never return 0**. The zero says nothing about the network.
+
+⚠️ **And `shadow20_zero` in the thousands says real jitter EXISTS** — at 1 we neither smooth it nor
+detect it, since `ping` is one packet's RTT with no averaging. **The middle of the 1..20 range was
+never explored.** Re-adding the estimator would need an engine cut.
+
+`config/online/dodserver.cfg.example` carries `sv_unlagsamples 1` with the do-not-raise rationale — keep
+those in agreement.
