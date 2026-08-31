@@ -91,14 +91,19 @@ if [ "$BUILD_RC" -ne 0 ]; then
 fi
 
 # The real gate: freshly-produced artifacts.
+#
+# proxy.so is the HLTV proxy, not a game-server binary -- it is here because
+# CMake has always built it and nothing ever collected it, so a proxy fix could
+# merge and still never reach the 24 HLTV instances that load it.
 ENGINE=$(find build -name "engine_i486.so" -newer "$BUILD_STAMP" 2>/dev/null | head -1)
 HLDS=$(find build -name "hlds_linux" -newer "$BUILD_STAMP" 2>/dev/null | head -1)
-if [ -z "$ENGINE" ] || [ -z "$HLDS" ]; then
+PROXY=$(find build -name "proxy.so" -newer "$BUILD_STAMP" 2>/dev/null | head -1)
+if [ -z "$ENGINE" ] || [ -z "$HLDS" ] || [ -z "$PROXY" ]; then
     echo ""
     echo "========================================"
     echo "BUILD FAILED!"
     echo "========================================"
-    for pair in "engine_i486.so:$ENGINE" "hlds_linux:$HLDS"; do
+    for pair in "engine_i486.so:$ENGINE" "hlds_linux:$HLDS" "proxy.so:$PROXY"; do
         name="${pair%%:*}"
         [ -n "${pair#*:}" ] && continue
         if find build -name "$name" 2>/dev/null | grep -q .; then
@@ -139,6 +144,7 @@ if [ -d "$DEPLOY_DIR" ]; then
         echo "Staging SKIPPED (KTP_NO_STAGE set)."
         echo "  Binaries left at: $ENGINE"
         echo "                    $HLDS"
+        echo "                    $PROXY"
     else
         echo "Deploying to staging folder..."
 
@@ -153,6 +159,12 @@ if [ -d "$DEPLOY_DIR" ]; then
             exit 1
         fi
         echo "  -> Copied engine_i486.so     (md5 $(md5sum "$ENGINE" | cut -d' ' -f1))"
+
+        if ! cp "$PROXY" "$DEPLOY_DIR/"; then
+            echo "ERROR: failed to copy $PROXY into the staging tree."
+            exit 1
+        fi
+        echo "  -> Copied proxy.so           (md5 $(md5sum "$PROXY" | cut -d' ' -f1))"
 
         echo ""
         # Printed only when a copy actually happened -- it used to print regardless.
