@@ -11,7 +11,8 @@
 #    on main after merge still compares main against main.
 #  - build-linux: compile gate only. Fleet binaries are built locally and
 #    verified by md5 (builds are not reproducible) — the CI artifact is never
-#    the deploy artifact.
+#    the deploy artifact. Its verify step names every artifact that has a deploy
+#    path, so dropping one from the build is a red X rather than a quiet pass.
 #
 # The upstream workflow (build.yml, "C/C++ CI") triggers on master only and is
 # not maintained for the KTP tree.
@@ -109,6 +110,10 @@ jobs:
           set -e
           test -f build/rehlds/engine_i486.so || { echo "::error::engine_i486.so missing"; exit 1; }
           find build -name hlds_linux | grep -q . || { echo "::error::hlds_linux missing"; exit 1; }
+          # Asserted by NAME, not by walking what the build happened to emit --
+          # a sweep over present files passes cleanly when a target is dropped.
+          test -f build/rehlds/HLTV/Proxy/proxy.so || { echo "::error::proxy.so missing -- the HLTV proxy is a deploy artifact, see build_linux.sh"; exit 1; }
           file build/rehlds/engine_i486.so | grep -q 'ELF 32-bit' || { echo "::error::engine is not 32-bit ELF"; exit 1; }
+          file build/rehlds/HLTV/Proxy/proxy.so | grep -q 'ELF 32-bit' || { echo "::error::proxy.so is not 32-bit ELF"; exit 1; }
           echo "Artifacts OK:"
-          ls -la build/rehlds/engine_i486.so
+          ls -la build/rehlds/engine_i486.so build/rehlds/HLTV/Proxy/proxy.so
