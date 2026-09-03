@@ -1,14 +1,9 @@
 /*
 *	KTP: sampling seam for the [KTP_PROFILE] net:/net_detail:/rewind: records.
-*
-*	Declared here rather than in a per-TU extern block so the unit tests link
-*	against the same declarations the engine does -- a test carrying its own
-*	externs still links after a signature drift, and then cannot fail.
-*
-*	Every sampler takes the slot and the proxy flag explicitly. HLTV reaches
-*	all of these paths (it sets cl_lw/cl_lc and is a normal client to
-*	SV_SetupMove) and its WAN link is not a player problem, so the exclusion
-*	lives inside the sampler where a test can hold it.
+*	Declared here, not in per-TU extern blocks, so the tests link against the
+*	same declarations the engine does -- a test carrying its own externs still
+*	links after a signature drift, and then cannot fail. Slot and proxy flag are
+*	explicit because HLTV reaches every one of these paths.
 */
 
 #pragma once

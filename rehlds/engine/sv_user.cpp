@@ -1406,8 +1406,8 @@ void SV_SetupMove(client_t *_host_client)
 
 	if (SV_UPDATE_BACKUP <= 0)
 	{
-		// Same outcome as the history-exhausted bail below, and SV_UPDATE_BACKUP
-		// is a runtime value (8 or 64), so this is not a dead branch.
+		// Runtime value, so account for the exit rather than assume it cannot
+		// fire — it is what keeps miss a subset of attempts by construction.
 		if (g_ktp_profiling_enabled)
 			KTP_RewindMiss(ktp_shooter, _host_client->proxy);
 

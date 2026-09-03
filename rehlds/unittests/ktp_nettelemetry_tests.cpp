@@ -44,14 +44,17 @@ static void ktp_reset_all()
 	}
 }
 
-// The bug ad8972e fixed was an HLTV proxy winning the worst-slot attribution,
-// and no test could have caught it because the exclusion lived at the call
-// site. It lives in the samplers now, so this is that test.
+// An HLTV proxy could win the worst-slot attribution, and no test could hold
+// that while the exclusion lived at the call site. It lives in the samplers
+// now, so this is that test.
 TEST(ProxyContributesNothing, KtpNetTelemetry, 1000)
 {
 	ktp_reset_all();
 
 	KTP_NetSamplePacket(3, PROXY, 0, 0, 0.400f, 100.0, LATZERO_OK);
+	// Separate call: the one above carries a latency, so it never reaches the
+	// latzero branch and cannot speak for it.
+	KTP_NetSamplePacket(3, PROXY, 1, 1, 0.0f, 100.0, LATZERO_OK);
 	KTP_NetSampleDrops(3, PROXY, 7);
 	KTP_RewindAttempt(3, PROXY);
 	KTP_RewindMiss(3, PROXY);
@@ -63,31 +66,42 @@ TEST(ProxyContributesNothing, KtpNetTelemetry, 1000)
 	UINT32_EQUALS("proxy set lagcomp_mask", 0u, g_ktp_net_lagcomp_mask);
 	UINT32_EQUALS("proxy counted drops", 0u, g_ktp_net_drops);
 	UINT32_EQUALS("proxy counted drops per slot", 0u, g_ktp_net_drops_slot[3]);
+	UINT32_EQUALS("proxy counted latzero", 0u, g_ktp_net_latzero);
+	UINT32_EQUALS("proxy counted latzero per slot", 0u, g_ktp_net_latzero_slot[3]);
 	UINT32_EQUALS("proxy counted rewind attempts", 0u, g_ktp_rewind_attempts);
 	UINT32_EQUALS("proxy counted rewind misses", 0u, g_ktp_rewind_miss);
+	UINT32_EQUALS("proxy counted a per-slot miss", 0u, g_ktp_rewind_miss_slot[3]);
 	UINT32_EQUALS("proxy counted rewind skips", 0u, g_ktp_rewind_skip);
 	CHECK("proxy won latency peak", g_ktp_net_latency_peak_slot == -1);
+	CHECK("proxy moved the ping window", g_ktp_net_ping_max[3] == -9999.0f);
 	CHECK("proxy won depth peak", g_ktp_rewind_depth_slot == -1);
 	CHECK("proxy won dist peak", g_ktp_rewind_dist_slot == -1);
 
 	// A control: the identical calls from a non-proxy must land, or the
 	// assertions above would pass against a sampler that does nothing at all.
+	// Magnitudes differ from the proxy's so each peak assertion stands alone —
+	// with equal values a leaked guard would make the control a silent no-op.
 	KTP_NetSamplePacket(3, PLAYER, 0, 0, 0.400f, 100.0, LATZERO_OK);
+	KTP_NetSamplePacket(3, PLAYER, 1, 1, 0.0f, 100.0, LATZERO_OK);
 	KTP_NetSampleDrops(3, PLAYER, 7);
 	KTP_RewindAttempt(3, PLAYER);
 	KTP_RewindMiss(3, PLAYER);
-	KTP_RewindDepth(3, PLAYER, 0.250f);
+	KTP_RewindDepth(3, PLAYER, 0.500f);
 	KTP_RewindSkip(PLAYER);
-	KTP_RewindDist(3, PLAYER, 4096.0f);
+	KTP_RewindDist(3, PLAYER, 9000.0f);
 
 	UINT32_EQUALS("control: seen_mask", 1u << 3, g_ktp_net_seen_mask);
 	UINT32_EQUALS("control: lagcomp_mask", 1u << 3, g_ktp_net_lagcomp_mask);
 	UINT32_EQUALS("control: drops", 7u, g_ktp_net_drops);
+	UINT32_EQUALS("control: latzero", 1u, g_ktp_net_latzero);
+	UINT32_EQUALS("control: latzero per slot", 1u, g_ktp_net_latzero_slot[3]);
 	UINT32_EQUALS("control: rewind attempts", 1u, g_ktp_rewind_attempts);
 	UINT32_EQUALS("control: rewind misses", 1u, g_ktp_rewind_miss);
+	UINT32_EQUALS("control: per-slot miss", 1u, g_ktp_rewind_miss_slot[3]);
 	UINT32_EQUALS("control: rewind skips", 1u, g_ktp_rewind_skip);
 	CHECK("control: depth slot", g_ktp_rewind_depth_slot == 3);
 	CHECK("control: dist slot", g_ktp_rewind_dist_slot == 3);
+	CHECK("control: ping window moved", g_ktp_net_ping_max[3] == 0.400f);
 }
 
 // lagcomp_first has read -1 on every net_detail: line the fleet has ever
