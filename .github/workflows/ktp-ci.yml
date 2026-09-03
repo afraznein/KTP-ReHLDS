@@ -121,7 +121,8 @@ jobs:
           # linked against cppunitlite, so the binary IS the test runner.
           # The target is `engine`; the artifact is `engine_i486`.
           test -x build-ut/rehlds/engine_i486 || { echo "::error::unittest binary missing"; exit 1; }
-          ./build-ut/rehlds/engine_i486
+          # libsteam_api.so ships in the repo, not on the system loader path.
+          LD_LIBRARY_PATH="$PWD/rehlds/lib/linux32" ./build-ut/rehlds/engine_i486
 
   build-linux:
     name: Linux GCC 32-bit build
