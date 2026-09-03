@@ -119,8 +119,9 @@ jobs:
           set -e
           # Unittests swaps the engine from a shared library to an executable
           # linked against cppunitlite, so the binary IS the test runner.
-          test -x build-ut/rehlds/engine || { echo "::error::unittest binary missing"; exit 1; }
-          ./build-ut/rehlds/engine
+          # The target is `engine`; the artifact is `engine_i486`.
+          test -x build-ut/rehlds/engine_i486 || { echo "::error::unittest binary missing"; exit 1; }
+          ./build-ut/rehlds/engine_i486
 
   build-linux:
     name: Linux GCC 32-bit build
