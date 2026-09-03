@@ -27,22 +27,16 @@
 */
 
 #include "precompiled.h"
+#include "ktp_nettelemetry.h"
 
 
 // KTP: profiling state from sv_main.cpp (opcode/parsemove instrumentation)
 extern bool g_ktp_profiling_enabled;  // Set by SV_Frame_Internal each frame
 
-// KTP: net-health accumulators from sv_main.cpp ([KTP_PROFILE] net: record)
-extern uint32 g_ktp_net_drops;
-extern uint32 g_ktp_net_latzero;
+// KTP: net-health accumulators from sv_main.cpp ([KTP_PROFILE] net: record).
+// The packet-site and net_drop accumulators moved behind KTP_NetSample* in
+// ktp_nettelemetry.h; what stays here is written inline from this file.
 extern float g_ktp_net_loss_peak;
-extern float g_ktp_net_latency_peak;
-extern int g_ktp_net_latency_peak_slot;
-extern float g_ktp_net_ping_min[MAX_CLIENTS];
-extern float g_ktp_net_ping_max[MAX_CLIENTS];
-extern uint32 g_ktp_net_seen_mask;
-extern uint32 g_ktp_net_lagcomp_mask;
-extern double g_ktp_net_ping_stamp[MAX_CLIENTS];
 extern uint32 g_ktp_net_maxunlag_hits;
 extern float g_ktp_net_maxunlag_excess_peak;
 extern int g_ktp_net_maxunlag_excess_slot;
@@ -1305,6 +1299,10 @@ void SV_SetupMove(client_t *_host_client)
 		return;
 
 	nofind = 0;
+	const int ktp_shooter = _host_client - g_psvs.clients;
+	if (g_ktp_profiling_enabled)
+		KTP_RewindAttempt(ktp_shooter, _host_client->proxy);
+
 	for (int i = 0; i < g_psvs.maxclients; i++)
 	{
 		cl = &g_psvs.clients[i];
@@ -1408,6 +1406,11 @@ void SV_SetupMove(client_t *_host_client)
 
 	if (SV_UPDATE_BACKUP <= 0)
 	{
+		// Runtime value, so account for the exit rather than assume it cannot
+		// fire — it is what keeps miss a subset of attempts by construction.
+		if (g_ktp_profiling_enabled)
+			KTP_RewindMiss(ktp_shooter, _host_client->proxy);
+
 		Q_memset(truepositions, 0, sizeof(truepositions));
 		nofind = 1;
 		return;
@@ -1460,6 +1463,11 @@ void SV_SetupMove(client_t *_host_client)
 
 	if ( i >= SV_UPDATE_BACKUP || targettime - nextFrame->senttime > 1.0)
 	{
+		// The history could not reach targettime: nothing is rewound and every
+		// shot in this packet is judged against present-time positions.
+		if (g_ktp_profiling_enabled)
+			KTP_RewindMiss(ktp_shooter, _host_client->proxy);
+
 		Q_memset(truepositions, 0, sizeof(truepositions));
 		nofind = 1;
 		return;
@@ -1500,7 +1508,13 @@ void SV_SetupMove(client_t *_host_client)
 
 		pos = &truepositions[state->number - 1];
 		if (pos->deadflag)
+		{
+			// Dropped from the rewind (dead, teleported, EF_NOINTERP) — this
+			// target stays at its present position while the rest move back.
+			if (g_ktp_profiling_enabled)
+				KTP_RewindSkip(_host_client->proxy);
 			continue;
+		}
 
 		if (!pos->active)
 		{
@@ -1531,6 +1545,16 @@ void SV_SetupMove(client_t *_host_client)
 		pos->initial_correction_org[2] = origin[2];
 		if (!VectorCompare(origin, cl->edict->v.origin))
 		{
+			// How far back the rewind moved this target, against the position it
+			// really occupies now. Squared — the emit site roots it once.
+			if (g_ktp_profiling_enabled)
+			{
+				float dx = origin[0] - pos->oldorg[0];
+				float dy = origin[1] - pos->oldorg[1];
+				float dz = origin[2] - pos->oldorg[2];
+				KTP_RewindDist(ktp_shooter, _host_client->proxy, dx * dx + dy * dy + dz * dz);
+			}
+
 			cl->edict->v.origin[0] = origin[0];
 			cl->edict->v.origin[1] = origin[1];
 			cl->edict->v.origin[2] = origin[2];
@@ -1538,6 +1562,9 @@ void SV_SetupMove(client_t *_host_client)
 			pos->needrelink = 1;
 		}
 	}
+
+	if (g_ktp_profiling_enabled)
+		KTP_RewindDepth(ktp_shooter, _host_client->proxy, (float)(realtime - targettime));
 }
 
 void SV_RestoreMove(client_t *_host_client)
@@ -1865,10 +1892,8 @@ void SV_ParseMove(client_t *pSenderClient)
 
 	// KTP: Residual net_drop after backup compensation = movement the loops
 	// below must synthesize from lastcmd; counted before they consume it.
-	// The < 24 clamp mirrors the replay gate below and caps what a crafted
-	// sequence number can add — net_drop is client-influenced, 30-bit.
-	if (ktp_pm_prof && !host_client->proxy && net_drop > 0 && net_drop < 24)
-		g_ktp_net_drops += net_drop;
+	if (ktp_pm_prof)
+		KTP_NetSampleDrops(host_client - g_psvs.clients, host_client->proxy, net_drop);
 
 	if (net_drop < 24)
 	{
@@ -2111,49 +2136,14 @@ void SV_ExecuteClientMessage(client_t *cl)
 	// SV_CalcClientTime; do not move this into a ring walk). At
 	// sv_unlagsamples 1, latency IS this packet's RTT, so the interval
 	// min/max per client measures the rewind wobble SV_SetupMove sees.
-	if (g_ktp_profiling_enabled && cl->active && !cl->fakeclient && !cl->proxy)
+	if (g_ktp_profiling_enabled && cl->active && !cl->fakeclient)
 	{
-		int ktp_net_slot = cl - g_psvs.clients;
-		if (ktp_net_slot < MAX_CLIENTS)
-		{
-			uint32 ktp_net_bit = 1u << ktp_net_slot;
-			// New occupant in a reused slot must not inherit the previous
-			// player's ping window or lagcomp flag mid-interval.
-			if (g_ktp_net_ping_stamp[ktp_net_slot] != cl->connection_started)
-			{
-				g_ktp_net_ping_stamp[ktp_net_slot] = cl->connection_started;
-				g_ktp_net_ping_min[ktp_net_slot] = 9999.0f;
-				g_ktp_net_ping_max[ktp_net_slot] = -9999.0f;
-				g_ktp_net_lagcomp_mask &= ~ktp_net_bit;
-			}
-			g_ktp_net_seen_mask |= ktp_net_bit;
-			// Sticky for the interval: lw/lc are re-derived on every userinfo
-			// update, so a mid-interval cl_lc 0 stretch must not vanish by the
-			// time the boundary scan runs.
-			if (!cl->lw || !cl->lc)
-				g_ktp_net_lagcomp_mask |= ktp_net_bit;
-			if (cl->latency > 0.0f)
-			{
-				if (cl->latency > g_ktp_net_latency_peak)
-				{
-					g_ktp_net_latency_peak = cl->latency;
-					g_ktp_net_latency_peak_slot = ktp_net_slot;
-				}
-				if (cl->latency < g_ktp_net_ping_min[ktp_net_slot])
-					g_ktp_net_ping_min[ktp_net_slot] = cl->latency;
-				if (cl->latency > g_ktp_net_ping_max[ktp_net_slot])
-					g_ktp_net_ping_max[ktp_net_slot] = cl->latency;
-			}
-			else if (g_psv.time > 5.0 && realtime - cl->connection_started > 2.0)
-			{
-				// Zero latency on an established client: SV_SetupMove rewinds
-				// to now — zero lag compensation for every shot in this packet.
-				// The g_psv.time grace mutes the post-changelevel storm from
-				// SV_SpawnServer reallocating the frames ring (senttime 0 for
-				// every client until an update round-trips).
-				++g_ktp_net_latzero;
-			}
-		}
+		// The g_psv.time grace mutes the post-changelevel latzero storm from
+		// SV_SpawnServer reallocating the frames ring (senttime 0 for every
+		// client until an update round-trips).
+		qboolean ktp_latzero_ok = (g_psv.time > 5.0 && realtime - cl->connection_started > 2.0) ? TRUE : FALSE;
+		KTP_NetSamplePacket(cl - g_psvs.clients, cl->proxy, cl->lw, cl->lc,
+			cl->latency, cl->connection_started, ktp_latzero_ok);
 	}
 	host_client = cl;
 	sv_player = cl->edict;

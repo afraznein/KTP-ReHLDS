@@ -27,6 +27,7 @@
 */
 
 #include "precompiled.h"
+#include "ktp_nettelemetry.h"
 #include <atomic>  // KTP: async log-writer telemetry counters
 
 #ifndef _WIN32
@@ -7389,6 +7390,20 @@ uint32 g_ktp_net_lagcomp_mask = 0;      // seen slots that ever had !lw || !lc t
 // player's ping window or lagcomp flag mid-interval. Deliberately NOT reset per
 // interval — connection_started survives changelevel, so the window does too.
 double g_ktp_net_ping_stamp[MAX_CLIENTS];
+// Per-slot drops/latzero. The server-wide totals above answer "how much" and
+// never "who", which is the question every drop burst has raised so far.
+uint32 g_ktp_net_drops_slot[MAX_CLIENTS];
+uint32 g_ktp_net_latzero_slot[MAX_CLIENTS];
+// Rewind outcome (SV_SetupMove). Attempts partition into miss and success, so
+// the success count is derived at the emit site rather than counted twice.
+uint32 g_ktp_rewind_attempts = 0;
+uint32 g_ktp_rewind_miss = 0;
+uint32 g_ktp_rewind_skip = 0;
+uint32 g_ktp_rewind_miss_slot[MAX_CLIENTS];
+float g_ktp_rewind_depth_peak = 0.0f;
+int g_ktp_rewind_depth_slot = -1;
+float g_ktp_rewind_dist_peak_sq = 0.0f;
+int g_ktp_rewind_dist_slot = -1;
 // logio split: which sink blocks — logaddr = Netchan_OutOfBandPrint UDP sendto
 // per logaddress (HLStatsX), file = FS_FPrintf to qconsole.log on disk.
 double g_ktp_logaddr_io_frame = 0.0;
@@ -7433,6 +7448,134 @@ int g_ktp_send_client_count = 0;
 double g_ktp_send_worst_time_peak = 0.0;
 int g_ktp_send_worst_slot_peak = -1;
 int g_ktp_send_count_peak = 0;
+
+// KTP: Telemetry samplers. Callers gate on g_ktp_profiling_enabled so the hot
+// path pays nothing when off; what fails silently — the proxy exclusion, the
+// slot bound, the drop clamp — lives in here where a test can hold it.
+static bool KTP_NetSlotUsable(int slot, qboolean proxy)
+{
+	return !proxy && slot >= 0 && slot < MAX_CLIENTS;
+}
+
+void KTP_NetSamplePacket(int slot, qboolean proxy, int lw, int lc, float latency,
+	double connection_started, qboolean latzero_eligible)
+{
+	if (!KTP_NetSlotUsable(slot, proxy))
+		return;
+
+	uint32 bit = 1u << slot;
+
+	// A new occupant in a reused slot must not inherit the previous player's
+	// ping window or lagcomp flag mid-interval.
+	if (g_ktp_net_ping_stamp[slot] != connection_started)
+	{
+		g_ktp_net_ping_stamp[slot] = connection_started;
+		g_ktp_net_ping_min[slot] = 9999.0f;
+		g_ktp_net_ping_max[slot] = -9999.0f;
+		g_ktp_net_lagcomp_mask &= ~bit;
+	}
+
+	g_ktp_net_seen_mask |= bit;
+
+	// Sticky for the interval: lw/lc are re-derived on every userinfo update, so
+	// a mid-interval cl_lc 0 stretch must not vanish before the boundary scan.
+	if (!lw || !lc)
+		g_ktp_net_lagcomp_mask |= bit;
+
+	if (latency > 0.0f)
+	{
+		if (latency > g_ktp_net_latency_peak)
+		{
+			g_ktp_net_latency_peak = latency;
+			g_ktp_net_latency_peak_slot = slot;
+		}
+		if (latency < g_ktp_net_ping_min[slot])
+			g_ktp_net_ping_min[slot] = latency;
+		if (latency > g_ktp_net_ping_max[slot])
+			g_ktp_net_ping_max[slot] = latency;
+	}
+	else if (latzero_eligible)
+	{
+		// Zero latency on an established client: SV_SetupMove rewinds to now —
+		// zero lag compensation for every shot in this packet.
+		++g_ktp_net_latzero;
+		++g_ktp_net_latzero_slot[slot];
+	}
+}
+
+void KTP_NetSampleDrops(int slot, qboolean proxy, int net_drop)
+{
+	// The < 24 clamp mirrors the replay gate in SV_ParseMove and caps what a
+	// crafted sequence number can add — net_drop is client-influenced, 30-bit.
+	if (net_drop <= 0 || net_drop >= 24 || !KTP_NetSlotUsable(slot, proxy))
+		return;
+
+	g_ktp_net_drops += net_drop;
+	g_ktp_net_drops_slot[slot] += net_drop;
+}
+
+void KTP_RewindAttempt(int slot, qboolean proxy)
+{
+	if (!KTP_NetSlotUsable(slot, proxy))
+		return;
+
+	++g_ktp_rewind_attempts;
+}
+
+void KTP_RewindMiss(int slot, qboolean proxy)
+{
+	if (!KTP_NetSlotUsable(slot, proxy))
+		return;
+
+	++g_ktp_rewind_miss;
+	++g_ktp_rewind_miss_slot[slot];
+}
+
+void KTP_RewindDepth(int slot, qboolean proxy, float depth)
+{
+	if (!KTP_NetSlotUsable(slot, proxy) || depth <= g_ktp_rewind_depth_peak)
+		return;
+
+	g_ktp_rewind_depth_peak = depth;
+	g_ktp_rewind_depth_slot = slot;
+}
+
+void KTP_RewindSkip(qboolean proxy)
+{
+	if (proxy)
+		return;
+
+	++g_ktp_rewind_skip;
+}
+
+void KTP_RewindDist(int slot, qboolean proxy, float dist_sq)
+{
+	if (!KTP_NetSlotUsable(slot, proxy) || dist_sq <= g_ktp_rewind_dist_peak_sq)
+		return;
+
+	g_ktp_rewind_dist_peak_sq = dist_sq;
+	g_ktp_rewind_dist_slot = slot;
+}
+
+int KTP_NetWorstSlot(const uint32 *counts, uint32 *out_count)
+{
+	int worst = -1;
+	uint32 best = 0;
+
+	for (int i = 0; i < MAX_CLIENTS; i++)
+	{
+		if (counts[i] > best)
+		{
+			best = counts[i];
+			worst = i;
+		}
+	}
+
+	if (out_count)
+		*out_count = best;
+
+	return worst;
+}
 
 // KTP: Helper function to broadcast pause state to clients
 // Respects ktp_silent_pause cvar - if enabled, skips sending svc_setpause
@@ -8870,7 +9013,7 @@ void SV_UpdatePausedHUD(void)
 
 // KTP: one reset list, two callers -- the interval summary and the disabled->enabled
 // transition. They were separate lists and had already drifted apart.
-static void KTP_ProfileResetInterval(void)
+void KTP_ProfileResetInterval(void)
 {
 	g_ktp_profile_acc_readpackets = 0.0;
 	g_ktp_profile_acc_physics = 0.0;
@@ -8916,11 +9059,21 @@ static void KTP_ProfileResetInterval(void)
 	g_ktp_net_shadow_hits = 0;
 	g_ktp_net_shadow_peak = 0.0f;
 	g_ktp_net_shadow_peak_slot = -1;
+	g_ktp_rewind_attempts = 0;
+	g_ktp_rewind_miss = 0;
+	g_ktp_rewind_skip = 0;
+	g_ktp_rewind_depth_peak = 0.0f;
+	g_ktp_rewind_depth_slot = -1;
+	g_ktp_rewind_dist_peak_sq = 0.0f;
+	g_ktp_rewind_dist_slot = -1;
 	// ping_stamp survives on purpose: it tracks connection identity, not the interval
 	for (int i = 0; i < MAX_CLIENTS; i++)
 	{
 		g_ktp_net_ping_min[i] = 9999.0f;
 		g_ktp_net_ping_max[i] = -9999.0f;
+		g_ktp_net_drops_slot[i] = 0;
+		g_ktp_net_latzero_slot[i] = 0;
+		g_ktp_rewind_miss_slot[i] = 0;
 	}
 }
 
@@ -9435,10 +9588,15 @@ void EXT_FUNC SV_Frame_Internal()
 				// status query. Slots index a persistent array, so a client who
 				// left mid-interval leaves a stale name — same caveat as
 				// send_detail_peak.
+				uint32 net_drops_worst_n = 0;
+				uint32 net_latzero_worst_n = 0;
+				int net_drops_slot = KTP_NetWorstSlot(g_ktp_net_drops_slot, &net_drops_worst_n);
+				int net_latzero_slot = KTP_NetWorstSlot(g_ktp_net_latzero_slot, &net_latzero_worst_n);
 				if (net_lagcomp_slot >= 0 || net_jitter_slot >= 0 || g_ktp_net_latency_peak_slot >= 0
-					|| g_ktp_net_maxunlag_excess_slot >= 0 || g_ktp_net_shadow_peak_slot >= 0)
+					|| g_ktp_net_maxunlag_excess_slot >= 0 || g_ktp_net_shadow_peak_slot >= 0
+					|| net_drops_slot >= 0 || net_latzero_slot >= 0)
 				{
-					Log_Printf("[KTP_PROFILE] net_detail: lagcomp_first=%d(%s) latency_worst=%d(%s) jitter_worst=%d(%s) maxunlag_excess_worst=%d(%s) shadow_worst=%d(%s)\n",
+					Log_Printf("[KTP_PROFILE] net_detail: lagcomp_first=%d(%s) latency_worst=%d(%s) jitter_worst=%d(%s) maxunlag_excess_worst=%d(%s) shadow_worst=%d(%s) drops_worst=%d(%s) drops_worst_n=%u latzero_worst=%d(%s) latzero_worst_n=%u\n",
 						net_lagcomp_slot,
 						net_lagcomp_slot >= 0 ? g_psvs.clients[net_lagcomp_slot].name : "-",
 						g_ktp_net_latency_peak_slot,
@@ -9448,7 +9606,37 @@ void EXT_FUNC SV_Frame_Internal()
 						g_ktp_net_maxunlag_excess_slot,
 						g_ktp_net_maxunlag_excess_slot >= 0 ? g_psvs.clients[g_ktp_net_maxunlag_excess_slot].name : "-",
 						g_ktp_net_shadow_peak_slot,
-						g_ktp_net_shadow_peak_slot >= 0 ? g_psvs.clients[g_ktp_net_shadow_peak_slot].name : "-");
+						g_ktp_net_shadow_peak_slot >= 0 ? g_psvs.clients[g_ktp_net_shadow_peak_slot].name : "-",
+						net_drops_slot,
+						net_drops_slot >= 0 ? g_psvs.clients[net_drops_slot].name : "-",
+						net_drops_worst_n,
+						net_latzero_slot,
+						net_latzero_slot >= 0 ? g_psvs.clients[net_latzero_slot].name : "-",
+						net_latzero_worst_n);
+				}
+
+				// Every field above describes the network a shot rode; these
+				// describe whether the rewind judging it ran at all. A miss
+				// rewinds nothing — the whole packet is judged at present time.
+				Log_Printf("[KTP_PROFILE] rewind: attempts=%u miss=%u skip=%u depth_worst=%.1fms dist_worst=%.1fu\n",
+					g_ktp_rewind_attempts, g_ktp_rewind_miss, g_ktp_rewind_skip,
+					g_ktp_rewind_depth_peak * 1000.0,
+					sqrt(g_ktp_rewind_dist_peak_sq));
+
+				uint32 rewind_miss_worst_n = 0;
+				int rewind_miss_slot = KTP_NetWorstSlot(g_ktp_rewind_miss_slot, &rewind_miss_worst_n);
+				if (rewind_miss_slot >= 0 || g_ktp_rewind_depth_slot >= 0 || g_ktp_rewind_dist_slot >= 0)
+				{
+					// Slots name the SHOOTER — the client whose SV_SetupMove pass
+					// this was — not the target that got moved.
+					Log_Printf("[KTP_PROFILE] rewind_detail: miss_worst=%d(%s) miss_worst_n=%u depth_worst=%d(%s) dist_worst=%d(%s)\n",
+						rewind_miss_slot,
+						rewind_miss_slot >= 0 ? g_psvs.clients[rewind_miss_slot].name : "-",
+						rewind_miss_worst_n,
+						g_ktp_rewind_depth_slot,
+						g_ktp_rewind_depth_slot >= 0 ? g_psvs.clients[g_ktp_rewind_depth_slot].name : "-",
+						g_ktp_rewind_dist_slot,
+						g_ktp_rewind_dist_slot >= 0 ? g_psvs.clients[g_ktp_rewind_dist_slot].name : "-");
 				}
 			}
 
