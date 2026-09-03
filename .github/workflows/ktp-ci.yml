@@ -109,7 +109,9 @@ jobs:
           tr -d '\015' < rehlds/version/appversion.sh > /tmp/av.sh
           mv /tmp/av.sh rehlds/version/appversion.sh
           chmod +x rehlds/version/appversion.sh
-          cmake -S . -B build-ut -DCMAKE_BUILD_TYPE=Unittests
+          # -pthread: libstdc++ pulls pthread_join but the 32-bit link line
+          # omits libpthread, so the executable target fails to link.
+          cmake -S . -B build-ut -DCMAKE_BUILD_TYPE=Unittests -DCMAKE_EXE_LINKER_FLAGS=-pthread
           make -C build-ut -j"$(nproc)"
 
       - name: Run
