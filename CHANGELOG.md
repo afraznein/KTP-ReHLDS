@@ -106,6 +106,101 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
   loop, a compare plus (when the clamp engages) a subtract in `SV_SetupMove`,
   and a 32-slot scan once per interval. No `frames[]` walk anywhere.
 
+- **`drops` and `latzero` are now attributed to a slot.** Both were server-wide
+  totals with no per-client breakdown, which is the one thing the six-day sweep
+  could not answer: 223,631 drops against 242,717 latzero, 66 % of populated
+  samples carrying zero drops, and **77 samples carrying 23.5 % of all drops**.
+  A burst that concentrated is a client problem; the same total spread evenly is
+  a server problem, and the aggregate cannot tell them apart. `net_detail:` gains
+  `drops_worst=<slot>(<name>) drops_worst_n=<n>` and the same pair for `latzero`
+  — the worst slot and **its own count**, not the server total, because the
+  attribution without the magnitude is half an answer.
+
+- **`[KTP_PROFILE] rewind:` — did the rewind that judges a shot actually happen.**
+  Every field in `net:` describes the network conditions a shot rode. None of them
+  describes whether `SV_SetupMove` put the target back where it was, which is why
+  *"the servers don't feel right"* has stayed unanswerable: the machinery reads
+  intact (`unlag=1`, `lagcomp_off=0` fleet-wide) while the outcome is unmeasured.
+
+  ```
+  [KTP_PROFILE] rewind: attempts=4812 miss=37 skip=112 depth_worst=118.4ms dist_worst=204.6u
+  [KTP_PROFILE] rewind_detail: miss_worst=7(PlayerB) miss_worst_n=31 depth_worst=7(PlayerB) dist_worst=4(PlayerA)
+  ```
+
+  - `attempts` — passes that got past every early return and tried to rewind.
+    Misses are a subset, so successes are `attempts - miss`; counting both would
+    have been two numbers that can disagree.
+  - `miss` — **`SV_SetupMove`'s frame history could not reach `targettime`**
+    (`i >= SV_UPDATE_BACKUP`, or the found frame is more than 1 s off). It
+    already zeroed `truepositions` and set `nofind`, silently: **no target is
+    rewound and the entire packet is judged against present-time positions.**
+    This is a total lag-compensation failure for that packet and it was counted
+    nowhere. Distinct from `latzero`, which is the same outcome by a different
+    cause (no usable ping sample) — do not merge them.
+  - `skip` — targets dropped from an otherwise good rewind by `deadflag` (dead,
+    teleported, `EF_NOINTERP`). Those stay at their present position while
+    everyone else moves back, which is the shot that visibly connects and does
+    nothing. ⚠️ Counted once per **shooter-packet per dropped target**, so it is
+    a rate that scales with player count — one teleporting target raises it by
+    however many shooters were firing that interval. Read it against `attempts`,
+    never as a headcount.
+  - `depth_worst` — worst `realtime - targettime`, how far back a successful
+    rewind reached. Directly comparable to `latency_worst`, and the pair is what
+    shows a clamp or an interp setting eating the rewind.
+  - `dist_worst` — worst distance, in world units, that a rewind moved a target
+    from the position it actually occupies. This is the closest engine-side
+    measure of *"how much of this hit is the rewind's opinion"*: at 200 units the
+    shot's outcome is entirely a function of rewind accuracy. Accumulated
+    squared so the hot path never calls `sqrt`; rooted once at the emit site.
+
+  `rewind_detail:` slots name the **shooter** — the client whose `SV_SetupMove`
+  pass it was — never the target that got moved. Gated on the existing
+  `ktp_profile_net` sub-toggle; no new cvar. `rewind:` emits unconditionally so
+  an all-zero interval is distinguishable from a broken emit, and
+  `rewind_detail:` only when it has a slot to name.
+
+  ⛔ **Engine-side only, deliberately.** Whether a bullet *hit* is a trace the
+  game DLL runs, so the engine cannot report hit-registration directly. What it
+  can report is whether the rewind those traces run against happened, how far it
+  reached and how far it moved the target — and that is what this record is. A
+  true hit/miss telemetry needs the DoD DLL side and is not in scope here.
+
+- **The proxy exclusion, the slot bounds and the `net_drop` clamp now live in
+  testable samplers** (`ktp_nettelemetry.h` / `KTP_NetSample*`, `KTP_Rewind*`).
+  `ad8972e` exists because HLTV sets `cl_lw`/`cl_lc` and so trips these paths,
+  and a proxy could win the worst-slot attribution; that was caught in review
+  and could not have been caught by a test, because the exclusion lived at the
+  call site. Every sampler now takes the slot and the proxy flag explicitly and
+  drops proxies internally, and `ProxyContributesNothing` asserts it — with a
+  non-proxy control, so it cannot pass against a sampler that does nothing.
+  Behaviour-preserving: `SV_ExecuteClientMessage`'s packet-site block and
+  `SV_ParseMove`'s `net_drop` line moved into the samplers unchanged.
+
+### Verified — `lagcomp_first` has always been `-1`, and that is the healthy value
+
+`lagcomp_first` reads `-1` on **every** `net_detail:` line the fleet has ever
+emitted (measured 2026-09-03 across all five game hosts, on the logs retained
+that day: 44,669 `net_detail:` lines, `lagcomp_first=-1` on all 44,669 and the
+only distinct value; `lagcomp_off=0` the only distinct value across 1,583,386
+`net:` lines).
+
+⛔ **It is not dead code and must not be deleted to "clean it up".** The write at
+the packet site is in the same guarded block that sets `g_ktp_net_seen_mask`, and
+that mask is provably live — the sibling fields on those same lines
+(`latency_worst`, `jitter_worst`) carry real slots and real player names. The
+block runs; only the `!lw || !lc` predicate is never satisfied, because nobody
+plays with `cl_lw`/`cl_lc` off, HLTV pins both to `1` and is excluded anyway, and
+both default to `1` in the client.
+
+Corroborated independently: `KTPCvarChecker` 7.33 samples the same two userinfo
+keys with deliberately matched semantics (absent key reads as `0`) and has logged
+**0** `LAGCOMP_OFF` events against 468 `LAGCOMP_SAMPLER_OK` heartbeats.
+
+🔑 **A `-1` from a correct predicate and a `-1` from a broken one are the same
+character**, so the silence was unfalsifiable. `LagcompMaskPredicate` now pins it:
+`lw=0` and `lc=0` each raise the bit, `1/1` does not, the bit is sticky across the
+interval, and a new connection in a reused slot does not inherit it.
+
 ### Changed
 
 - **`REHLDS_API_VERSION_MINOR` 15 → 16 — the fork's vtable has never matched the
