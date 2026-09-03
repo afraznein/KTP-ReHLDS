@@ -84,6 +84,46 @@ jobs:
             exit 1
           fi
 
+  engine-unittests:
+    name: Engine unit tests (cppunitlite)
+    runs-on: ubuntu-latest
+    # debian:11 for glibc 2.31. The bundled rehlds/lib/linux32/librt.so stub
+    # references __libc_dlopen_mode, a GLIBC_PRIVATE symbol dropped in glibc
+    # 2.34, so the Unittests link fails on a modern runner.
+    container: debian:11-slim
+    steps:
+      - name: Install toolchain
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq cmake gcc g++ gcc-multilib g++-multilib make git
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # appversion.sh derives the build number from git history
+
+      - name: Configure and build
+        run: |
+          set -e
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          tr -d '\015' < rehlds/version/appversion.sh > /tmp/av.sh
+          mv /tmp/av.sh rehlds/version/appversion.sh
+          chmod +x rehlds/version/appversion.sh
+          # -pthread: libstdc++ pulls pthread_join but the 32-bit link line
+          # omits libpthread, so the executable target fails to link.
+          cmake -S . -B build-ut -DCMAKE_BUILD_TYPE=Unittests -DCMAKE_EXE_LINKER_FLAGS=-pthread
+          make -C build-ut -j"$(nproc)"
+
+      - name: Run
+        run: |
+          set -e
+          # Unittests swaps the engine from a shared library to an executable
+          # linked against cppunitlite, so the binary IS the test runner.
+          # The target is `engine`; the artifact is `engine_i486`.
+          test -x build-ut/rehlds/engine_i486 || { echo "::error::unittest binary missing"; exit 1; }
+          # libsteam_api.so ships in the repo, not on the system loader path.
+          LD_LIBRARY_PATH="$PWD/rehlds/lib/linux32" ./build-ut/rehlds/engine_i486
+
   build-linux:
     name: Linux GCC 32-bit build
     runs-on: ubuntu-latest
