@@ -7368,6 +7368,17 @@ float g_ktp_net_latency_peak = 0.0f;    // worst single-packet latency
 int g_ktp_net_latency_peak_slot = -1;
 float g_ktp_net_ping_min[MAX_CLIENTS];
 float g_ktp_net_ping_max[MAX_CLIENTS];
+// sv_maxunlag clamp (SV_SetupMove). A bare hit count cannot separate a client
+// 5ms over the ceiling from one 700ms over, and those are different problems —
+// so the excess actually clamped off is recorded alongside the count.
+uint32 g_ktp_net_maxunlag_hits = 0;
+float g_ktp_net_maxunlag_excess_peak = 0.0f;
+int g_ktp_net_maxunlag_excess_slot = -1;
+// sv_maxunlag_shadow: what a candidate ceiling WOULD have rewound to, from the
+// same inputs. Arithmetic on the live pass — no second rewind.
+uint32 g_ktp_net_shadow_hits = 0;
+float g_ktp_net_shadow_peak = 0.0f;
+int g_ktp_net_shadow_peak_slot = -1;
 // Interval slot masks, set at the packet site — a boundary-frame scan misses a
 // client who toggled cl_lc off mid-interval or left before the boundary, which
 // is exactly the population this record exists to catch. MAX_CLIENTS is 32, so
@@ -8899,6 +8910,12 @@ static void KTP_ProfileResetInterval(void)
 	g_ktp_net_latency_peak_slot = -1;
 	g_ktp_net_seen_mask = 0;
 	g_ktp_net_lagcomp_mask = 0;
+	g_ktp_net_maxunlag_hits = 0;
+	g_ktp_net_maxunlag_excess_peak = 0.0f;
+	g_ktp_net_maxunlag_excess_slot = -1;
+	g_ktp_net_shadow_hits = 0;
+	g_ktp_net_shadow_peak = 0.0f;
+	g_ktp_net_shadow_peak_slot = -1;
 	// ping_stamp survives on purpose: it tracks connection identity, not the interval
 	for (int i = 0; i < MAX_CLIENTS; i++)
 	{
@@ -9399,25 +9416,39 @@ void EXT_FUNC SV_Frame_Internal()
 				// unlag= is the global kill state: lagcomp_off=0 under sv_unlag 0
 				// would otherwise read as "compensation is working" when it is
 				// off for everyone.
-				Log_Printf("[KTP_PROFILE] net: clients=%d unlag=%d lagcomp_off=%d ignorecmd_hits=%u drops=%u latzero=%u choke_peak=%d loss_worst=%.0f latency_worst=%.1fms jitter_worst=%.1fms\n",
+				// maxunlag= is the ceiling the excess is measured against: the
+				// same excess means something different at 0.3 than at 0.5, and
+				// the cvar is settable live.
+				Log_Printf("[KTP_PROFILE] net: clients=%d unlag=%d lagcomp_off=%d ignorecmd_hits=%u drops=%u latzero=%u choke_peak=%d loss_worst=%.0f latency_worst=%.1fms jitter_worst=%.1fms maxunlag=%.0fms maxunlag_hits=%u maxunlag_excess_worst=%.1fms shadow=%.0fms shadow_hits=%u shadow_worst=%.1fms\n",
 					net_clients, sv_unlag.value != 0.0f ? 1 : 0, net_lagcomp_off,
 					g_ktp_net_ignorecmd_hits, g_ktp_net_drops, g_ktp_net_latzero,
 					g_ktp_net_choke_peak, g_ktp_net_loss_peak,
 					g_ktp_net_latency_peak * 1000.0,
-					net_jitter_worst * 1000.0);
+					net_jitter_worst * 1000.0,
+					sv_maxunlag.value * 1000.0,
+					g_ktp_net_maxunlag_hits,
+					g_ktp_net_maxunlag_excess_peak * 1000.0,
+					sv_maxunlag_shadow.value * 1000.0,
+					g_ktp_net_shadow_hits,
+					g_ktp_net_shadow_peak * 1000.0);
 				// Slot→name detail so the aggregates are actionable without a
 				// status query. Slots index a persistent array, so a client who
 				// left mid-interval leaves a stale name — same caveat as
 				// send_detail_peak.
-				if (net_lagcomp_slot >= 0 || net_jitter_slot >= 0 || g_ktp_net_latency_peak_slot >= 0)
+				if (net_lagcomp_slot >= 0 || net_jitter_slot >= 0 || g_ktp_net_latency_peak_slot >= 0
+					|| g_ktp_net_maxunlag_excess_slot >= 0 || g_ktp_net_shadow_peak_slot >= 0)
 				{
-					Log_Printf("[KTP_PROFILE] net_detail: lagcomp_first=%d(%s) latency_worst=%d(%s) jitter_worst=%d(%s)\n",
+					Log_Printf("[KTP_PROFILE] net_detail: lagcomp_first=%d(%s) latency_worst=%d(%s) jitter_worst=%d(%s) maxunlag_excess_worst=%d(%s) shadow_worst=%d(%s)\n",
 						net_lagcomp_slot,
 						net_lagcomp_slot >= 0 ? g_psvs.clients[net_lagcomp_slot].name : "-",
 						g_ktp_net_latency_peak_slot,
 						g_ktp_net_latency_peak_slot >= 0 ? g_psvs.clients[g_ktp_net_latency_peak_slot].name : "-",
 						net_jitter_slot,
-						net_jitter_slot >= 0 ? g_psvs.clients[net_jitter_slot].name : "-");
+						net_jitter_slot >= 0 ? g_psvs.clients[net_jitter_slot].name : "-",
+						g_ktp_net_maxunlag_excess_slot,
+						g_ktp_net_maxunlag_excess_slot >= 0 ? g_psvs.clients[g_ktp_net_maxunlag_excess_slot].name : "-",
+						g_ktp_net_shadow_peak_slot,
+						g_ktp_net_shadow_peak_slot >= 0 ? g_psvs.clients[g_ktp_net_shadow_peak_slot].name : "-");
 				}
 			}
 
@@ -9560,6 +9591,7 @@ void SV_Init(void)
 	Cvar_RegisterVariable(&sv_contact);
 	Cvar_RegisterVariable(&sv_unlag);
 	Cvar_RegisterVariable(&sv_maxunlag);
+	Cvar_RegisterVariable(&sv_maxunlag_shadow);
 	Cvar_RegisterVariable(&sv_unlagpush);
 	Cvar_RegisterVariable(&sv_unlagsamples);
 	Cvar_RegisterVariable(&sv_filterban);
