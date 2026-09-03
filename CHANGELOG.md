@@ -18,8 +18,8 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
   change, not new bookkeeping:
 
   ```
-  [KTP_PROFILE] net: clients=10 unlag=1 lagcomp_off=1 ignorecmd_hits=2 drops=14 latzero=3 choke_peak=4 loss_worst=6 latency_worst=87.3ms jitter_worst=22.1ms
-  [KTP_PROFILE] net_detail: lagcomp_first=3(PlayerA) latency_worst=7(PlayerB) jitter_worst=7(PlayerB)
+  [KTP_PROFILE] net: clients=10 unlag=1 lagcomp_off=1 ignorecmd_hits=2 drops=14 latzero=3 choke_peak=4 loss_worst=6 latency_worst=87.3ms jitter_worst=22.1ms maxunlag=300ms maxunlag_hits=18 maxunlag_excess_worst=412.7ms shadow=0ms shadow_hits=0 shadow_worst=0.0ms
+  [KTP_PROFILE] net_detail: lagcomp_first=3(PlayerA) latency_worst=7(PlayerB) jitter_worst=7(PlayerB) maxunlag_excess_worst=7(PlayerB) shadow_worst=-1(-)
   ```
 
   Fakeclients and HLTV proxies are excluded from every field — a proxy's WAN
@@ -60,6 +60,26 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
     `latency` is one packet's RTT, so the spread is the per-shot rewind wobble
     the removed shadow-20 estimator tried to measure — obtained here for two
     float compares per packet instead of a 20-slot ring rescan.
+  - `maxunlag` / `maxunlag_hits` / `maxunlag_excess_worst` — the active
+    `sv_maxunlag` ceiling, how many rewinds it clamped this interval, and the
+    **worst latency it clamped off**. A clamped rewind lands short of where the
+    client actually shot, so these are the packets whose hitreg the client
+    experiences as wrong. The magnitude is the point: 5 ms over the ceiling and
+    700 ms over are different problems and a bare count cannot separate them.
+    The excess sits behind the pre-existing 1.5 s hard cap on `clientLatency`,
+    so it saturates at `1.5 - sv_maxunlag` — it is a floor on the real miss,
+    not the raw overshoot. Counted only where a rewind actually happens:
+    `SV_SetupMove` returns early for `sv_unlag 0` and for `!lw || !lc`, and
+    those clients are already reported by `unlag` and `lagcomp_off`. The live
+    clamp fires on `>=`, so a client sitting exactly on the ceiling is a hit
+    with excess `0.0` — `maxunlag_hits` nonzero against
+    `maxunlag_excess_worst=0.0ms` and slot `-1(-)` is a real state, not a bug.
+  - `shadow` / `shadow_hits` / `shadow_worst` — with **`sv_maxunlag_shadow`**
+    (new, default `0.0` = off) set to a candidate ceiling, how many rewinds
+    that ceiling would have placed somewhere else and the **peak `targettime`
+    divergence** it would have introduced. This sizes a `sv_maxunlag` change
+    against live traffic before anyone makes it — the same method that
+    validated `sv_unlagsamples 20 → 1` without touching live behaviour.
 
   Gated on the `ktp_profile_frame` master plus new sub-toggle **`ktp_profile_net`
   (default 1)** — default-on so the record appears wherever profiling is already
@@ -73,10 +93,18 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
   to. Per-client state is a parallel array — `client_t` is ABI-exposed and gains
   no field; no vtable or `REHLDS_API_VERSION` change.
 
+  The shadow ceiling is **arithmetic on the live pass, never a second rewind** —
+  it reuses the `clientLatency`, `cl_interptime` and `targettime` the live path
+  already computed and writes only to accumulators. Re-running `SV_SetupMove`'s
+  entity walk is the expensive part and would have been the wrong shape. With
+  `sv_maxunlag_shadow` at its `0.0` default the block does not execute at all,
+  so it ships inert.
+
   Hot-path cost: one branch on the cached profiling bool plus a handful of
   compares and mask ops per incoming client packet, one compare on the (rare)
   choked-send path, one increment in the once-per-second `SV_CheckCmdTimes`
-  loop, and a 32-slot scan once per interval. No `frames[]` walk anywhere.
+  loop, a compare plus (when the clamp engages) a subtract in `SV_SetupMove`,
+  and a 32-slot scan once per interval. No `frames[]` walk anywhere.
 
 ### Changed
 

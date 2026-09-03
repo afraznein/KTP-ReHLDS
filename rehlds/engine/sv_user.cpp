@@ -43,6 +43,12 @@ extern float g_ktp_net_ping_max[MAX_CLIENTS];
 extern uint32 g_ktp_net_seen_mask;
 extern uint32 g_ktp_net_lagcomp_mask;
 extern double g_ktp_net_ping_stamp[MAX_CLIENTS];
+extern uint32 g_ktp_net_maxunlag_hits;
+extern float g_ktp_net_maxunlag_excess_peak;
+extern int g_ktp_net_maxunlag_excess_slot;
+extern uint32 g_ktp_net_shadow_hits;
+extern float g_ktp_net_shadow_peak;
+extern int g_ktp_net_shadow_peak_slot;
 
 // KTP: SV_RunCmd sub-phase accumulators (zeroed per SV_ParseMove call)
 double g_ktp_runcmd_acc_prethink = 0.0;  // pfnCmdStart + PreThink + Think
@@ -76,6 +82,8 @@ cvar_t sv_rollspeed = { "sv_rollspeed", "0.0", 0, 0.0f, NULL };
 cvar_t sv_rollangle = { "sv_rollangle", "0.0", 0, 0.0f, NULL };
 cvar_t sv_unlag = { "sv_unlag", "1", 0, 0.0f, NULL };
 cvar_t sv_maxunlag = { "sv_maxunlag", "0.5", 0, 0.0f, NULL };
+// Measurement only, never applied: 0.0 disables the shadow arithmetic entirely.
+cvar_t sv_maxunlag_shadow = { "sv_maxunlag_shadow", "0.0", 0, 0.0f, NULL };
 cvar_t sv_unlagpush = { "sv_unlagpush", "0.0", 0, 0.0f, NULL };
 cvar_t sv_unlagsamples = { "sv_unlagsamples", "1", 0, 0.0f, NULL };
 cvar_t mp_consistency = { "mp_consistency", "1", FCVAR_SERVER, 0.0f, NULL };
@@ -1319,13 +1327,33 @@ void SV_SetupMove(client_t *_host_client)
 	if (clientLatency > 1.5)
 		clientLatency = 1.5f;
 
+	// Feeds the shadow ceiling below; the live clamp overwrites clientLatency.
+	const float ktp_latency_preclamp = clientLatency;
+
 	if (sv_maxunlag.value != 0.0f)
 	{
 		if (sv_maxunlag.value < 0.0)
 			Cvar_SetValue("sv_maxunlag", 0.0);
 
 		if (clientLatency >= sv_maxunlag.value)
+		{
+			// Proxies excluded — HLTV sets cl_lw/cl_lc and so reaches this
+			// clamp, and its WAN latency is not a player problem.
+			if (g_ktp_profiling_enabled && !_host_client->proxy)
+			{
+				// Excess sits behind the 1.5s hard cap above, so a 3s client
+				// reads as 1.5s over — the figure is a floor, not the raw miss.
+				float ktp_excess = clientLatency - sv_maxunlag.value;
+				++g_ktp_net_maxunlag_hits;
+				if (ktp_excess > g_ktp_net_maxunlag_excess_peak)
+				{
+					int ktp_slot = _host_client - g_psvs.clients;
+					g_ktp_net_maxunlag_excess_peak = ktp_excess;
+					g_ktp_net_maxunlag_excess_slot = (ktp_slot >= 0 && ktp_slot < MAX_CLIENTS) ? ktp_slot : -1;
+				}
+			}
 			clientLatency = sv_maxunlag.value;
+		}
 	}
 
 	cl_interptime = _host_client->lastcmd.lerp_msec / 1000.0f;
@@ -1346,6 +1374,37 @@ void SV_SetupMove(client_t *_host_client)
 	if (targettime > realtime)
 		targettime = float(realtime);
 #endif // REHLDS_FIXES
+
+	// KTP: What a candidate ceiling WOULD have rewound to, from the inputs the
+	// live pass already computed. Arithmetic only — the rewind below is never
+	// re-run, and targettime is read here, never written.
+	if (g_ktp_profiling_enabled && !_host_client->proxy && sv_maxunlag_shadow.value > 0.0f)
+	{
+		float ktp_shadow_latency = ktp_latency_preclamp;
+		if (ktp_shadow_latency >= sv_maxunlag_shadow.value)
+			ktp_shadow_latency = sv_maxunlag_shadow.value;
+
+		double ktp_shadow_time = realtime - ktp_shadow_latency - cl_interptime + sv_unlagpush.value;
+		if (ktp_shadow_time > realtime)
+			ktp_shadow_time = realtime;
+
+		// !REHLDS_FIXES makes targettime a float, whose rounding residue would
+		// tick this every packet — no shipping build compiles that branch.
+		double ktp_divergence = (double)targettime - ktp_shadow_time;
+		if (ktp_divergence < 0.0)
+			ktp_divergence = -ktp_divergence;
+
+		if (ktp_divergence > 0.0)
+		{
+			++g_ktp_net_shadow_hits;
+			if (ktp_divergence > g_ktp_net_shadow_peak)
+			{
+				int ktp_slot = _host_client - g_psvs.clients;
+				g_ktp_net_shadow_peak = (float)ktp_divergence;
+				g_ktp_net_shadow_peak_slot = (ktp_slot >= 0 && ktp_slot < MAX_CLIENTS) ? ktp_slot : -1;
+			}
+		}
+	}
 
 	if (SV_UPDATE_BACKUP <= 0)
 	{

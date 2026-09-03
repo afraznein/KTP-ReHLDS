@@ -69,6 +69,7 @@ extern cvar_t sv_rollspeed;
 extern cvar_t sv_rollangle;
 extern cvar_t sv_unlag;
 extern cvar_t sv_maxunlag;
+extern cvar_t sv_maxunlag_shadow;
 extern cvar_t sv_unlagpush;
 extern cvar_t sv_unlagsamples;
 extern cvar_t mp_consistency;
