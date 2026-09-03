@@ -70,7 +70,10 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
     so it saturates at `1.5 - sv_maxunlag` — it is a floor on the real miss,
     not the raw overshoot. Counted only where a rewind actually happens:
     `SV_SetupMove` returns early for `sv_unlag 0` and for `!lw || !lc`, and
-    those clients are already reported by `unlag` and `lagcomp_off`.
+    those clients are already reported by `unlag` and `lagcomp_off`. The live
+    clamp fires on `>=`, so a client sitting exactly on the ceiling is a hit
+    with excess `0.0` — `maxunlag_hits` nonzero against
+    `maxunlag_excess_worst=0.0ms` and slot `-1(-)` is a real state, not a bug.
   - `shadow` / `shadow_hits` / `shadow_worst` — with **`sv_maxunlag_shadow`**
     (new, default `0.0` = off) set to a candidate ceiling, how many rewinds
     that ceiling would have placed somewhere else and the **peak `targettime`

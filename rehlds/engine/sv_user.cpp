@@ -1337,7 +1337,9 @@ void SV_SetupMove(client_t *_host_client)
 
 		if (clientLatency >= sv_maxunlag.value)
 		{
-			if (g_ktp_profiling_enabled)
+			// Proxies excluded — HLTV sets cl_lw/cl_lc and so reaches this
+			// clamp, and its WAN latency is not a player problem.
+			if (g_ktp_profiling_enabled && !_host_client->proxy)
 			{
 				// Excess sits behind the 1.5s hard cap above, so a 3s client
 				// reads as 1.5s over — the figure is a floor, not the raw miss.
@@ -1376,7 +1378,7 @@ void SV_SetupMove(client_t *_host_client)
 	// KTP: What a candidate ceiling WOULD have rewound to, from the inputs the
 	// live pass already computed. Arithmetic only — the rewind below is never
 	// re-run, and targettime is read here, never written.
-	if (g_ktp_profiling_enabled && sv_maxunlag_shadow.value > 0.0f)
+	if (g_ktp_profiling_enabled && !_host_client->proxy && sv_maxunlag_shadow.value > 0.0f)
 	{
 		float ktp_shadow_latency = ktp_latency_preclamp;
 		if (ktp_shadow_latency >= sv_maxunlag_shadow.value)
@@ -1386,6 +1388,8 @@ void SV_SetupMove(client_t *_host_client)
 		if (ktp_shadow_time > realtime)
 			ktp_shadow_time = realtime;
 
+		// !REHLDS_FIXES makes targettime a float, whose rounding residue would
+		// tick this every packet — no shipping build compiles that branch.
 		double ktp_divergence = (double)targettime - ktp_shadow_time;
 		if (ktp_divergence < 0.0)
 			ktp_divergence = -ktp_divergence;
