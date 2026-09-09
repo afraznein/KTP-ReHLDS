@@ -111,7 +111,11 @@ jobs:
           cat /etc/apt/sources.list
           # Snapshots are historical by definition, so the validity check must go.
           apt-get -o Acquire::Check-Valid-Until=false update -qq
-          apt-get install -y -qq cmake gcc g++ gcc-multilib g++-multilib make git
+          # snapshot.debian.org resets connections under apt default parallelism:
+          #   Error reading from server - read (104: Connection reset by peer)
+          # consistently on the multilib/x32 packages, and a plain re-run did not
+          # clear it. Serialise the queue and retry rather than hammer the mirror.
+          apt-get -o Acquire::Retries=5 -o Acquire::Queue-Mode=access install -y -qq cmake gcc g++ gcc-multilib g++-multilib make git
 
       - name: Checkout
         uses: actions/checkout@v6
