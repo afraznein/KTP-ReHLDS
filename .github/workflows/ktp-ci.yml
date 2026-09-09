@@ -94,7 +94,11 @@ jobs:
     steps:
       - name: Install toolchain
         run: |
-          apt-get update -qq
+          # Debian 11 is EOL, so its Release file is expired and a plain
+          # apt-get update exits 100. The image is pinned for glibc 2.31
+          # (see above), so the fix is to accept the stale Release rather
+          # than move off bullseye -- moving breaks the link this pin exists for.
+          apt-get -o Acquire::Check-Valid-Until=false update -qq
           apt-get install -y -qq cmake gcc g++ gcc-multilib g++-multilib make git
 
       - name: Checkout
