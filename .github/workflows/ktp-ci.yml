@@ -94,10 +94,22 @@ jobs:
     steps:
       - name: Install toolchain
         run: |
-          # Debian 11 is EOL, so its Release file is expired and a plain
-          # apt-get update exits 100. The image is pinned for glibc 2.31
-          # (see above), so the fix is to accept the stale Release rather
-          # than move off bullseye -- moving breaks the link this pin exists for.
+          # Debian 11 is EOL. Three failures stack here and each one hides the
+          # next, so all three are handled at once:
+          #   1. deb.debian.org Release is expired  -> update exits 100
+          #   2. its .debs are gone                 -> install 404s
+          #   3. archive.debian.org has NO bullseye-security Release at all
+          # The image already ships the answer: commented snapshot.debian.org
+          # lines pinned to a timestamp, which is the supported route for an EOL
+          # base and serves both main and security at that date.
+          # The debian:11 pin itself stays -- glibc 2.31 is required for the
+          # Unittests link (see above).
+          sed -i -e 's|^# deb http://snapshot|deb http://snapshot|' \
+                 -e '\|^deb http://deb.debian.org|d' \
+                 -e '\|^deb http://archive.debian.org|d' \
+                 /etc/apt/sources.list
+          cat /etc/apt/sources.list
+          # Snapshots are historical by definition, so the validity check must go.
           apt-get -o Acquire::Check-Valid-Until=false update -qq
           apt-get install -y -qq cmake gcc g++ gcc-multilib g++-multilib make git
 
