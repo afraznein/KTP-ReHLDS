@@ -157,3 +157,22 @@ jobs:
           file build/rehlds/HLTV/Proxy/proxy.so | grep -q 'ELF 32-bit' || { echo "::error::proxy.so is not 32-bit ELF"; exit 1; }
           echo "Artifacts OK:"
           ls -la build/rehlds/engine_i486.so build/rehlds/HLTV/Proxy/proxy.so
+
+      # The 32-bit build already produces and verifies these; without an upload
+      # they are discarded when the runner is torn down. KTPInfrastructure#235
+      # needs a candidate engine to boot Lane B against, and the engine is the
+      # one fleet artifact with no rollback copy -- so it is the one most worth
+      # smoking before it reaches a server.
+      #
+      # Retention is short on purpose: this is a smoke input, not a release
+      # channel, and `.so` files are not byte-reproducible (build-id + __DATE__),
+      # so a stale artifact must never be mistaken for a rebuildable one.
+      - name: Upload engine + proxy for downstream smoke
+        uses: actions/upload-artifact@v4
+        with:
+          name: rehlds-engine-${{ github.sha }}
+          path: |
+            build/rehlds/engine_i486.so
+            build/rehlds/HLTV/Proxy/proxy.so
+          if-no-files-found: error
+          retention-days: 14
