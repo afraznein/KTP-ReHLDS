@@ -176,6 +176,45 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
   Behaviour-preserving: `SV_ExecuteClientMessage`'s packet-site block and
   `SV_ParseMove`'s `net_drop` line moved into the samplers unchanged.
 
+- **`updates` / `updates_worst` — the delivered client-update rate, counted
+  rather than derived.** `cl_updaterate` asks for a period; `SV_SendClientMessages`
+  books the next send at `next_messagetime = host_frametime + next_messageinterval
+  + realtime`, so on a frame grid of period P a client asking for T actually waits
+  `⌈T/P⌉` whole frames. On the fleet's 1.000 ms grid (`sys_ticrate 1500`,
+  `-absgrid`, `-pingboost 2`) that makes `cl_updaterate 102` a phase-locked
+  **100/s**, not 102 — but that is arithmetic off the frame grid, and the engine
+  has never counted what it sent. A board item previously put the same figure at
+  "~97/s" from the same kind of reasoning and was wrong; the two readings were
+  indistinguishable because neither was a measurement.
+
+  ```
+  [KTP_PROFILE] net: … shadow_worst=0.0ms updates=9968
+  [KTP_PROFILE] net_detail: … latzero_worst_n=2 updates_worst=7(PlayerB) updates_worst_n=998
+  ```
+
+  - `updates` — datagrams handed to a client netchan this interval, summed over
+    every slot. A **server** total: it divides by however many clients were
+    connected, which answers a different question than the per-client rate.
+  - `updates_worst` / `updates_worst_n` — the busiest slot and **its own** count.
+    That number over the interval length is the delivered rate for one client,
+    uncontaminated by the rest, and over `frames=` on the same emit block it is
+    directly the frames-per-update ratio the quantisation argument is about.
+
+  Counted at the one site that always transmits: `SV_SendClientDatagram` reaches
+  `Netchan_Transmit` on every path, so one call is one update. The keepalive
+  `Netchan_Transmit` for a client that is connected but not yet receiving entity
+  updates is deliberately **not** counted — it is not an update. Fragmentation is
+  below this: one update can leave as more than one UDP packet, so this counts
+  updates, not wire packets.
+
+  ⚠️ **`updates` is independent of `clients`.** `clients` comes from the packet
+  site (traffic received), this from the send loop, so a client that receives and
+  sends nothing appears in one and not the other. Proxies and fakeclients are
+  excluded as everywhere else in this record. Hot-path cost is one call inside the
+  send loop's existing profiling branch — a proxy test, a bounds test and two
+  increments, on a path that runs at the update rate (~100/s per client), not per
+  frame. Nothing new executes when `ktp_profile_frame` is 0.
+
 ### Verified — `lagcomp_first` has always been `-1`, and that is the healthy value
 
 `lagcomp_first` reads `-1` on **every** `net_detail:` line the fleet has ever
