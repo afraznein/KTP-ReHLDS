@@ -105,9 +105,10 @@ void Sleep_Net(int msec)
 // REQUIRES exclusive CPU (isolcpus + SCHED_FIFO, or dedicated VPS).
 //
 // Default -pingboost 2 is Sleep_Select at ~977 fps. The clock_nanosleep
-// (TIMER_ABSTIME) 1ms-grid path is opt-in via -absgrid and measured ~643 fps on the
-// fleet kernel, not the ~999 an earlier revision of this comment claimed -- the same
-// file contradicts that claim in Sys_InitPingboost.
+// (TIMER_ABSTIME) 1ms-grid path is opt-in via -absgrid and is what the KTP fleet
+// runs: measured 1000.0 fps at p50 across 24 instances (2026-09-11). The ~643 fps
+// figure an earlier revision recorded came from the 2026-05 kernel experiment on a
+// different configuration; do not read it as what -absgrid costs today.
 void Sleep_Never(int msec)
 {
 	(void)msec;
@@ -189,15 +190,16 @@ void Sys_InitPingboost()
 			break;
 		case 2:
 			Sys_Sleep = Sleep_Select;
-			// KTP Stage C (EXPERIMENTAL, opt-in via -absgrid):
-			// Enables the clock_nanosleep(TIMER_ABSTIME) 1ms-grid path in
-			// sys_ded.cpp instead of Sleep_Select. Goal is ~999 fps at baseline
-			// CPU, but tested-on-our-kernel (6.8.0-110-lowlatency) the clock
-			// primitive does NOT beat the wakeup-latency floor of idle-CPU exit —
-			// observed ~643 fps with 1.5ms interframe + recurring 5ms peaks.
-			// Probably needs idle=poll kernel cmdline or a custom kernel to work.
-			// Disabled by default so fleet pingboost 2 keeps the 977 fps baseline
-			// via Sleep_Select. Opt in only for kernel-research canaries.
+			// KTP absgrid (opt-in via -absgrid), and the KTP fleet runs it:
+			// enables the clock_nanosleep(TIMER_ABSTIME) 1ms-grid path in
+			// sys_ded.cpp instead of Sleep_Select. Measured 2026-09-11 across all
+			// 24 instances: 1000.0 fps at p50, worst gap per 10s window 1.43ms at
+			// p50 -- that 1.43 is a WORST-GAP, not an interframe average, and an
+			// earlier revision of this comment misread it as one.
+			// Pair it with sys_ticrate 1500: Host_FilterTime rejects a frame that
+			// arrives early, so a 1ms grid under a 1000 ticrate throws work away.
+			// Chicago is the pacing outlier (a VPS): >3ms late wakes in 8.5% of
+			// idle windows, against far less on the baremetals.
 			if (CommandLine()->CheckParm("-absgrid", nullptr))
 			{
 				g_use_abs_grid = true;
