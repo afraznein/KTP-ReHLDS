@@ -5,6 +5,7 @@
 
 extern uint32 g_ktp_net_drops;
 extern uint32 g_ktp_net_latzero;
+extern uint32 g_ktp_net_updates;
 extern uint32 g_ktp_net_seen_mask;
 extern uint32 g_ktp_net_lagcomp_mask;
 extern float g_ktp_net_latency_peak;
@@ -21,6 +22,7 @@ static void ktp_reset_all()
 {
 	g_ktp_net_drops = 0;
 	g_ktp_net_latzero = 0;
+	g_ktp_net_updates = 0;
 	g_ktp_net_seen_mask = 0;
 	g_ktp_net_lagcomp_mask = 0;
 	g_ktp_net_latency_peak = 0.0f;
@@ -37,6 +39,7 @@ static void ktp_reset_all()
 	{
 		g_ktp_net_drops_slot[i] = 0;
 		g_ktp_net_latzero_slot[i] = 0;
+		g_ktp_net_updates_slot[i] = 0;
 		g_ktp_rewind_miss_slot[i] = 0;
 		g_ktp_net_ping_min[i] = 9999.0f;
 		g_ktp_net_ping_max[i] = -9999.0f;
@@ -56,6 +59,7 @@ TEST(ProxyContributesNothing, KtpNetTelemetry, 1000)
 	// latzero branch and cannot speak for it.
 	KTP_NetSamplePacket(3, PROXY, 1, 1, 0.0f, 100.0, LATZERO_OK);
 	KTP_NetSampleDrops(3, PROXY, 7);
+	KTP_NetSampleUpdate(3, PROXY);
 	KTP_RewindAttempt(3, PROXY);
 	KTP_RewindMiss(3, PROXY);
 	KTP_RewindDepth(3, PROXY, 0.250f);
@@ -68,6 +72,8 @@ TEST(ProxyContributesNothing, KtpNetTelemetry, 1000)
 	UINT32_EQUALS("proxy counted drops per slot", 0u, g_ktp_net_drops_slot[3]);
 	UINT32_EQUALS("proxy counted latzero", 0u, g_ktp_net_latzero);
 	UINT32_EQUALS("proxy counted latzero per slot", 0u, g_ktp_net_latzero_slot[3]);
+	UINT32_EQUALS("proxy counted updates", 0u, g_ktp_net_updates);
+	UINT32_EQUALS("proxy counted updates per slot", 0u, g_ktp_net_updates_slot[3]);
 	UINT32_EQUALS("proxy counted rewind attempts", 0u, g_ktp_rewind_attempts);
 	UINT32_EQUALS("proxy counted rewind misses", 0u, g_ktp_rewind_miss);
 	UINT32_EQUALS("proxy counted a per-slot miss", 0u, g_ktp_rewind_miss_slot[3]);
@@ -84,6 +90,10 @@ TEST(ProxyContributesNothing, KtpNetTelemetry, 1000)
 	KTP_NetSamplePacket(3, PLAYER, 0, 0, 0.400f, 100.0, LATZERO_OK);
 	KTP_NetSamplePacket(3, PLAYER, 1, 1, 0.0f, 100.0, LATZERO_OK);
 	KTP_NetSampleDrops(3, PLAYER, 7);
+	// Twice, so the count differs from every other control magnitude here and a
+	// leaked guard cannot make this assertion pass by accident.
+	KTP_NetSampleUpdate(3, PLAYER);
+	KTP_NetSampleUpdate(3, PLAYER);
 	KTP_RewindAttempt(3, PLAYER);
 	KTP_RewindMiss(3, PLAYER);
 	KTP_RewindDepth(3, PLAYER, 0.500f);
@@ -95,6 +105,8 @@ TEST(ProxyContributesNothing, KtpNetTelemetry, 1000)
 	UINT32_EQUALS("control: drops", 7u, g_ktp_net_drops);
 	UINT32_EQUALS("control: latzero", 1u, g_ktp_net_latzero);
 	UINT32_EQUALS("control: latzero per slot", 1u, g_ktp_net_latzero_slot[3]);
+	UINT32_EQUALS("control: updates", 2u, g_ktp_net_updates);
+	UINT32_EQUALS("control: updates per slot", 2u, g_ktp_net_updates_slot[3]);
 	UINT32_EQUALS("control: rewind attempts", 1u, g_ktp_rewind_attempts);
 	UINT32_EQUALS("control: rewind misses", 1u, g_ktp_rewind_miss);
 	UINT32_EQUALS("control: per-slot miss", 1u, g_ktp_rewind_miss_slot[3]);
@@ -163,6 +175,35 @@ TEST(DropsAndLatzeroAttribution, KtpNetTelemetry, 1000)
 	UINT32_EQUALS("latzero counted an ineligible client", 0u, g_ktp_net_latzero_slot[7]);
 }
 
+// The record exists to replace an arithmetic claim about cl_updaterate with a
+// count, and the per-slot total is what carries the rate -- the server total
+// divides by however many clients happened to be connected, which is the answer
+// to a different question.
+TEST(UpdateDeliveryCounter, KtpNetTelemetry, 1000)
+{
+	ktp_reset_all();
+
+	for (int i = 0; i < 10; i++)
+		KTP_NetSampleUpdate(2, PLAYER);
+	for (int i = 0; i < 4; i++)
+		KTP_NetSampleUpdate(6, PLAYER);
+
+	UINT32_EQUALS("server total is the sum", 14u, g_ktp_net_updates);
+	UINT32_EQUALS("slot 2 total", 10u, g_ktp_net_updates_slot[2]);
+	UINT32_EQUALS("slot 6 total", 4u, g_ktp_net_updates_slot[6]);
+
+	uint32 n = 0;
+	CHECK("worst slot is the busiest client", KTP_NetWorstSlot(g_ktp_net_updates_slot, &n) == 2);
+	UINT32_EQUALS("worst count is that client's own total, not the server's", 10u, n);
+
+	// Out-of-range slots must not write past the array, and the total must not
+	// move either -- an unattributed increment would inflate the server figure
+	// while no slot accounts for it.
+	KTP_NetSampleUpdate(-1, PLAYER);
+	KTP_NetSampleUpdate(MAX_CLIENTS, PLAYER);
+	UINT32_EQUALS("out-of-range slot was counted", 14u, g_ktp_net_updates);
+}
+
 TEST(WorstSlotSelection, KtpNetTelemetry, 1000)
 {
 	uint32 counts[MAX_CLIENTS];
@@ -194,6 +235,7 @@ TEST(IntervalResetCoversEveryCounter, KtpNetTelemetry, 1000)
 	KTP_NetSamplePacket(1, PLAYER, 0, 0, 0.0f, 42.0, LATZERO_OK);
 	KTP_NetSamplePacket(2, PLAYER, 1, 1, 0.300f, 42.0, LATZERO_OK);
 	KTP_NetSampleDrops(1, PLAYER, 9);
+	KTP_NetSampleUpdate(1, PLAYER);
 	KTP_RewindAttempt(1, PLAYER);
 	KTP_RewindMiss(1, PLAYER);
 	KTP_RewindSkip(PLAYER);
@@ -202,7 +244,7 @@ TEST(IntervalResetCoversEveryCounter, KtpNetTelemetry, 1000)
 
 	// Guard against asserting a reset that had nothing to reset.
 	CHECK("fixture did not populate the counters",
-		g_ktp_net_drops && g_ktp_net_latzero && g_ktp_net_lagcomp_mask
+		g_ktp_net_drops && g_ktp_net_latzero && g_ktp_net_updates && g_ktp_net_lagcomp_mask
 		&& g_ktp_rewind_attempts && g_ktp_rewind_miss && g_ktp_rewind_skip
 		&& g_ktp_net_drops_slot[1] && g_ktp_net_latzero_slot[1]
 		&& g_ktp_rewind_miss_slot[1]);
@@ -211,6 +253,7 @@ TEST(IntervalResetCoversEveryCounter, KtpNetTelemetry, 1000)
 
 	UINT32_EQUALS("drops survived the reset", 0u, g_ktp_net_drops);
 	UINT32_EQUALS("latzero survived the reset", 0u, g_ktp_net_latzero);
+	UINT32_EQUALS("updates survived the reset", 0u, g_ktp_net_updates);
 	UINT32_EQUALS("seen_mask survived the reset", 0u, g_ktp_net_seen_mask);
 	UINT32_EQUALS("lagcomp_mask survived the reset", 0u, g_ktp_net_lagcomp_mask);
 	UINT32_EQUALS("rewind attempts survived the reset", 0u, g_ktp_rewind_attempts);
@@ -226,6 +269,7 @@ TEST(IntervalResetCoversEveryCounter, KtpNetTelemetry, 1000)
 	{
 		UINT32_EQUALS("per-slot drops survived the reset", 0u, g_ktp_net_drops_slot[i]);
 		UINT32_EQUALS("per-slot latzero survived the reset", 0u, g_ktp_net_latzero_slot[i]);
+		UINT32_EQUALS("per-slot updates survived the reset", 0u, g_ktp_net_updates_slot[i]);
 		UINT32_EQUALS("per-slot rewind misses survived the reset", 0u, g_ktp_rewind_miss_slot[i]);
 	}
 

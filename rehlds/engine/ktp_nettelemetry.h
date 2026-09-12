@@ -14,6 +14,12 @@
 extern uint32 g_ktp_net_drops_slot[MAX_CLIENTS];
 extern uint32 g_ktp_net_latzero_slot[MAX_CLIENTS];
 
+// Datagrams delivered per slot. cl_updaterate asks for a period; the send loop
+// rounds it up to whole frames, so what a client actually receives has only
+// ever been derived from the frame grid. This counts it.
+extern uint32 g_ktp_net_updates;
+extern uint32 g_ktp_net_updates_slot[MAX_CLIENTS];
+
 // Rewind outcome from SV_SetupMove. net: describes the network a shot rode;
 // these describe whether the rewind that judges the shot happened at all.
 extern uint32 g_ktp_rewind_attempts;
@@ -29,6 +35,7 @@ extern int g_ktp_rewind_dist_slot;
 void KTP_NetSamplePacket(int slot, qboolean proxy, int lw, int lc, float latency,
 	double connection_started, qboolean latzero_eligible);
 void KTP_NetSampleDrops(int slot, qboolean proxy, int net_drop);
+void KTP_NetSampleUpdate(int slot, qboolean proxy);
 void KTP_RewindAttempt(int slot, qboolean proxy);
 void KTP_RewindMiss(int slot, qboolean proxy);
 void KTP_RewindDepth(int slot, qboolean proxy, float depth);

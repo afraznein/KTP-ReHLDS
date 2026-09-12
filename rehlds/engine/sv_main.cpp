@@ -5630,6 +5630,10 @@ void SV_SendClientMessages(void)
 				if (ktp_send_prof) {
 					double elapsed = Sys_FloatTime() - ktp_cl_t0;
 					g_ktp_send_client_count++;
+					// One datagram per call — SV_SendClientDatagram always reaches
+					// Netchan_Transmit. The else branch below is a keepalive for a
+					// client not yet receiving entity updates, so it is not one.
+					KTP_NetSampleUpdate(i, cl->proxy);
 					if (elapsed > g_ktp_send_worst_client_time) {
 						g_ktp_send_worst_client_time = elapsed;
 						g_ktp_send_worst_client_slot = i;
@@ -7394,6 +7398,11 @@ double g_ktp_net_ping_stamp[MAX_CLIENTS];
 // never "who", which is the question every drop burst has raised so far.
 uint32 g_ktp_net_drops_slot[MAX_CLIENTS];
 uint32 g_ktp_net_latzero_slot[MAX_CLIENTS];
+// Datagrams handed to a client's netchan. Every other field here measures what
+// arrived; this is the only one that measures what left, and the update rate it
+// answers has been arithmetic off the frame grid rather than a count.
+uint32 g_ktp_net_updates = 0;
+uint32 g_ktp_net_updates_slot[MAX_CLIENTS];
 // Rewind outcome (SV_SetupMove). Attempts partition into miss and success, so
 // the success count is derived at the emit site rather than counted twice.
 uint32 g_ktp_rewind_attempts = 0;
@@ -7512,6 +7521,15 @@ void KTP_NetSampleDrops(int slot, qboolean proxy, int net_drop)
 
 	g_ktp_net_drops += net_drop;
 	g_ktp_net_drops_slot[slot] += net_drop;
+}
+
+void KTP_NetSampleUpdate(int slot, qboolean proxy)
+{
+	if (!KTP_NetSlotUsable(slot, proxy))
+		return;
+
+	++g_ktp_net_updates;
+	++g_ktp_net_updates_slot[slot];
 }
 
 void KTP_RewindAttempt(int slot, qboolean proxy)
@@ -9047,6 +9065,7 @@ void KTP_ProfileResetInterval(void)
 	g_ktp_net_ignorecmd_hits = 0;
 	g_ktp_net_drops = 0;
 	g_ktp_net_latzero = 0;
+	g_ktp_net_updates = 0;
 	g_ktp_net_choke_peak = 0;
 	g_ktp_net_loss_peak = 0.0f;
 	g_ktp_net_latency_peak = 0.0f;
@@ -9073,6 +9092,7 @@ void KTP_ProfileResetInterval(void)
 		g_ktp_net_ping_max[i] = -9999.0f;
 		g_ktp_net_drops_slot[i] = 0;
 		g_ktp_net_latzero_slot[i] = 0;
+		g_ktp_net_updates_slot[i] = 0;
 		g_ktp_rewind_miss_slot[i] = 0;
 	}
 }
@@ -9572,7 +9592,10 @@ void EXT_FUNC SV_Frame_Internal()
 				// maxunlag= is the ceiling the excess is measured against: the
 				// same excess means something different at 0.3 than at 0.5, and
 				// the cvar is settable live.
-				Log_Printf("[KTP_PROFILE] net: clients=%d unlag=%d lagcomp_off=%d ignorecmd_hits=%u drops=%u latzero=%u choke_peak=%d loss_worst=%.0f latency_worst=%.1fms jitter_worst=%.1fms maxunlag=%.0fms maxunlag_hits=%u maxunlag_excess_worst=%.1fms shadow=%.0fms shadow_hits=%u shadow_worst=%.1fms\n",
+				// updates= is a server total across every slot that received
+				// one; the per-client rate that answers cl_updaterate is
+				// updates_worst_n on net_detail:, divided by the interval.
+				Log_Printf("[KTP_PROFILE] net: clients=%d unlag=%d lagcomp_off=%d ignorecmd_hits=%u drops=%u latzero=%u choke_peak=%d loss_worst=%.0f latency_worst=%.1fms jitter_worst=%.1fms maxunlag=%.0fms maxunlag_hits=%u maxunlag_excess_worst=%.1fms shadow=%.0fms shadow_hits=%u shadow_worst=%.1fms updates=%u\n",
 					net_clients, sv_unlag.value != 0.0f ? 1 : 0, net_lagcomp_off,
 					g_ktp_net_ignorecmd_hits, g_ktp_net_drops, g_ktp_net_latzero,
 					g_ktp_net_choke_peak, g_ktp_net_loss_peak,
@@ -9583,7 +9606,8 @@ void EXT_FUNC SV_Frame_Internal()
 					g_ktp_net_maxunlag_excess_peak * 1000.0,
 					sv_maxunlag_shadow.value * 1000.0,
 					g_ktp_net_shadow_hits,
-					g_ktp_net_shadow_peak * 1000.0);
+					g_ktp_net_shadow_peak * 1000.0,
+					g_ktp_net_updates);
 				// Slot→name detail so the aggregates are actionable without a
 				// status query. Slots index a persistent array, so a client who
 				// left mid-interval leaves a stale name — same caveat as
@@ -9592,11 +9616,16 @@ void EXT_FUNC SV_Frame_Internal()
 				uint32 net_latzero_worst_n = 0;
 				int net_drops_slot = KTP_NetWorstSlot(g_ktp_net_drops_slot, &net_drops_worst_n);
 				int net_latzero_slot = KTP_NetWorstSlot(g_ktp_net_latzero_slot, &net_latzero_worst_n);
+				// The busiest slot is the one whose count answers the update-rate
+				// question: it is one client's own total, uncontaminated by how
+				// many others were connected.
+				uint32 net_updates_worst_n = 0;
+				int net_updates_slot = KTP_NetWorstSlot(g_ktp_net_updates_slot, &net_updates_worst_n);
 				if (net_lagcomp_slot >= 0 || net_jitter_slot >= 0 || g_ktp_net_latency_peak_slot >= 0
 					|| g_ktp_net_maxunlag_excess_slot >= 0 || g_ktp_net_shadow_peak_slot >= 0
-					|| net_drops_slot >= 0 || net_latzero_slot >= 0)
+					|| net_drops_slot >= 0 || net_latzero_slot >= 0 || net_updates_slot >= 0)
 				{
-					Log_Printf("[KTP_PROFILE] net_detail: lagcomp_first=%d(%s) latency_worst=%d(%s) jitter_worst=%d(%s) maxunlag_excess_worst=%d(%s) shadow_worst=%d(%s) drops_worst=%d(%s) drops_worst_n=%u latzero_worst=%d(%s) latzero_worst_n=%u\n",
+					Log_Printf("[KTP_PROFILE] net_detail: lagcomp_first=%d(%s) latency_worst=%d(%s) jitter_worst=%d(%s) maxunlag_excess_worst=%d(%s) shadow_worst=%d(%s) drops_worst=%d(%s) drops_worst_n=%u latzero_worst=%d(%s) latzero_worst_n=%u updates_worst=%d(%s) updates_worst_n=%u\n",
 						net_lagcomp_slot,
 						net_lagcomp_slot >= 0 ? g_psvs.clients[net_lagcomp_slot].name : "-",
 						g_ktp_net_latency_peak_slot,
@@ -9612,7 +9641,10 @@ void EXT_FUNC SV_Frame_Internal()
 						net_drops_worst_n,
 						net_latzero_slot,
 						net_latzero_slot >= 0 ? g_psvs.clients[net_latzero_slot].name : "-",
-						net_latzero_worst_n);
+						net_latzero_worst_n,
+						net_updates_slot,
+						net_updates_slot >= 0 ? g_psvs.clients[net_updates_slot].name : "-",
+						net_updates_worst_n);
 				}
 
 				// Every field above describes the network a shot rode; these
