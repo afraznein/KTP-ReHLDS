@@ -117,6 +117,7 @@ set(PROJECT_PUBLIC_DIR
 
 set(ENGINE_SRCS
 	engine/ktp_nettelemetry.h
+	engine/ktp_steadyping.h
 	engine/sv_main.cpp
 	engine/sv_user.cpp
 	engine/sv_phys.cpp
@@ -193,6 +194,7 @@ set(UNITTESTS_SRCS
 	unittests/delta_tests.cpp
 	unittests/info_tests.cpp
 	unittests/ktp_nettelemetry_tests.cpp
+	unittests/ktp_steadyping_tests.cpp
 	unittests/mathlib_tests.cpp
 	unittests/rehlds_tests_shared.cpp
 	unittests/rehlds_tests_shared.h

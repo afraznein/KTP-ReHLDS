@@ -299,3 +299,15 @@ never explored.** Re-adding the estimator would need an engine cut.
 
 `config/online/dodserver.cfg.example` carries `sv_unlagsamples 1` with the do-not-raise rationale — keep
 those in agreement.
+
+### `sv_unlag_estimator` (default 0) — the steadier estimate, for an A/B only
+
+`1` makes `SV_CalcClientTime` return the median of the last five per-frame samples (first ack of each
+frame only), keep the last good value instead of returning 0, and move at most 20 ms per packet;
+`sv_unlagsamples` is ignored while it is on. `0` is the stock function, held bit-identical by
+`OffPathIsTheOriginalFunction` against a verbatim copy in `ktp_steadyping_tests.cpp` — **edit that copy
+in the same change as any edit to the stock body.**
+
+⚠️ **On an estimator instance, `latzero`, `latency_worst` and `jitter_worst` describe the rewind input,
+not the network.** They drop because the estimate is smoother. Judge an A/B pair by within-shooter hit
+share and `rewind:`, never by those fields across the pair.
