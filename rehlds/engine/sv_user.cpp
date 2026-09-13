@@ -36,7 +36,6 @@ extern bool g_ktp_profiling_enabled;  // Set by SV_Frame_Internal each frame
 // KTP: net-health accumulators from sv_main.cpp ([KTP_PROFILE] net: record).
 // The packet-site and net_drop accumulators moved behind KTP_NetSample* in
 // ktp_nettelemetry.h; what stays here is written inline from this file.
-extern float g_ktp_net_loss_peak;
 extern uint32 g_ktp_net_maxunlag_hits;
 extern float g_ktp_net_maxunlag_excess_peak;
 extern int g_ktp_net_maxunlag_excess_slot;
@@ -1355,12 +1354,26 @@ void SV_SetupMove(client_t *_host_client)
 	}
 
 	cl_interptime = _host_client->lastcmd.lerp_msec / 1000.0f;
+	// KTP: a compliant ex_interp can still be rewritten by either branch below.
+	const float ktp_interp_declared = cl_interptime;
+	qboolean ktp_interp_capped = FALSE;
+	qboolean ktp_interp_floored = FALSE;
 
 	if (cl_interptime > 0.1)
+	{
 		cl_interptime = 0.1f;
+		ktp_interp_capped = TRUE;
+	}
 
 	if (_host_client->next_messageinterval > cl_interptime)
+	{
 		cl_interptime = (float) _host_client->next_messageinterval;
+		ktp_interp_floored = TRUE;
+	}
+
+	if (g_ktp_profiling_enabled)
+		KTP_NetSampleInterp(ktp_shooter, _host_client->proxy, ktp_interp_declared, cl_interptime,
+			ktp_interp_capped, ktp_interp_floored);
 
 #ifdef REHLDS_FIXES
 	// FP Precision fix (targettime is double there, not float)
@@ -1821,9 +1834,8 @@ void SV_ParseMove(client_t *pSenderClient)
 
 	// KTP: Client-reported downstream loss (7-bit % from the move packet).
 	// Untrusted, but it is the client's own view of the path the shots ride.
-	// Proxies excluded — the HLTV proxy's WAN loss is not a player problem.
-	if (ktp_pm_prof && !host_client->proxy && packet_loss > g_ktp_net_loss_peak)
-		g_ktp_net_loss_peak = packet_loss;
+	if (ktp_pm_prof)
+		KTP_NetSampleLoss(host_client - g_psvs.clients, host_client->proxy, packet_loss);
 
 	if (!g_psv.paused && (g_psvs.maxclients > 1 || !key_dest) && !(sv_player->v.flags & FL_FROZEN))
 	{
@@ -1890,10 +1902,11 @@ void SV_ParseMove(client_t *pSenderClient)
 	if (!host_client->fakeclient)
 		SV_SetupMove(host_client);
 
-	// KTP: Residual net_drop after backup compensation = movement the loops
-	// below must synthesize from lastcmd; counted before they consume it.
+	// KTP: Counted before the loops below consume net_drop, while lastcmd is
+	// still the previous packet's command -- the one a replay runs.
 	if (ktp_pm_prof)
-		KTP_NetSampleDrops(host_client - g_psvs.clients, host_client->proxy, net_drop);
+		KTP_NetSampleMove(host_client - g_psvs.clients, host_client->proxy, numcmds, net_drop,
+			numbackup, host_client->lastcmd.msec);
 
 	if (net_drop < 24)
 	{
@@ -2142,8 +2155,11 @@ void SV_ExecuteClientMessage(client_t *cl)
 		// SV_SpawnServer reallocating the frames ring (senttime 0 for every
 		// client until an update round-trips).
 		qboolean ktp_latzero_ok = (g_psv.time > 5.0 && realtime - cl->connection_started > 2.0) ? TRUE : FALSE;
+		// A stamped frame with ping_time <= 0: the RTT fit inside next_messageinterval.
+		qboolean ktp_subinterval = (frame->senttime != 0.0 && frame->ping_time <= 0.0f) ? TRUE : FALSE;
 		KTP_NetSamplePacket(cl - g_psvs.clients, cl->proxy, cl->lw, cl->lc,
-			cl->latency, cl->connection_started, ktp_latzero_ok);
+			cl->latency, cl->connection_started, ktp_latzero_ok, ktp_subinterval,
+			cl->fully_connected ? FALSE : TRUE);
 	}
 	host_client = cl;
 	sv_player = cl->edict;
