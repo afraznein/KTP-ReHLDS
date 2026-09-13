@@ -10,6 +10,40 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ### Added
 
+- **`sv_unlag_estimator` (new, default `0`) — a steadier latency estimate for the rewind, built
+  for an A/B on one instance pair.** At `sv_unlagsamples 1` the latency `SV_SetupMove` rewinds by
+  is one packet's `ping_time`, so a jittery shooter's rewind depth follows every spike, and a
+  2–4 ms client computes `ping_time ≤ 0` on a large share of its packets and is rewound by
+  nothing. With the cvar at `1`, `SV_CalcClientTime` instead:
+  - takes **one sample per acknowledged frame, at its first ack**. Later acks of the same frame
+    only add the time since it went out, so they are not a round trip. A frame whose first ack
+    is ≤ 0 is spent, not retried;
+  - uses the **median of the last five positive samples**, so one spike does not move it;
+  - **keeps the last good value** when a sample is ≤ 0 instead of returning 0. It still returns 0
+    until the connection has produced one positive sample, and `SV_New_f` re-stamps
+    `connection_started` every map, so the state restarts at each changelevel; the existing
+    2 s connect grace still applies;
+  - moves at most **20 ms per packet** toward the median, repeat acks included.
+
+  `sv_unlagsamples` and its jitter guard are ignored while it is on. State is a per-slot parallel
+  array; `client_t` gains no field, and no API or vtable changes.
+
+  With the cvar at `0` the only new work is one float compare: everything after it is the stock
+  function, untouched. `OffPathIsTheOriginalFunction` holds that — it runs `SV_CalcClientTime` and
+  a verbatim copy of the pre-change function over the same frame sequence at nine
+  `sv_unlagsamples` values and asserts bit-identical results. It also asserts that the sequence
+  reaches the stock jitter-guard and empty-window zeros, that the off path never touches the
+  estimator state, and that with the cvar on the same frames diverge — so the gate is proven to
+  switch, not merely to be absent. ⚠️ **Edit that reference copy in the same change as any edit
+  to the stock body**, or the test fails, correctly.
+
+  ⚠️ **Reading an A/B.** On an instance with the estimator on, `net:`'s `latzero`,
+  `latency_worst` and `jitter_worst` describe the rewind input, not the raw round trip: they fall
+  because the estimate is smoother, not because the network improved. If the telemetry batch's
+  `subinterval` field is present, it too counts only packets rewound by latency 0, so it drops
+  to near zero there by construction. Compare the pair on within-shooter hit share and on
+  `rewind:`; the scoreboard ping (`SV_CalcPing`) reads the raw frames and is unaffected.
+
 - **`[KTP_PROFILE] net:` — per-interval network / lag-compensation health record.**
   Every existing record type measures CPU time the server spent; none measures
   whether packets arrived or in what state the client is, which is where the

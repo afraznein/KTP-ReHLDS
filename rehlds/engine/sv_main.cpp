@@ -9814,6 +9814,7 @@ void SV_Init(void)
 	Cvar_RegisterVariable(&sv_maxunlag_shadow);
 	Cvar_RegisterVariable(&sv_unlagpush);
 	Cvar_RegisterVariable(&sv_unlagsamples);
+	Cvar_RegisterVariable(&sv_unlag_estimator);
 	Cvar_RegisterVariable(&sv_filterban);
 	Cvar_RegisterVariable(&sv_maxupdaterate);
 	Cvar_RegisterVariable(&sv_minupdaterate);

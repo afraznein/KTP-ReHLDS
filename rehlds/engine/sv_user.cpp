@@ -28,6 +28,7 @@
 
 #include "precompiled.h"
 #include "ktp_nettelemetry.h"
+#include "ktp_steadyping.h"
 
 
 // KTP: profiling state from sv_main.cpp (opcode/parsemove instrumentation)
@@ -80,6 +81,8 @@ cvar_t sv_maxunlag = { "sv_maxunlag", "0.5", 0, 0.0f, NULL };
 cvar_t sv_maxunlag_shadow = { "sv_maxunlag_shadow", "0.0", 0, 0.0f, NULL };
 cvar_t sv_unlagpush = { "sv_unlagpush", "0.0", 0, 0.0f, NULL };
 cvar_t sv_unlagsamples = { "sv_unlagsamples", "1", 0, 0.0f, NULL };
+// 1 = median of recent per-frame samples, last good value kept, change per packet limited. 0 = stock.
+cvar_t sv_unlag_estimator = { "sv_unlag_estimator", "0", 0, 0.0f, NULL };
 cvar_t mp_consistency = { "mp_consistency", "1", FCVAR_SERVER, 0.0f, NULL };
 cvar_t sv_voiceenable = { "sv_voiceenable", "1", FCVAR_SERVER | FCVAR_ARCHIVE, 0.0f, NULL };
 
@@ -1135,8 +1138,82 @@ int SV_ValidateClientCommand(char *pszCommand)
 	return 0;
 }
 
+ktp_steady_ping_t g_ktp_steady_ping[MAX_CLIENTS];
+const float KTP_STEADY_PING_SLEW = 0.020f;
+
+float KTP_SteadyPingUpdate(ktp_steady_ping_t *st, double stamp, int ack, float sample)
+{
+	// SV_New_f re-stamps every map, and a new map or occupant must not start from the old route.
+	if (st->stamp != stamp)
+	{
+		Q_memset(st, 0, sizeof(*st));
+		st->stamp = stamp;
+	}
+
+	// Later acks of the same frame only add the time since it went out; the first one is the RTT.
+	if (!st->have_ack || ack != st->last_ack)
+	{
+		st->last_ack = ack;
+		st->have_ack = TRUE;
+
+		if (sample > 0.0f)
+		{
+			st->samples[st->next] = sample;
+			st->next = (st->next + 1) % KTP_STEADY_PING_SAMPLES;
+			if (st->count < KTP_STEADY_PING_SAMPLES)
+				st->count++;
+
+			float sorted[KTP_STEADY_PING_SAMPLES];
+			for (int i = 0; i < st->count; i++)
+			{
+				int j = i;
+				for (; j > 0 && sorted[j - 1] > st->samples[i]; j--)
+					sorted[j] = sorted[j - 1];
+				sorted[j] = st->samples[i];
+			}
+
+			int mid = st->count / 2;
+			st->target = (st->count & 1) ? sorted[mid] : 0.5f * (sorted[mid - 1] + sorted[mid]);
+
+			if (!st->have_value)
+			{
+				st->value = st->target;
+				st->have_value = TRUE;
+			}
+		}
+	}
+
+	// A non-positive sample keeps the last good value rather than rewinding by nothing.
+	if (!st->have_value)
+		return 0.0f;
+
+	float step = st->target - st->value;
+	if (step > KTP_STEADY_PING_SLEW)
+		step = KTP_STEADY_PING_SLEW;
+	else if (step < -KTP_STEADY_PING_SLEW)
+		step = -KTP_STEADY_PING_SLEW;
+
+	st->value += step;
+	return st->value;
+}
+
+float KTP_SteadyPing(client_t *cl)
+{
+	int slot = cl - g_psvs.clients;
+	if (slot < 0 || slot >= MAX_CLIENTS)
+		return 0.0f;
+
+	int ack = cl->netchan.incoming_acknowledged;
+	client_frame_t *frame = &cl->frames[SV_UPDATE_MASK & ack];
+	return KTP_SteadyPingUpdate(&g_ktp_steady_ping[slot], cl->connection_started, ack, frame->ping_time);
+}
+
 float SV_CalcClientTime(client_t *cl)
 {
+	// KTP: everything after this branch is the stock function, and the tests hold it to that.
+	if (sv_unlag_estimator.value != 0.0f)
+		return KTP_SteadyPing(cl);
+
 	float minping;
 	float maxping;
 	int backtrack;

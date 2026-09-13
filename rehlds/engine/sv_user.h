@@ -72,6 +72,7 @@ extern cvar_t sv_maxunlag;
 extern cvar_t sv_maxunlag_shadow;
 extern cvar_t sv_unlagpush;
 extern cvar_t sv_unlagsamples;
+extern cvar_t sv_unlag_estimator;
 extern cvar_t mp_consistency;
 extern cvar_t sv_voiceenable;
 
