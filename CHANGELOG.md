@@ -249,6 +249,117 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
   increments, on a path that runs at the update rate (~100/s per client), not per
   frame. Nothing new executes when `ktp_profile_frame` is 0.
 
+- **Hit-registration telemetry batch: `net:` and `net_detail:` grow once, and a new
+  `[KTP_PROFILE] net_session:` record rolls each connection up at disconnect.** The
+  2026-09-11 bad-client analysis found the existing fields answering the wrong questions in
+  four places: `latzero` was ~90 % one LAN-speed player, `latency_worst` was owned by loading
+  clients, `drops` over-stated warping for every `cl_cmdbackup` client, and every `_worst`
+  field names one client when the question is how many. This build fixes the measurements
+  rather than adding a second set beside them.
+
+  Every new field is **appended after the last existing one** (`updates=` on `net:`,
+  `updates_worst_n=` on `net_detail:`). Nothing is renamed or reordered, so a parser that is
+  not end-anchored reads old and new lines alike.
+
+  ```
+  [KTP_PROFILE] net: … updates=9968 subinterval=310 connecting=1 synth_ms=240 interp_cap_hits=0 interp_floor_hits=12 interp_diff_worst=1.7ms lat_pop=1/6/2/1/0/0/0 jit_pop=6/2/1/0/0
+  [KTP_PROFILE] net_detail: … updates_worst_n=998 loss_worst=7(PlayerB) loss_worst_n=6 subinterval_worst=4(PlayerA) subinterval_worst_n=305 synth_worst=7(PlayerB) synth_worst_n=210 interp_diff_worst=4(PlayerA)
+  [KTP_PROFILE] net_session: client=7(PlayerB) steamid=<auth id> dur=2412s pkts=241012 cmds=240877 drops=1210 latzero=3 subinterval=0 synth_ms=4180 ignorecmd_hits=2 latency_avg=84.2ms latency_max=191.0ms jitter_avg=3.1ms loss_avg=0.4 loss_max=6
+  ```
+
+  ⚠️ **Three existing fields change meaning at this build. Do not compare their series across
+  it.**
+  - `latzero` no longer includes sub-interval packets (below) or loading clients.
+    `latzero + subinterval` reproduces the old figure minus loading clients.
+  - `latency_worst` and `jitter_worst` no longer see clients that are not yet
+    `fully_connected`. The 23–45 **second** maxima in the old series were those clients.
+  - `clients` and `lagcomp_off` are unchanged: a loading client still carried traffic.
+
+  **`subinterval` / `subinterval_worst` / `subinterval_worst_n`** — packets on a loaded client
+  processed with latency 0 whose own frame *had* been sent, so
+  `ping_time = realtime − senttime − next_messageinterval` came out ≤ 0: the round trip fit
+  inside one update interval. At `cl_updaterate` 100 the subtrahend is ~10 ms, so a 2–4 ms
+  client lands here on a large share of its packets. The rewind for those packets is still
+  zero (a few ms short for a client whose true RTT is a few ms), but it is not degradation.
+  `latzero` keeps the no-sample cases: a frame that was never stamped (`senttime` 0), and at
+  `sv_unlagsamples` > 1 the jitter guard. Same grace periods as `latzero`.
+
+  **`connecting`** — slots that sent traffic this interval before `fully_connected`. They are
+  excluded from `latency_worst`, `jitter_worst`, `latzero`, `subinterval`, `lat_pop`/`jit_pop`
+  and the session latency figures, and still counted in `clients`. The definition is engine
+  state, not a time window: `SV_SendClientMessages` sends entity updates only to
+  `active && spawned && fully_connected` clients, and `SV_WriteClientdataToMessage` is the only
+  writer of a frame's `senttime`. Between `SV_WriteSpawn` (which sets `active`) and
+  `SV_SendEnts_f` (which sets `fully_connected`) the client gets keepalives, which advance the
+  outgoing sequence without stamping a frame, so an ack pairs with a stale stamp. A
+  "first N seconds" window would still leak a slow precache; the flag ends exactly when real
+  updates start.
+
+  **`synth_ms` / `synth_worst` / `synth_worst_n`** — milliseconds of movement the server ran
+  from stale input or skipped, per move packet: a gap up to `numbackup` (the client's
+  `cl_cmdbackup`) is recovered exactly and adds nothing; a gap below the `< 24` replay gate
+  replays `lastcmd` for `gap − numbackup` commands; a gap of 24 or more replays nothing and
+  freezes the player for the whole gap. Each command counts `lastcmd.msec`, the client's own
+  command duration, so this is in the client's clock and comparable across `cl_cmdrate`. A
+  freeze is capped at 60 000 ms per packet — `net_drop` is client-influenced, and a silence
+  past `sv_timeout`'s default would have dropped the client. ⚠️ **`drops` is unchanged and still
+  counts the raw gap, recovered commands included**; the earlier description of it in this file
+  ("commands the engine synthesized from `lastcmd`") was wrong, and `synth_ms` is the field that
+  measures that.
+
+  **`interp_cap_hits` / `interp_floor_hits` / `interp_diff_worst`** — `SV_SetupMove` derives
+  `cl_interptime` from the usercmd's `lerp_msec`, caps it at 100 ms and floors it at
+  `next_messageinterval`. These count per move packet which branch fired, and the widest gap
+  between the lerp the client declared and the one that shifted `targettime` (ms on `net:`, the
+  slot on `net_detail:`). A raised lerp counts as much as a lowered one. Same population as
+  `rewind: attempts` — shooters that passed `SV_SetupMove`'s early returns. `cl_interptime` is a
+  local, not a cvar, so no KTPCvarChecker change goes with this.
+
+  **`loss_worst` / `loss_worst_n`** on `net_detail:` — the slot that reported `net:`'s
+  `loss_worst`, and its value. The first slot to reach the peak keeps it on a tie.
+
+  **`lat_pop` / `jit_pop`** — how many clients a latency figure describes, per interval. Each
+  loaded client lands in one `lat_pop` bucket by its interval **max** latency:
+  `none/<25/<50/<100/<150/<300/300+` ms, where `none` is a loaded client with no positive sample
+  at all. `jit_pop` buckets the same clients by max − min spread: `<10/<25/<50/<100/100+` ms, so
+  it sums to `lat_pop` minus `none`. Edges are lower-inclusive (exactly 25 ms is `<50`). This is
+  the population view the worst-only fields cannot give; `net_session:` is the per-player view.
+  Cost: 130–145 bytes per `net:` line, about 1.2 MB per instance per day at the default 10 s
+  interval; `net_detail:` grows by about 150 bytes on the windows that emit it.
+
+  **`net_session:`** — one line per human client, emitted from `SV_DropClient_internal` before
+  the name and auth id are cleared, so kicks, timeouts, disconnects and shutdown all reach it.
+  - `steamid` — `SV_GetClientIDString`, the join key to HLStatsX.
+  - `dur` — seconds since `SV_ConnectClient`. The session starts there and **not** at
+    `SV_New_f`, which re-runs on every map of the same connection.
+  - `pkts` — packets through the packet sampler, loading ones included; `cmds` — new usercmds
+    in move packets.
+  - `drops` (clamped as on `net:`), `latzero`, `subinterval`, `synth_ms`, `ignorecmd_hits`
+    (penalty-seconds) — the whole connection's totals.
+  - `latency_avg` / `latency_max` — over loaded, positive samples; `jitter_avg` — mean
+    |Δlatency| between consecutive positive samples (unsmoothed).
+  - `loss_avg` / `loss_max` — client-reported downstream loss %.
+
+  A client who is never worst in any 10 s window but bleeds steadily all match shows up here,
+  which no `_worst` field can do. ⚠️ Accumulated only while profiling is on, and emitted only if
+  profiling and `ktp_profile_net` are on at disconnect — a session that spans a toggle reports
+  the profiled part. Proxies, fakeclients and sessions with nothing sampled emit nothing. A
+  reconnect that reuses a slot without a drop starts a new session and discards the old one.
+  Per-client state is a parallel array (`client_t` gains no field) that the interval reset
+  never touches.
+
+  **Correction.** The ping windows do **not** survive a changelevel, as the `net:` entry above
+  and a source comment said: `SV_InactivateClients` clears the flags `SV_New_f` checks, so
+  `SV_New_f` re-stamps `connection_started` on every map and each window restarts. Harmless for
+  per-interval fields; it is why the session rollup starts at `SV_ConnectClient`.
+
+  The inline loss peak and `ignorecmd_hits` increment moved behind `KTP_NetSampleLoss` and
+  `KTP_NetSampleIgnoreCmd` with the same proxy exclusion. `KTP_NetSampleMove` wraps
+  `KTP_NetSampleDrops` unchanged. Hot-path cost with profiling on: a few flag tests and adds
+  per packet, one call per move packet and per rewind pass, one extra 32-slot scan per interval,
+  one line per disconnect. Nothing new executes with `ktp_profile_frame` 0 except the session
+  begin/take at connect and drop.
+
 ### Verified — `lagcomp_first` has always been `-1`, and that is the healthy value
 
 `lagcomp_first` reads `-1` on **every** `net_detail:` line the fleet has ever

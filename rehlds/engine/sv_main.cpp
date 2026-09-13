@@ -2651,6 +2651,8 @@ void EXT_FUNC SV_ConnectClient_internal(void)
 	host_client->connected = TRUE;
 	host_client->uploading = FALSE;
 	host_client->fully_connected = FALSE;
+	// KTP: here and not SV_New_f, which re-runs on every map of the same connection.
+	KTP_NetSessionBegin(host_client - g_psvs.clients, realtime);
 
 #ifdef REHLDS_FIXES
 	host_client->m_bSentNewResponse = FALSE;
@@ -7365,10 +7367,11 @@ std::atomic<uint32> g_ktp_conio_worst_us(0);
 // ping window is a parallel array — client_t is ABI-exposed to the game DLL
 // and ReAPI, so it never grows a field.
 uint32 g_ktp_net_ignorecmd_hits = 0;    // clockwindow penalties imposed (SV_CheckCmdTimes)
-uint32 g_ktp_net_drops = 0;             // move packets replayed from lastcmd (SV_ParseMove net_drop)
+uint32 g_ktp_net_drops = 0;             // move-packet sequence gaps, including the ones backups recover
 uint32 g_ktp_net_latzero = 0;           // packets from active clients with latency 0 = no lagcomp rewind
 int g_ktp_net_choke_peak = 0;           // worst consecutive choke run on any client
 float g_ktp_net_loss_peak = 0.0f;       // worst client-reported packet loss %
+int g_ktp_net_loss_peak_slot = -1;
 float g_ktp_net_latency_peak = 0.0f;    // worst single-packet latency
 int g_ktp_net_latency_peak_slot = -1;
 float g_ktp_net_ping_min[MAX_CLIENTS];
@@ -7392,7 +7395,8 @@ uint32 g_ktp_net_seen_mask = 0;         // slots that carried human traffic this
 uint32 g_ktp_net_lagcomp_mask = 0;      // seen slots that ever had !lw || !lc this interval
 // Connection generation per slot: a new occupant must not inherit the previous
 // player's ping window or lagcomp flag mid-interval. Deliberately NOT reset per
-// interval — connection_started survives changelevel, so the window does too.
+// interval. SV_New_f re-stamps connection_started on every map, so the window
+// restarts at each changelevel; the net_session: rollup does not use it for that.
 double g_ktp_net_ping_stamp[MAX_CLIENTS];
 // Per-slot drops/latzero. The server-wide totals above answer "how much" and
 // never "who", which is the question every drop burst has raised so far.
@@ -7413,6 +7417,17 @@ float g_ktp_rewind_depth_peak = 0.0f;
 int g_ktp_rewind_depth_slot = -1;
 float g_ktp_rewind_dist_peak_sq = 0.0f;
 int g_ktp_rewind_dist_slot = -1;
+uint32 g_ktp_net_subinterval = 0;
+uint32 g_ktp_net_subinterval_slot[MAX_CLIENTS];
+uint32 g_ktp_net_connecting_mask = 0;
+uint32 g_ktp_net_established_mask = 0;
+uint32 g_ktp_net_synth_ms = 0;
+uint32 g_ktp_net_synth_ms_slot[MAX_CLIENTS];
+uint32 g_ktp_net_interp_cap_hits = 0;
+uint32 g_ktp_net_interp_floor_hits = 0;
+float g_ktp_net_interp_diff_peak = 0.0f;
+int g_ktp_net_interp_diff_slot = -1;
+ktp_net_session_t g_ktp_net_session[MAX_CLIENTS];
 // logio split: which sink blocks — logaddr = Netchan_OutOfBandPrint UDP sendto
 // per logaddress (HLStatsX), file = FS_FPrintf to qconsole.log on disk.
 double g_ktp_logaddr_io_frame = 0.0;
@@ -7467,7 +7482,7 @@ static bool KTP_NetSlotUsable(int slot, qboolean proxy)
 }
 
 void KTP_NetSamplePacket(int slot, qboolean proxy, int lw, int lc, float latency,
-	double connection_started, qboolean latzero_eligible)
+	double connection_started, qboolean latzero_eligible, qboolean subinterval, qboolean connecting)
 {
 	if (!KTP_NetSlotUsable(slot, proxy))
 		return;
@@ -7485,11 +7500,22 @@ void KTP_NetSamplePacket(int slot, qboolean proxy, int lw, int lc, float latency
 	}
 
 	g_ktp_net_seen_mask |= bit;
+	ktp_net_session_t *session = &g_ktp_net_session[slot];
+	++session->packets;
 
 	// Sticky for the interval: lw/lc are re-derived on every userinfo update, so
 	// a mid-interval cl_lc 0 stretch must not vanish before the boundary scan.
 	if (!lw || !lc)
 		g_ktp_net_lagcomp_mask |= bit;
+
+	// Only entity updates stamp a frame's senttime, and they start at
+	// fully_connected; an ack before that pairs with a stale stamp.
+	if (connecting)
+	{
+		g_ktp_net_connecting_mask |= bit;
+		return;
+	}
+	g_ktp_net_established_mask |= bit;
 
 	if (latency > 0.0f)
 	{
@@ -7502,25 +7528,47 @@ void KTP_NetSamplePacket(int slot, qboolean proxy, int lw, int lc, float latency
 			g_ktp_net_ping_min[slot] = latency;
 		if (latency > g_ktp_net_ping_max[slot])
 			g_ktp_net_ping_max[slot] = latency;
+
+		session->latency_sum += latency;
+		++session->latency_n;
+		if (latency > session->latency_max)
+			session->latency_max = latency;
+		if (session->latency_prev > 0.0f)
+		{
+			session->jitter_sum += fabs(latency - session->latency_prev);
+			++session->jitter_n;
+		}
+		session->latency_prev = latency;
 	}
 	else if (latzero_eligible)
 	{
-		// Zero latency on an established client: SV_SetupMove rewinds to now —
-		// zero lag compensation for every shot in this packet.
-		++g_ktp_net_latzero;
-		++g_ktp_net_latzero_slot[slot];
+		// Either way SV_SetupMove rewinds to now for every shot in this packet;
+		// the split is about why, and a sub-interval client is not degraded.
+		if (subinterval)
+		{
+			++g_ktp_net_subinterval;
+			++g_ktp_net_subinterval_slot[slot];
+			++session->subinterval;
+		}
+		else
+		{
+			++g_ktp_net_latzero;
+			++g_ktp_net_latzero_slot[slot];
+			++session->latzero;
+		}
 	}
 }
 
-void KTP_NetSampleDrops(int slot, qboolean proxy, int net_drop)
+uint32 KTP_NetSampleDrops(int slot, qboolean proxy, int net_drop)
 {
 	// The < 24 clamp mirrors the replay gate in SV_ParseMove and caps what a
 	// crafted sequence number can add — net_drop is client-influenced, 30-bit.
 	if (net_drop <= 0 || net_drop >= 24 || !KTP_NetSlotUsable(slot, proxy))
-		return;
+		return 0;
 
 	g_ktp_net_drops += net_drop;
 	g_ktp_net_drops_slot[slot] += net_drop;
+	return (uint32)net_drop;
 }
 
 void KTP_NetSampleUpdate(int slot, qboolean proxy)
@@ -7593,6 +7641,189 @@ int KTP_NetWorstSlot(const uint32 *counts, uint32 *out_count)
 		*out_count = best;
 
 	return worst;
+}
+
+void KTP_NetSampleMove(int slot, qboolean proxy, int numcmds, int net_drop, int numbackup, int lastcmd_msec)
+{
+	uint32 dropped = KTP_NetSampleDrops(slot, proxy, net_drop);
+	if (!KTP_NetSlotUsable(slot, proxy))
+		return;
+
+	ktp_net_session_t *session = &g_ktp_net_session[slot];
+	if (numcmds > 0)
+		session->cmds += numcmds;
+	session->drops += dropped;
+
+	uint32 synth = KTP_NetSynthMs(net_drop, numbackup, lastcmd_msec);
+	if (!synth)
+		return;
+
+	g_ktp_net_synth_ms += synth;
+	g_ktp_net_synth_ms_slot[slot] += synth;
+	session->synth_ms += synth;
+}
+
+void KTP_NetSampleLoss(int slot, qboolean proxy, float loss)
+{
+	// Proxies excluded — the HLTV proxy's WAN loss is not a player problem.
+	if (!KTP_NetSlotUsable(slot, proxy))
+		return;
+
+	ktp_net_session_t *session = &g_ktp_net_session[slot];
+	session->loss_sum += loss;
+	++session->loss_n;
+	if (loss > session->loss_max)
+		session->loss_max = loss;
+
+	if (loss > g_ktp_net_loss_peak)
+	{
+		g_ktp_net_loss_peak = loss;
+		g_ktp_net_loss_peak_slot = slot;
+	}
+}
+
+void KTP_NetSampleInterp(int slot, qboolean proxy, float declared, float used, qboolean capped, qboolean floored)
+{
+	if (!KTP_NetSlotUsable(slot, proxy))
+		return;
+
+	if (capped)
+		++g_ktp_net_interp_cap_hits;
+	if (floored)
+		++g_ktp_net_interp_floor_hits;
+
+	float diff = used - declared;
+	if (diff < 0.0f)
+		diff = -diff;
+	if (diff > g_ktp_net_interp_diff_peak)
+	{
+		g_ktp_net_interp_diff_peak = diff;
+		g_ktp_net_interp_diff_slot = slot;
+	}
+}
+
+void KTP_NetSampleIgnoreCmd(int slot, qboolean proxy)
+{
+	if (!KTP_NetSlotUsable(slot, proxy))
+		return;
+
+	++g_ktp_net_ignorecmd_hits;
+	++g_ktp_net_session[slot].ignorecmd_hits;
+}
+
+uint32 KTP_NetSynthMs(int net_drop, int numbackup, int lastcmd_msec)
+{
+	// net_drop is client-influenced; past sv_timeout's default the client would have been dropped.
+	const int freeze_ms_max = 60000;
+
+	if (net_drop <= 0 || lastcmd_msec <= 0)
+		return 0;
+
+	// SV_ParseMove replays nothing at >= 24: the player stands still for the whole gap.
+	if (net_drop >= 24)
+	{
+		if (net_drop > freeze_ms_max)
+			net_drop = freeze_ms_max;
+		uint32 frozen = (uint32)net_drop * (uint32)lastcmd_msec;
+		return frozen > (uint32)freeze_ms_max ? (uint32)freeze_ms_max : frozen;
+	}
+
+	// Gaps up to numbackup come back exactly from the backup copies; only the rest replays lastcmd.
+	if (numbackup < 0)
+		numbackup = 0;
+	if (net_drop <= numbackup)
+		return 0;
+
+	return (uint32)(net_drop - numbackup) * (uint32)lastcmd_msec;
+}
+
+int KTP_NetPopulation(int *lat_pop, int *jit_pop)
+{
+	static const float lat_edges[KTP_NET_LAT_POP_N - 2] = { 0.025f, 0.050f, 0.100f, 0.150f, 0.300f };
+	static const float jit_edges[KTP_NET_JIT_POP_N - 1] = { 0.010f, 0.025f, 0.050f, 0.100f };
+	int connecting = 0;
+
+	for (int b = 0; b < KTP_NET_LAT_POP_N; b++)
+		lat_pop[b] = 0;
+	for (int b = 0; b < KTP_NET_JIT_POP_N; b++)
+		jit_pop[b] = 0;
+
+	for (int i = 0; i < MAX_CLIENTS; i++)
+	{
+		uint32 bit = 1u << i;
+		if (!(g_ktp_net_seen_mask & bit))
+			continue;
+		if (g_ktp_net_connecting_mask & bit)
+			connecting++;
+		if (!(g_ktp_net_established_mask & bit))
+			continue;
+
+		if (g_ktp_net_ping_max[i] < g_ktp_net_ping_min[i])
+		{
+			lat_pop[0]++;
+			continue;
+		}
+
+		int b = 0;
+		while (b < KTP_NET_LAT_POP_N - 2 && g_ktp_net_ping_max[i] >= lat_edges[b])
+			b++;
+		lat_pop[1 + b]++;
+
+		float spread = g_ktp_net_ping_max[i] - g_ktp_net_ping_min[i];
+		int j = 0;
+		while (j < KTP_NET_JIT_POP_N - 1 && spread >= jit_edges[j])
+			j++;
+		jit_pop[j]++;
+	}
+
+	return connecting;
+}
+
+void KTP_NetSessionBegin(int slot, double now)
+{
+	if (slot < 0 || slot >= MAX_CLIENTS)
+		return;
+
+	Q_memset(&g_ktp_net_session[slot], 0, sizeof(g_ktp_net_session[slot]));
+	g_ktp_net_session[slot].started = now;
+}
+
+qboolean KTP_NetSessionTake(int slot, qboolean proxy, qboolean fakeclient, ktp_net_session_t *out)
+{
+	if (slot < 0 || slot >= MAX_CLIENTS)
+		return FALSE;
+
+	*out = g_ktp_net_session[slot];
+	// Cleared before the checks, so a refused take leaves nothing for the next occupant.
+	Q_memset(&g_ktp_net_session[slot], 0, sizeof(g_ktp_net_session[slot]));
+
+	if (proxy || fakeclient)
+		return FALSE;
+
+	return (out->packets || out->cmds) ? TRUE : FALSE;
+}
+
+void KTP_NetSessionEmit(client_t *cl)
+{
+	int slot = cl - g_psvs.clients;
+	ktp_net_session_t s;
+
+	if (!KTP_NetSessionTake(slot, cl->proxy, cl->fakeclient, &s))
+		return;
+
+	if (!g_ktp_profiling_enabled || ktp_profile_net.value == 0.0f)
+		return;
+
+	// steamid is the join key to HLStatsX; the whole connection, across every map it spanned.
+	Log_Printf("[KTP_PROFILE] net_session: client=%d(%s) steamid=%s dur=%.0fs pkts=%u cmds=%u drops=%u latzero=%u subinterval=%u synth_ms=%u ignorecmd_hits=%u latency_avg=%.1fms latency_max=%.1fms jitter_avg=%.1fms loss_avg=%.1f loss_max=%.0f\n",
+		slot, cl->name, SV_GetClientIDString(cl),
+		s.started > 0.0 ? realtime - s.started : 0.0,
+		s.packets, s.cmds, s.drops, s.latzero, s.subinterval, s.synth_ms, s.ignorecmd_hits,
+		s.latency_n ? s.latency_sum / s.latency_n * 1000.0 : 0.0,
+		s.latency_max * 1000.0,
+		s.jitter_n ? s.jitter_sum / s.jitter_n * 1000.0 : 0.0,
+		s.loss_n ? s.loss_sum / s.loss_n : 0.0,
+		s.loss_max);
 }
 
 // KTP: Helper function to broadcast pause state to clients
@@ -8946,8 +9177,8 @@ void SV_CheckCmdTimes(void)
 			// clockwindow (0.5s) — the rubber-band case the net: record counts.
 			// Re-fires each second the drift persists (this loop is 1 Hz), so
 			// the field is penalty-seconds, not distinct incidents.
-			if (g_ktp_profiling_enabled && !cl->fakeclient && !cl->proxy)
-				++g_ktp_net_ignorecmd_hits;
+			if (g_ktp_profiling_enabled && !cl->fakeclient)
+				KTP_NetSampleIgnoreCmd(i, cl->proxy);
 			cl->ignorecmdtime = clockwindow.value + realtime;
 			cl->cmdtime = realtime - cl->connecttime;
 		}
@@ -9085,7 +9316,17 @@ void KTP_ProfileResetInterval(void)
 	g_ktp_rewind_depth_slot = -1;
 	g_ktp_rewind_dist_peak_sq = 0.0f;
 	g_ktp_rewind_dist_slot = -1;
-	// ping_stamp survives on purpose: it tracks connection identity, not the interval
+	g_ktp_net_loss_peak_slot = -1;
+	g_ktp_net_subinterval = 0;
+	g_ktp_net_connecting_mask = 0;
+	g_ktp_net_established_mask = 0;
+	g_ktp_net_synth_ms = 0;
+	g_ktp_net_interp_cap_hits = 0;
+	g_ktp_net_interp_floor_hits = 0;
+	g_ktp_net_interp_diff_peak = 0.0f;
+	g_ktp_net_interp_diff_slot = -1;
+	// ping_stamp survives on purpose: it tracks connection identity, not the interval.
+	// g_ktp_net_session survives too: it is the connection, emitted at disconnect.
 	for (int i = 0; i < MAX_CLIENTS; i++)
 	{
 		g_ktp_net_ping_min[i] = 9999.0f;
@@ -9094,6 +9335,8 @@ void KTP_ProfileResetInterval(void)
 		g_ktp_net_latzero_slot[i] = 0;
 		g_ktp_net_updates_slot[i] = 0;
 		g_ktp_rewind_miss_slot[i] = 0;
+		g_ktp_net_subinterval_slot[i] = 0;
+		g_ktp_net_synth_ms_slot[i] = 0;
 	}
 }
 
@@ -9595,7 +9838,12 @@ void EXT_FUNC SV_Frame_Internal()
 				// updates= is a server total across every slot that received
 				// one; the per-client rate that answers cl_updaterate is
 				// updates_worst_n on net_detail:, divided by the interval.
-				Log_Printf("[KTP_PROFILE] net: clients=%d unlag=%d lagcomp_off=%d ignorecmd_hits=%u drops=%u latzero=%u choke_peak=%d loss_worst=%.0f latency_worst=%.1fms jitter_worst=%.1fms maxunlag=%.0fms maxunlag_hits=%u maxunlag_excess_worst=%.1fms shadow=%.0fms shadow_hits=%u shadow_worst=%.1fms updates=%u\n",
+				// lat_pop=/jit_pop= say how many clients a latency figure
+				// describes; every _worst field names only one of them.
+				int net_lat_pop[KTP_NET_LAT_POP_N];
+				int net_jit_pop[KTP_NET_JIT_POP_N];
+				int net_connecting = KTP_NetPopulation(net_lat_pop, net_jit_pop);
+				Log_Printf("[KTP_PROFILE] net: clients=%d unlag=%d lagcomp_off=%d ignorecmd_hits=%u drops=%u latzero=%u choke_peak=%d loss_worst=%.0f latency_worst=%.1fms jitter_worst=%.1fms maxunlag=%.0fms maxunlag_hits=%u maxunlag_excess_worst=%.1fms shadow=%.0fms shadow_hits=%u shadow_worst=%.1fms updates=%u subinterval=%u connecting=%d synth_ms=%u interp_cap_hits=%u interp_floor_hits=%u interp_diff_worst=%.1fms lat_pop=%d/%d/%d/%d/%d/%d/%d jit_pop=%d/%d/%d/%d/%d\n",
 					net_clients, sv_unlag.value != 0.0f ? 1 : 0, net_lagcomp_off,
 					g_ktp_net_ignorecmd_hits, g_ktp_net_drops, g_ktp_net_latzero,
 					g_ktp_net_choke_peak, g_ktp_net_loss_peak,
@@ -9607,7 +9855,16 @@ void EXT_FUNC SV_Frame_Internal()
 					sv_maxunlag_shadow.value * 1000.0,
 					g_ktp_net_shadow_hits,
 					g_ktp_net_shadow_peak * 1000.0,
-					g_ktp_net_updates);
+					g_ktp_net_updates,
+					g_ktp_net_subinterval,
+					net_connecting,
+					g_ktp_net_synth_ms,
+					g_ktp_net_interp_cap_hits,
+					g_ktp_net_interp_floor_hits,
+					g_ktp_net_interp_diff_peak * 1000.0,
+					net_lat_pop[0], net_lat_pop[1], net_lat_pop[2], net_lat_pop[3],
+					net_lat_pop[4], net_lat_pop[5], net_lat_pop[6],
+					net_jit_pop[0], net_jit_pop[1], net_jit_pop[2], net_jit_pop[3], net_jit_pop[4]);
 				// Slot→name detail so the aggregates are actionable without a
 				// status query. Slots index a persistent array, so a client who
 				// left mid-interval leaves a stale name — same caveat as
@@ -9621,11 +9878,17 @@ void EXT_FUNC SV_Frame_Internal()
 				// many others were connected.
 				uint32 net_updates_worst_n = 0;
 				int net_updates_slot = KTP_NetWorstSlot(g_ktp_net_updates_slot, &net_updates_worst_n);
+				uint32 net_subinterval_worst_n = 0;
+				int net_subinterval_slot = KTP_NetWorstSlot(g_ktp_net_subinterval_slot, &net_subinterval_worst_n);
+				uint32 net_synth_worst_n = 0;
+				int net_synth_slot = KTP_NetWorstSlot(g_ktp_net_synth_ms_slot, &net_synth_worst_n);
 				if (net_lagcomp_slot >= 0 || net_jitter_slot >= 0 || g_ktp_net_latency_peak_slot >= 0
 					|| g_ktp_net_maxunlag_excess_slot >= 0 || g_ktp_net_shadow_peak_slot >= 0
-					|| net_drops_slot >= 0 || net_latzero_slot >= 0 || net_updates_slot >= 0)
+					|| net_drops_slot >= 0 || net_latzero_slot >= 0 || net_updates_slot >= 0
+					|| g_ktp_net_loss_peak_slot >= 0 || net_subinterval_slot >= 0
+					|| net_synth_slot >= 0 || g_ktp_net_interp_diff_slot >= 0)
 				{
-					Log_Printf("[KTP_PROFILE] net_detail: lagcomp_first=%d(%s) latency_worst=%d(%s) jitter_worst=%d(%s) maxunlag_excess_worst=%d(%s) shadow_worst=%d(%s) drops_worst=%d(%s) drops_worst_n=%u latzero_worst=%d(%s) latzero_worst_n=%u updates_worst=%d(%s) updates_worst_n=%u\n",
+					Log_Printf("[KTP_PROFILE] net_detail: lagcomp_first=%d(%s) latency_worst=%d(%s) jitter_worst=%d(%s) maxunlag_excess_worst=%d(%s) shadow_worst=%d(%s) drops_worst=%d(%s) drops_worst_n=%u latzero_worst=%d(%s) latzero_worst_n=%u updates_worst=%d(%s) updates_worst_n=%u loss_worst=%d(%s) loss_worst_n=%.0f subinterval_worst=%d(%s) subinterval_worst_n=%u synth_worst=%d(%s) synth_worst_n=%u interp_diff_worst=%d(%s)\n",
 						net_lagcomp_slot,
 						net_lagcomp_slot >= 0 ? g_psvs.clients[net_lagcomp_slot].name : "-",
 						g_ktp_net_latency_peak_slot,
@@ -9644,7 +9907,18 @@ void EXT_FUNC SV_Frame_Internal()
 						net_latzero_worst_n,
 						net_updates_slot,
 						net_updates_slot >= 0 ? g_psvs.clients[net_updates_slot].name : "-",
-						net_updates_worst_n);
+						net_updates_worst_n,
+						g_ktp_net_loss_peak_slot,
+						g_ktp_net_loss_peak_slot >= 0 ? g_psvs.clients[g_ktp_net_loss_peak_slot].name : "-",
+						g_ktp_net_loss_peak,
+						net_subinterval_slot,
+						net_subinterval_slot >= 0 ? g_psvs.clients[net_subinterval_slot].name : "-",
+						net_subinterval_worst_n,
+						net_synth_slot,
+						net_synth_slot >= 0 ? g_psvs.clients[net_synth_slot].name : "-",
+						net_synth_worst_n,
+						g_ktp_net_interp_diff_slot,
+						g_ktp_net_interp_diff_slot >= 0 ? g_psvs.clients[g_ktp_net_interp_diff_slot].name : "-");
 				}
 
 				// Every field above describes the network a shot rode; these
