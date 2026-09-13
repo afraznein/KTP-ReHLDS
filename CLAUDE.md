@@ -206,6 +206,50 @@ chmod +x ~/dod-{port}/serverfiles/hlds_linux
 
 See `N:\Nein_\KTP Git Projects\CLAUDE.md` for paramiko SSH documentation.
 
+## Identifying a deployed engine build
+
+The md5 is the identity, and it is **not reproducible**: the build bakes a GNU build-id and
+`__DATE__`, so rebuilding the same commit gives a different hash at the same size. Never identify a
+binary by rebuilding a candidate and comparing hashes. Read the commit out of the binary instead:
+
+```bash
+grep -a -o -E 'ReHLDS version[^ ]*|ReHLDS/commit/[0-9a-f]*' engine_i486.so
+git rev-list --count <commit>    # the build number in the version label comes from this
+```
+
+⚠️ Use `grep -a`, not `strings`. `strings` is not installed everywhere, and a missing tool piped into
+`grep` gives an empty match that reads as "this binary has no version string". Carry a positive
+control either way.
+
+⚠️ The banner is generated from the commit count, so it normally reads *higher* than the label you
+cut, but a stale label can also sit below the real build. Re-derive the label from the commit; don't
+"correct" it in either direction from the other number.
+
+**`REHLDS_API_VERSION_MINOR` is a fact about a commit, not about the fleet.** Modules gate on it
+(dodx checks it in KTPAMXX's `moduleconfig.cpp`). Read it from the commit the *live* binary bakes —
+`git show <commit>:rehlds/public/rehlds/rehlds_api.h` — never from this repo's tip.
+
+### Replaced is not loaded
+
+`.new` swaps in with `mv -f`, and a running process keeps the old inode mapped, so *file replaced*
+and *file replaced and running* look identical on disk. For each `hlds_linux`, compare the inode it
+maps in `/proc/<pid>/maps` with the on-disk inode of that instance's `engine_i486.so`, and look for
+`(deleted)` mappings. Before trusting a zero, show the `(deleted)` probe firing on something real on
+the same host.
+
+### Smoke-testing under WSL
+
+A loopback run from a drvfs path can segfault in 32-bit `stat` on symlinks — and the live engine
+crashes the same way there. Run the live engine in the same harness as a control before concluding
+a new build crashes.
+
+### `proxy.so` (HLTV)
+
+`build_linux.sh` collects `proxy.so`. It embeds no version string or SHA, so its md5 is its only
+identity. A rebuild differs only in the build-id note and the baked `__DATE__`, so don't restage it
+to "refresh" — that churns a pinned hash for no change. `core.so`, `demoplayer.so` and `director.so`
+are built too, but nothing collects them.
+
 ## Related Projects
 - `N:\Nein_\KTP Git Projects\KTPAMXX` - AMX Mod X fork (loaded as extension)
 - `N:\Nein_\KTP Git Projects\KTPReAPI` - ReAPI fork (engine bridge)
