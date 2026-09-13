@@ -27,6 +27,7 @@
 */
 
 #include "precompiled.h"
+#include "ktp_nettelemetry.h"
 
 double realtime;
 double rolling_fps;
@@ -461,6 +462,9 @@ void SV_DropClient_internal(client_t *cl, qboolean crash, const char *string)
 	float connection_time;
 
 	i = 0;
+
+	// KTP: before anything below clears the name and the auth id.
+	KTP_NetSessionEmit(cl);
 
 	if (!crash)
 	{
