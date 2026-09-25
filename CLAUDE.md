@@ -164,6 +164,22 @@ Fixed artificial FPS cap that limited servers to sys_ticrate - 1.
 
 Also changed `fps` variable from `float` to `double` for precision consistency with `realtime`/`oldrealtime`.
 
+### Client updates are quantised to whole frames — `cl_updaterate 102` delivers a phase-locked 100/s
+
+`SV_SendClientMessages` books the next update off the frame it actually went out on:
+`next_messagetime = host_frametime + next_messageinterval + realtime` (`sv_main.cpp` ~5573, ~5621).
+Because sends land on whole frames, on the 1 ms `-absgrid` grid a requested 102 becomes
+`ceil(9.804 ms / 1.000 ms) = 10` frames — **a steady, phase-locked 100 a second, not 102 and not the
+~97 an older `Sleep_Select` period produced.** Measured across 24 instances and 13,668 populated
+windows: fps 1000.0 at p50.
+
+⚠️ **A fixed-beat scheduler here is a TRADE, not a fix**: advancing `next_messagetime` from its previous
+value would hit an average of 102 by alternating 10 ms / 9 ms gaps, giving up the steady cadence.
+Measure the delivered rate per client (the `updates=` field on the `net:` record) before and after.
+
+🔑 **Players cannot raise it from their side** — the client caps the `cl_updaterate` it reports at 102,
+so "set 120 to guarantee 102" does nothing.
+
 ### Extension Mode Hooks (KTPAMXX/DODX)
 | Hook | Purpose |
 |------|---------|
