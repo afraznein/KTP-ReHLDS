@@ -153,7 +153,10 @@ out to the scratch dir over running tools "in place".
    exit 0, ordered log rotation). The runner's module stack must match the
    fleet; sync it manually after any wave verifies — never automate the sync.
 4. **Fleet stage**: `.new` via paramiko to all 24 active instances, `chmod +x`,
-   md5-verify every staged file.
+   md5-verify every staged file. ⚠️ **`proxy.so` is not on this path** — it is one
+   file on the data server shared by all 24 HLTV instances, built by
+   `build_proxy.sh` (pinned to the target's distro; a newer-distro build fails to
+   load there) and delivered by hand per the coordination repo's `NEIN-DEPLOY.md`.
 5. **Post-activation verify**: 24/24 on the new md5, no leftover `.new`, zero
    new cores — check `/tmp` (`find /tmp -maxdepth 1 -name 'core.*' -mtime -1`),
    NOT the game trees (that search matches only core.so/core.ini/core.wav and
