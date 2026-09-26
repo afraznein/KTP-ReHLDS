@@ -417,6 +417,31 @@ interval, and a new connection in a reused slot does not inherit it.
 
 ### Fixed
 
+- **An HLTV demo stopped 26-59 s before the end of the half it recorded.** The demo
+  client follows the spectator clock (`DemoClient::SendDatagram` takes
+  `GetFrameByTime(GetSpectatorTime())` whenever a delay is set), so with `delay 60`
+  the last minute of a level lives only in the world's frame buffer. `World::NewGame`
+  frees that buffer on the next level's `svc_serverinfo`, and `ConnectionComplete`
+  then closes the demo, so whatever the proxy had not yet played out is gone. An idle
+  map rotation hides this — the server sits at intermission long enough for the
+  spectator clock to catch up on its own — but a match `changelevel` at half end does
+  not, and every official half's recording ended short. Measured over 24 S10 halves
+  (2026-09-26): 26.5-58.5 s missing, median 48.9; 280 deaths and 55 flag-state events
+  present in the database and in no recording. `Proxy::FlushDemoBuffer`, on world
+  signal 1, writes the remaining frames before `Reset()` runs — the signal is fired
+  for exactly this reason, immediately before the frames are freed, and was not
+  handled. Director commands ride the broadcast, which has already stopped, so the
+  flush pulls them by time range the way `World::SaveAsDemo` does; without that the
+  recovered tail plays back with no camera direction. Live spectators are untouched:
+  this is the demo client only, so the broadcast delay and the anti-ghosting it buys
+  are unchanged.
+
+  ⚠️ `proxy.so` is a separate artifact on a separate host — one binary shared by all
+  24 instances at `/home/hltvserver/hlds/proxy.so` on the data server, not part of
+  the `stage-wave.py` fleet path. Verify with `scripts/demo_coverage.py`
+  (KTPInfrastructure) against one official half after the swap: coverage should reach
+  `context_live + 1200`.
+
 - **HLTV rcon replies were empty or not, depending on leftover stack contents.**
   `Proxy::ExecuteRcon` (`HLTV/Proxy/src/Proxy.cpp`) captures command output at
   `outputbuf + 1` — `System::RedirectOutput` (`HLTV/Console/src/System.cpp:74`)
