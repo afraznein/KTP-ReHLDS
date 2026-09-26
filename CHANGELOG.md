@@ -436,6 +436,18 @@ interval, and a new connection in a reused slot does not inherit it.
   this is the demo client only, so the broadcast delay and the anti-ghosting it buys
   are unchanged.
 
+  Reference build, against the data server's own toolchain (gcc 13.3.0 / glibc 2.39,
+  Ubuntu 24.04) so the artifact cannot out-run the host's runtime — a build on a
+  newer distro links `GLIBC_2.43` and `GLIBC_ABI_GNU_TLS` and will not load there:
+
+  ```
+  docker run --rm -v <repo>:/src:ro -v <out>:/out ubuntu:24.04       bash -c 'apt-get -qq update && apt-get -qq install -y g++-multilib &&                <the Proxy CMakeLists flags, no -flto>'
+  ```
+
+  md5 `ce896df1bd447c08b8b9f606507e9f31`, 491400 bytes, `DT_NEEDED` identical to the
+  live artifact (`libsteam_api.so`, `libstdc++.so.6`, `libm.so.6`, `libc.so.6`) and no
+  symbol version above `GLIBC_2.38`. Not deployed.
+
   ⚠️ `proxy.so` is a separate artifact on a separate host — one binary shared by all
   24 instances at `/home/hltvserver/hlds/proxy.so` on the data server, not part of
   the `stage-wave.py` fleet path. Verify with `scripts/demo_coverage.py`
