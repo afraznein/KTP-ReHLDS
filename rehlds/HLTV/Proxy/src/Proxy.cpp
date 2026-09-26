@@ -1455,6 +1455,9 @@ void Proxy::ReceiveSignal(ISystemModule *module, unsigned int signal, void *data
 	{
 		switch (signal)
 		{
+		case 1:
+			FlushDemoBuffer();
+			break;
 		case 2:
 			NewGameStarted();
 			ReconnectClients();
@@ -1884,6 +1887,64 @@ void Proxy::ReconnectClients()
 	}
 
 	m_DemoClient.Reconnect();
+}
+
+void Proxy::FlushDemoBuffer()
+{
+	// KTP: World::NewGame fires this signal and then Reset()s, freeing every frame
+	// still in the buffer. With a delay set, that buffer holds the tail of the level
+	// the demo has not written yet -- the demo client follows the spectator clock,
+	// which trails the world clock by design. An idle map rotation leaves the proxy
+	// alone long enough to play that tail out by itself, but a match `changelevel` at
+	// half end does not, and the demo closes short: 26-59 s (median 49) across 24
+	// measured S10 halves, holding 280 deaths and 55 flag-state events that exist in
+	// no recording. Write the remainder here, while the frames still exist.
+	// Live spectators are untouched: this is the demo client only, so the broadcast
+	// delay and the anti-ghosting it buys are unchanged.
+	if (GetDelay() <= 0 || !m_DemoClient.IsActive()) {
+		return;
+	}
+
+	frame_t *lastFrame = m_World->GetLastFrame();
+	frame_t *frame = m_World->GetFrameByTime(GetSpectatorTime());
+	if (!frame) {
+		frame = m_World->GetFirstFrame();
+	}
+
+	if (!frame || !lastFrame) {
+		return;
+	}
+
+	// The same world-time -> demo-time mapping SendDatagram uses, frozen at the level
+	// change, so the demo clock stays continuous across the flush.
+	double demoTimeOffset = GetProxyTime() - GetSpectatorTime();
+	float lastCmdTime = frame->time;
+
+	for (unsigned int seqnr = frame->seqnr; seqnr <= lastFrame->seqnr; seqnr++)
+	{
+		frame = m_World->GetFrameBySeqNr(seqnr);
+		if (!frame) {
+			continue;
+		}
+
+		// Director commands ride the broadcast, and the broadcast is what stopped.
+		// Pull them by time range instead, the way World::SaveAsDemo does, or the
+		// tail plays back with no camera direction.
+		if (m_Director)
+		{
+			unsigned char cmdData[4096];
+			BitBuffer cmdBuffer(cmdData, sizeof(cmdData));
+			cmdBuffer.Clear();
+
+			m_Director->WriteCommands(&cmdBuffer, lastCmdTime, frame->time);
+			if (cmdBuffer.CurrentSize() > 0 && !cmdBuffer.IsOverflowed()) {
+				m_DemoClient.Send(cmdBuffer.GetData(), cmdBuffer.CurrentSize(), true);
+			}
+		}
+
+		m_DemoClient.WriteDatagram(frame->time + demoTimeOffset, frame);
+		lastCmdTime = frame->time;
+	}
 }
 
 void Proxy::CMD_OffLineText(char *cmdLine)

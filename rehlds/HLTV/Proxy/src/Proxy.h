@@ -134,6 +134,7 @@ public:
 	EXT_FUNC int GetChatDelay() const;
 
 	void ReconnectClients();
+	void FlushDemoBuffer();
 	void ExecuteRcon(NetAddress *from, char *command);
 	void SendRcon(NetAddress *to, unsigned int challenge);
 	void ReplyServiceChallenge(NetAddress *to, char *type);
