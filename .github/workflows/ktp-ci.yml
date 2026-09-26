@@ -1,14 +1,22 @@
-# KTP CI — build gate + dual-copy header drift check for the fleet branch.
+# KTP CI — build gate + header drift check across ALL THREE rehlds_api.h copies.
 #
 # Two jobs, both cheap, both meaningful:
-#  - header-drift: rehlds_api.h is manually duplicated between this repo and
-#    KTP-ReAPI. Vtable drift between the copies produces silent wrong-function
-#    calls with NO compile error (KTP hooks were historically inserted
-#    mid-vtable). The append-only rule's enforcement is this byte-diff.
-#    A failure here is ALWAYS treated as Critical.
-#    Compares against a same-named branch on KTP-ReAPI when one exists, else its
-#    default branch. The byte-diff is unconditional either way, and the run
-#    on main after merge still compares main against main.
+#  - header-drift: rehlds_api.h is manually duplicated THREE times — this repo
+#    (authoritative), KTP-ReAPI (a byte mirror) and KTPAMXX's
+#    public/resdk/engine copy, which is compiled into both shipped KTPAMXX
+#    artifacts including dodx. Drift between any of them produces silent
+#    wrong-function calls with NO compile error (KTP hooks were historically
+#    inserted mid-vtable). A failure here is ALWAYS treated as Critical.
+#    KTP-ReAPI is byte-diffed. The KTPAMXX copy is deliberately SHORTER — it
+#    lags the engine's appended tail — so it is checked as an ordinal PREFIX
+#    instead, by .github/scripts/rehlds_api_prefix.py, over all three ordered
+#    ABI surfaces (IRehldsHookchains, RehldsFuncs_t, IRehldsApi).
+#    Each counterpart is compared against a same-named branch when one exists,
+#    else its default branch. Both comparisons are unconditional either way,
+#    and the run on main after merge still compares main against main.
+#    KTPAMXX runs the reverse check on its own pushes (its Header Drift
+#    workflow); this leg is what catches an engine-side change at the moment it
+#    is made, rather than whenever KTPAMXX next happens to build.
 #  - build-linux: compile gate only. Fleet binaries are built locally and
 #    verified by md5 (builds are not reproducible) — the CI artifact is never
 #    the deploy artifact. Its verify step names every artifact that has a deploy
@@ -33,10 +41,15 @@ on:
         required: false
         type: string
         default: ''
+      amxx_ref:
+        description: 'KTPAMXX ref to prefix-check rehlds_api.h against. Blank = the same-named branch if it exists, else its default branch.'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   header-drift:
-    name: rehlds_api.h drift vs KTP-ReAPI
+    name: rehlds_api.h drift vs KTP-ReAPI + KTPAMXX
     runs-on: ubuntu-latest
     steps:
       - name: Checkout KTP-ReHLDS
@@ -75,7 +88,35 @@ jobs:
           ref: ${{ steps.counterpart.outputs.ref }}
           path: ktpreapi
 
-      - name: Diff the dual copies
+      - name: Resolve KTPAMXX ref
+        id: amxx
+        env:
+          COUNTERPART: https://github.com/afraznein/KTPAMXX.git
+          OVERRIDE: ${{ inputs.amxx_ref }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "$OVERRIDE" ]; then
+            REF="$OVERRIDE"
+            echo "dispatch override: $REF"
+          elif [ -n "$BRANCH" ] && git ls-remote --exit-code --heads "$COUNTERPART" "refs/heads/$BRANCH" >/dev/null 2>&1; then
+            REF="$BRANCH"
+            echo "matched same-named branch on KTPAMXX: $REF"
+          else
+            REF=$(git ls-remote --symref "$COUNTERPART" HEAD | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')
+            echo "no matching branch on KTPAMXX; using its default branch: $REF"
+          fi
+          test -n "$REF" || { echo "::error::could not resolve a KTPAMXX ref to compare against"; exit 1; }
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout KTPAMXX
+        uses: actions/checkout@v6
+        with:
+          repository: afraznein/KTPAMXX
+          ref: ${{ steps.amxx.outputs.ref }}
+          path: ktpamxx
+
+      - name: Diff the mirrored copy (KTP-ReAPI)
         run: |
           if diff -u rehlds/public/rehlds/rehlds_api.h ktpreapi/reapi/include/cssdk/engine/rehlds_api.h; then
             echo "rehlds_api.h copies are byte-identical (KTP-ReAPI @ ${{ steps.counterpart.outputs.ref }})"
@@ -83,6 +124,40 @@ jobs:
             echo "::error::rehlds_api.h has DRIFTED between KTP-ReHLDS and KTP-ReAPI. Vtable drift = silent wrong-function calls at runtime. Hook slots are APPEND-ONLY; sync both copies in the same change window. Compared against KTP-ReAPI @ ${{ steps.counterpart.outputs.ref }}."
             exit 1
           fi
+
+      # Proves the checker can still fail before its verdict on the real files
+      # is believed. A gate nobody has watched fail is not a gate.
+      - name: Selftest the prefix checker
+        run: python3 .github/scripts/rehlds_api_prefix.py --selftest
+
+      # The version literals are the only runtime tie between the copies --
+      # the handshake compares them and cannot see layout drift underneath.
+      - name: Compare version macros (KTPAMXX)
+        env:
+          REF: ${{ steps.amxx.outputs.ref }}
+        run: |
+          set -euo pipefail
+          macro() { tr -d '\r' < "$1" | grep -E "^#define REHLDS_API_VERSION_$2 " | tr -s ' \t' ' '; }
+          for m in MAJOR MINOR; do
+            e="$(macro rehlds/public/rehlds/rehlds_api.h "$m")"
+            a="$(macro ktpamxx/public/resdk/engine/rehlds_api.h "$m")"
+            test -n "$e" || { echo "::error::REHLDS_API_VERSION_$m not found in the engine copy -- dead probe"; exit 1; }
+            test -n "$a" || { echo "::error::REHLDS_API_VERSION_$m not found in the KTPAMXX copy -- dead probe"; exit 1; }
+            test "$e" = "$a" || { echo "::error::REHLDS_API_VERSION_$m differs: engine '$e', KTPAMXX '$a'. Bump them together or not at all. KTPAMXX @ $REF."; exit 1; }
+          done
+          echo "version macros agree (KTPAMXX @ $REF)"
+
+      - name: Prefix-check the bundled copy (KTPAMXX)
+        run: |
+          python3 .github/scripts/rehlds_api_prefix.py \
+            --engine rehlds/public/rehlds/rehlds_api.h \
+            --consumer ktpamxx/public/resdk/engine/rehlds_api.h \
+            --require GetHookchains \
+            --require SV_UpdatePausedHUD \
+            --require SV_ShouldSendConsistencyList \
+            --require PF_TraceLine \
+            --require MSG_ReadUsercmd \
+          || { echo "::error::rehlds_api.h in KTPAMXX is no longer an ordinal prefix of the engine's. dodx binds by vtable slot and struct offset, so this is a silent wrong-function call on a fleet-wide module, not a build error. Compared against KTPAMXX @ ${{ steps.amxx.outputs.ref }}."; exit 1; }
 
   engine-unittests:
     name: Engine unit tests (cppunitlite)
