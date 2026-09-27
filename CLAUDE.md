@@ -17,6 +17,21 @@ it hardcodes a box-specific staging path, so it never ships to a clone). It runs
 the same `build.sh` and then copies the artifacts into the local `KTP DoD Server`
 test tree. The repo build is `build.sh`.
 
+`build.sh` also builds the HLTV Proxy target, and neither it nor `build_linux.sh`
+stages the result — both look for `engine_i486.so`/`hlds_linux` only. `proxy.so` has
+its own script because it has a different target host:
+
+```bash
+bash build_proxy.sh                  # -> build/proxy.so, verified
+bash build_proxy.sh --verify <file>  # checks alone, on a binary you did not build
+```
+
+It builds in an `ubuntu:24.04` container on purpose. `proxy.so` is one file shared by
+all 24 HLTV instances on the **data server** (not the 24 game hosts, so
+`stage-wave.py` never touches it), and that host is glibc 2.39 — a build on a newer
+distro loads on your machine and fails there, taking every proxy down at the next
+restart. The script refuses to emit an artifact that would.
+
 ## Project Structure
 - `build.sh` - CMake build script (repo root; this is the build)
 - `rehlds/` - Main source directory

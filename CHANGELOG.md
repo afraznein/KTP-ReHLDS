@@ -415,6 +415,41 @@ interval, and a new connection in a reused slot does not inherit it.
   advertising 15 against an engine at 16 — which still loads, silently, because the
   guard only checks the engine side.
 
+### Added
+
+- **`build_proxy.sh` — `proxy.so` now has a build path, and one that refuses an artifact
+  the data server cannot load.** The top-level cmake has built the Proxy target on every
+  `build.sh` run for months and the output was discarded every time, because
+  `build_linux.sh` only searches `build/` for `engine_i486.so` and `hlds_linux`. That is
+  how a merged HLTV fix sat undeployed for over a week in August 2026, and it is why the
+  `.932` cut filed "gated on a deploy path existing first, which does not exist today".
+  This is that path, committed — `build_linux.sh` is gitignored, so a clone cannot rely
+  on anything in it.
+
+  It builds in an `ubuntu:24.04` container rather than on the host, using the Proxy
+  target's own `CMakeLists.txt` so there is no second copy of the compiler flags to
+  drift. The pin is not hygiene: `proxy.so` is one file shared by all 24 HLTV instances
+  on the data server (glibc 2.39), and a build on a newer distro links `GLIBC_2.43` and
+  `GLIBC_ABI_GNU_TLS`, loads perfectly where it was built, and fails to load on the
+  target — so every proxy dies at the next 03:00/11:00 ET restart and nothing records
+  until a human notices. The failure is invisible on the build host, which is why the
+  three checks run on every build and a failing artifact is moved to `.rejected` rather
+  than left where someone could `scp` it:
+
+  - no `GLIBC_x.y` above the target's (`sort -V`, because a string compare puts 2.43
+    before 2.39),
+  - no `GLIBC_ABI_*` tag, which is what the 2.43 build adds,
+  - `DT_NEEDED` unchanged from the live artifact.
+
+  `--verify <file>` runs the checks alone, on a binary this script did not build — a
+  colleague's, or the one already live on the box. Same code path, so the build's
+  verification and a hand check cannot disagree. Exercised both ways: against a real
+  glibc 2.43 build all three checks fire; against the 24.04 build it passes.
+
+  Not a deploy. Delivery needs root on another host and wants a canary first; that stays
+  in the coordination repo's `NEIN-DEPLOY.md` as `dpl-ca4e`, and the script prints the
+  exact commands so there is no gap between the two.
+
 ### Fixed
 
 - **An HLTV demo stopped 26-59 s before the end of the half it recorded.** The demo
