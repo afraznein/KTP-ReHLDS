@@ -195,6 +195,21 @@ Measure the delivered rate per client (the `updates=` field on the `net:` record
 🔑 **Players cannot raise it from their side** — the client caps the `cl_updaterate` it reports at 102,
 so "set 120 to guarantee 102" does nothing.
 
+### `-absgrid_probe` is a launcher flag, not an engine flag
+
+Both `-absgrid` and `-absgrid_probe` are parsed by the dedicated launcher (`hlds_linux`, source
+`dedicated/src/sys_linux.cpp` and `sys_ded.cpp`), not by `engine_i486.so`. `strings` or grep on the
+engine returns nothing and reads like absence; grep `hlds_linux`. They are different tokens, and a
+grep for `-absgrid` also matches `-absgrid_probe`, so count the probe token explicitly.
+
+Turning it on is one launch-parameter line in the instance's LinuxGSM `common.cfg` plus the nightly
+restart. No engine wave, and it cannot be set by rcon.
+
+With the probe on the loop adds three `clock_gettime` per 1 ms iteration and a histogram written to
+`console.log` every 10 s as `[KTP_ABSGRID_PROBE]`; the path without it is untouched. Measured
+2026-09-25 on chicago:27018 against its three siblings (about a thousand fps samples each): p05, p50
+and p95 were indistinguishable, so no measurable cost.
+
 ### Extension Mode Hooks (KTPAMXX/DODX)
 | Hook | Purpose |
 |------|---------|
