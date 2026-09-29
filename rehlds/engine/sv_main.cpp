@@ -28,6 +28,7 @@
 
 #include "precompiled.h"
 #include "ktp_nettelemetry.h"
+#include "ktp_pushtelemetry.h"
 #include <atomic>  // KTP: async log-writer telemetry counters
 
 #ifndef _WIN32
@@ -9325,6 +9326,11 @@ void KTP_ProfileResetInterval(void)
 	g_ktp_net_interp_floor_hits = 0;
 	g_ktp_net_interp_diff_peak = 0.0f;
 	g_ktp_net_interp_diff_slot = -1;
+	g_ktp_push_rotate = 0;
+	g_ktp_push_move = 0;
+	g_ktp_push_episodes = 0;
+	g_ktp_push_untracked = 0;
+	g_ktp_push_track_n = 0;
 	// ping_stamp survives on purpose: it tracks connection identity, not the interval.
 	// g_ktp_net_session survives too: it is the connection, emitted at disconnect.
 	for (int i = 0; i < MAX_CLIENTS; i++)
@@ -9337,6 +9343,7 @@ void KTP_ProfileResetInterval(void)
 		g_ktp_rewind_miss_slot[i] = 0;
 		g_ktp_net_subinterval_slot[i] = 0;
 		g_ktp_net_synth_ms_slot[i] = 0;
+		g_ktp_push_victim_slot[i] = 0;
 	}
 }
 
@@ -9943,6 +9950,61 @@ void EXT_FUNC SV_Frame_Internal()
 						g_ktp_rewind_depth_slot >= 0 ? g_psvs.clients[g_ktp_rewind_depth_slot].name : "-",
 						g_ktp_rewind_dist_slot,
 						g_ktp_rewind_dist_slot >= 0 ? g_psvs.clients[g_ktp_rewind_dist_slot].name : "-");
+				}
+			}
+
+			// Pushers that failed to move because something was in the way.
+			// Emitted every interval so a zero reads as measured, not absent.
+			{
+				uint32 push_client_blocks = 0;
+				int push_victims = 0;
+				for (int i = 0; i < MAX_CLIENTS; i++)
+				{
+					if (g_ktp_push_victim_slot[i])
+					{
+						push_client_blocks += g_ktp_push_victim_slot[i];
+						push_victims++;
+					}
+				}
+				uint32 push_blocked = g_ktp_push_rotate + g_ktp_push_move;
+				Log_Printf("[KTP_PROFILE] push: blocked=%u rotate=%u move=%u episodes=%u pushers=%d untracked=%u client_blocks=%u victims=%d\n",
+					push_blocked, g_ktp_push_rotate, g_ktp_push_move, g_ktp_push_episodes,
+					g_ktp_push_track_n, g_ktp_push_untracked, push_client_blocks, push_victims);
+
+				int push_worst = KTP_PushWorstTrack();
+				uint32 push_victim_worst_n = 0;
+				int push_victim_worst = KTP_NetWorstSlot(g_ktp_push_victim_slot, &push_victim_worst_n);
+				if (push_worst >= 0 || push_victim_worst >= 0)
+				{
+					// Names are read now, not at the block: an entry from before a
+					// changelevel names nothing on this map, so it prints as '-'.
+					const char *push_class = "-";
+					const char *push_target = "-";
+					int push_ent = -1;
+					uint32 push_worst_n = 0;
+					uint32 push_worst_episodes = 0;
+					if (push_worst >= 0)
+					{
+						const ktp_push_track_t *t = &g_ktp_push_track[push_worst];
+						push_ent = t->pusher;
+						push_worst_n = t->blocks;
+						push_worst_episodes = t->episodes;
+						if (t->spawn == g_psvs.spawncount && t->pusher > 0 && t->pusher < g_psv.num_edicts
+							&& !g_psv.edicts[t->pusher].free)
+						{
+							const edict_t *pe = &g_psv.edicts[t->pusher];
+							if (pe->v.classname)
+								push_class = &pr_strings[pe->v.classname];
+							if (pe->v.targetname && pr_strings[pe->v.targetname])
+								push_target = &pr_strings[pe->v.targetname];
+						}
+					}
+					// Victim names share send_detail_peak's stale-name caveat.
+					Log_Printf("[KTP_PROFILE] push_detail: pusher_worst=%d(%s/%s) pusher_worst_n=%u pusher_worst_episodes=%u victim_worst=%d(%s) victim_worst_n=%u\n",
+						push_ent, push_class, push_target, push_worst_n, push_worst_episodes,
+						push_victim_worst,
+						push_victim_worst >= 0 ? g_psvs.clients[push_victim_worst].name : "-",
+						push_victim_worst_n);
 				}
 			}
 

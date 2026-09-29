@@ -10,6 +10,50 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ### Added
 
+- **`[KTP_PROFILE] push:` — pushers that failed to move because something was in the way.**
+  Players report getting stuck in doors as they open or shut, and until now that left no
+  server-side trace. `SV_PushMove` and `SV_PushRotate` are the only engine paths that call
+  `pfnBlocked`; each now also bumps a counter, after the stock rewind and before the stock
+  `pfnBlocked` call. Nothing about the physics changes.
+
+  ```
+  [KTP_PROFILE] push: blocked=1412 rotate=1400 move=12 episodes=6 pushers=3 untracked=0 client_blocks=1405 victims=2
+  [KTP_PROFILE] push_detail: pusher_worst=87(func_door_rotating/door_axis2) pusher_worst_n=1398 pusher_worst_episodes=2 victim_worst=4(PlayerA) victim_worst_n=1398
+  ```
+
+  - `blocked` = `rotate` + `move`: blocked physics frames, split by which push failed.
+    `pfnBlocked` fires on **every** frame a pusher stays blocked, so this scales with
+    `sys_ticrate` — one door held for one second on the fleet's grid reads as ~1000.
+  - `episodes` — runs of consecutive blocked frames on one pusher, which does not scale with
+    fps. A door that reverses on block and swings back into the player counts again. A run
+    that spans an interval boundary counts once in each interval.
+  - `pushers` — distinct pushers blocked this interval, keyed on edict index and map
+    (`g_psvs.spawncount`). `untracked` counts blocks from pushers past the fixed table.
+  - `client_blocks` / `victims` — blocks whose victim was a player, and how many distinct
+    players. HLTV proxies are excluded. Grenades and dropped weapons count toward `blocked`
+    and nothing else; corpses never reach `pfnBlocked` (the engine squashes their bbox).
+  - `push_detail:` only prints when something was blocked. The pusher is named as
+    `classname/targetname`, read at emit time; an entry from before a changelevel prints `-`.
+    The victim name shares `send_detail_peak`'s stale-name caveat.
+
+  `push:` prints every interval under `ktp_profile_frame`, so a zero reads as measured rather
+  than absent. It is a new line type rather than new fields on `net:`, so the profile
+  aggregator's regexes match none of it and its drift needles (`: [KTP_PROFILE] net`,
+  `: [KTP_PROFILE] rewind`) do not fire on it — the aggregator ignores it until a parser
+  is added.
+
+  ⚠️ **This counts DETECTED blocks, and a block does not push anyone into a door.** On a
+  block the engine puts the victim back where it stood and rewinds the pusher. A player
+  left inside a door is either one the pusher never registered as in the way (the bbox
+  prefilter or `SV_TestEntityPosition` said clear, and this line stays at zero), or one who
+  was already overlapping it before the push. So a high count says a door was fighting a
+  player; a stuck report with `blocked=0` points at the hull test, not at the block path.
+
+  Cost: nothing when profiling is off; otherwise two to four increments and a linear scan of
+  a short table, on a path that runs only while a pusher is blocked. `KtpPushTelemetry` tests
+  cover the split, episodes, the changelevel key, table overflow, proxy exclusion and the
+  interval reset.
+
 - **`sv_unlag_estimator` (new, default `0`) — a steadier latency estimate for the rewind, built
   for an A/B on one instance pair.** At `sv_unlagsamples 1` the latency `SV_SetupMove` rewinds by
   is one packet's `ping_time`, so a jittery shooter's rewind depth follows every spike, and a
