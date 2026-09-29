@@ -85,8 +85,9 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
   `latency_worst` and `jitter_worst` describe the rewind input, not the raw round trip: they fall
   because the estimate is smoother, not because the network improved. If the telemetry batch's
   `subinterval` field is present, it too counts only packets rewound by latency 0, so it drops
-  to near zero there by construction. Compare the pair on within-shooter hit share and on
-  `rewind:`; the scoreboard ping (`SV_CalcPing`) reads the raw frames and is unaffected.
+  to near zero there by construction. The `rewind:` depth fields are computed from the estimate
+  too, so compare the pair on within-shooter hit share only; the scoreboard ping (`SV_CalcPing`)
+  reads the raw frames and is unaffected.
 
 - **`[KTP_PROFILE] net:` — per-interval network / lag-compensation health record.**
   Every existing record type measures CPU time the server spent; none measures

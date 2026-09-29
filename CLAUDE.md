@@ -359,6 +359,9 @@ frame only), keep the last good value instead of returning 0, and move at most 2
 `OffPathIsTheOriginalFunction` against a verbatim copy in `ktp_steadyping_tests.cpp` — **edit that copy
 in the same change as any edit to the stock body.**
 
-⚠️ **On an estimator instance, `latzero`, `latency_worst` and `jitter_worst` describe the rewind input,
-not the network.** They drop because the estimate is smoother. Judge an A/B pair by within-shooter hit
-share and `rewind:`, never by those fields across the pair.
+⚠️ **Judge an A/B pair by within-shooter hit share ONLY.** On an estimator instance `latzero`,
+`latency_worst`, `jitter_worst` and `subinterval` describe the estimate the rewind is fed, not the
+network, and the `rewind:` depth fields are computed from that estimate, so all of them move because
+the estimate is smoother.
+Comparing any of them across the arms measures the estimator against itself. Procedure and endpoint:
+`ESTIMATOR_AB_RUNBOOK.md` in `afraznein/KTPDoDServerConfig`.
