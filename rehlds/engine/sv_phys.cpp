@@ -27,6 +27,7 @@
 */
 
 #include "precompiled.h"
+#include "ktp_pushtelemetry.h"
 
 // Pushmove objects do not obey gravity, and do not interact with each other or trigger fields,
 // but block normal movement and push normal objects when they move.
@@ -467,6 +468,87 @@ trace_t SV_PushEntity(edict_t *ent, vec_t *push)
 	return trace;
 }
 
+// KTP: [KTP_PROFILE] push: accumulators. Game thread only; reset in KTP_ProfileResetInterval.
+uint32 g_ktp_push_rotate = 0;
+uint32 g_ktp_push_move = 0;
+uint32 g_ktp_push_episodes = 0;
+uint32 g_ktp_push_untracked = 0;
+ktp_push_track_t g_ktp_push_track[KTP_PUSH_TRACK_N];
+int g_ktp_push_track_n = 0;
+uint32 g_ktp_push_victim_slot[MAX_CLIENTS];
+
+extern bool g_ktp_profiling_enabled;
+
+void KTP_PushSampleBlocked(int pusher, int victim_slot, qboolean rotate, int frame, int spawn)
+{
+	if (rotate)
+		++g_ktp_push_rotate;
+	else
+		++g_ktp_push_move;
+
+	if (victim_slot >= 0 && victim_slot < MAX_CLIENTS)
+		++g_ktp_push_victim_slot[victim_slot];
+
+	ktp_push_track_t *t = NULL;
+	for (int i = 0; i < g_ktp_push_track_n; i++)
+	{
+		if (g_ktp_push_track[i].pusher == pusher && g_ktp_push_track[i].spawn == spawn)
+		{
+			t = &g_ktp_push_track[i];
+			break;
+		}
+	}
+
+	if (!t)
+	{
+		if (g_ktp_push_track_n >= KTP_PUSH_TRACK_N)
+		{
+			++g_ktp_push_untracked;
+			return;
+		}
+		t = &g_ktp_push_track[g_ktp_push_track_n++];
+		t->pusher = pusher;
+		t->spawn = spawn;
+		t->blocks = 0;
+		t->episodes = 0;
+		t->last_frame = frame - 2;
+	}
+
+	++t->blocks;
+	if (frame != t->last_frame && frame != t->last_frame + 1)
+	{
+		++t->episodes;
+		++g_ktp_push_episodes;
+	}
+	t->last_frame = frame;
+}
+
+int KTP_PushWorstTrack(void)
+{
+	int worst = -1;
+	uint32 best = 0;
+
+	for (int i = 0; i < g_ktp_push_track_n; i++)
+	{
+		if (g_ktp_push_track[i].blocks > best)
+		{
+			best = g_ktp_push_track[i].blocks;
+			worst = i;
+		}
+	}
+
+	return worst;
+}
+
+int KTP_PushVictimSlot(int flags, int entindex)
+{
+	if ((flags & (FL_CLIENT | FL_PROXY)) != FL_CLIENT)
+		return -1;
+
+	int slot = entindex - 1;
+	return (slot >= 0 && slot < MAX_CLIENTS) ? slot : -1;
+}
+
 void SV_PushMove(edict_t *pusher, float movetime)
 {
 	if (VectorIsZero(pusher->v.velocity))
@@ -569,6 +651,8 @@ void SV_PushMove(edict_t *pusher, float movetime)
 			SV_LinkEdict(pusher, FALSE);
 
 			pusher->v.ltime -= movetime;
+			if (g_ktp_profiling_enabled)
+				KTP_PushSampleBlocked(NUM_FOR_EDICT(pusher), KTP_PushVictimSlot(check->v.flags, NUM_FOR_EDICT(check)), FALSE, host_framecount, g_psvs.spawncount);
 			gEntityInterface.pfnBlocked(pusher, check);
 
 			// move back any entities we already moved
@@ -724,6 +808,8 @@ qboolean SV_PushRotate(edict_t *pusher, float movetime)
 			SV_LinkEdict(pusher, FALSE);
 
 			pusher->v.ltime -= movetime;
+			if (g_ktp_profiling_enabled)
+				KTP_PushSampleBlocked(NUM_FOR_EDICT(pusher), KTP_PushVictimSlot(check->v.flags, NUM_FOR_EDICT(check)), TRUE, host_framecount, g_psvs.spawncount);
 			gEntityInterface.pfnBlocked(pusher, check);
 
 			// move back any entities we already moved
