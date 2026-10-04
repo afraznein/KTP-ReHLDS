@@ -118,6 +118,7 @@ set(PROJECT_PUBLIC_DIR
 set(ENGINE_SRCS
 	engine/ktp_nettelemetry.h
 	engine/ktp_pushtelemetry.h
+	engine/ktp_rewind.h
 	engine/ktp_steadyping.h
 	engine/sv_main.cpp
 	engine/sv_user.cpp
@@ -196,6 +197,7 @@ set(UNITTESTS_SRCS
 	unittests/info_tests.cpp
 	unittests/ktp_nettelemetry_tests.cpp
 	unittests/ktp_pushtelemetry_tests.cpp
+	unittests/ktp_rewind_tests.cpp
 	unittests/ktp_steadyping_tests.cpp
 	unittests/mathlib_tests.cpp
 	unittests/rehlds_tests_shared.cpp

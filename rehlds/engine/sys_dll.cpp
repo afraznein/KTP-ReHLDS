@@ -28,6 +28,7 @@
 
 #include "precompiled.h"
 #include <atomic>  // KTP: conio telemetry is cross-thread
+#include "ktp_rewind.h"
 #ifndef _WIN32
 #include <pthread.h>
 #endif
@@ -1066,6 +1067,10 @@ void LoadExtensionDLLs(void)
 	char szLine[512];
 	char szDllPath[512];
 	char szFullPath[512];
+
+	// KTP: named plugin APIs the engine itself provides, registered before any
+	// extension can look one up.
+	KTP_RewindRegisterApi();
 
 	// Look for extension config file
 	Q_snprintf(szExtListFile, sizeof(szExtListFile), "%s/addons/extensions.ini", com_gamedir);
