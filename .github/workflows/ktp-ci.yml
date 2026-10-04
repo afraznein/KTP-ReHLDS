@@ -159,6 +159,28 @@ jobs:
             --require MSG_ReadUsercmd \
           || { echo "::error::rehlds_api.h in KTPAMXX is no longer an ordinal prefix of the engine's. dodx binds by vtable slot and struct offset, so this is a silent wrong-function call on a fleet-wide module, not a build error. Compared against KTPAMXX @ ${{ steps.amxx.outputs.ref }}."; exit 1; }
 
+      # ktp_rewind_api.h is a byte mirror, like the ReAPI copy above. The engine
+      # merges first, so a KTPAMXX ref without the file is reported, not failed;
+      # a copy that exists and differs always fails.
+      - name: Diff the mirrored ktp_rewind_api.h (KTPAMXX)
+        env:
+          REF: ${{ steps.amxx.outputs.ref }}
+        run: |
+          set -euo pipefail
+          src=rehlds/public/rehlds/ktp_rewind_api.h
+          dst=ktpamxx/public/resdk/engine/ktp_rewind_api.h
+          test -f "$src" || { echo "::error::$src missing from the engine -- dead probe"; exit 1; }
+          if [ ! -f "$dst" ]; then
+            echo "::warning::KTPAMXX @ $REF does not carry ktp_rewind_api.h yet; nothing to diff."
+            exit 0
+          fi
+          if diff -u "$src" "$dst"; then
+            echo "ktp_rewind_api.h copies are byte-identical (KTPAMXX @ $REF)"
+          else
+            echo "::error::ktp_rewind_api.h has DRIFTED between KTP-ReHLDS and KTPAMXX @ $REF. The struct is read across the module boundary by layout; a change is a new ktp_rewind_vN name, never an edit."
+            exit 1
+          fi
+
   engine-unittests:
     name: Engine unit tests (cppunitlite)
     runs-on: ubuntu-latest

@@ -10,6 +10,40 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ### Added
 
+- **`ktp_rewind_v1` — the rewind lag compensation set up for the packet being run, as a named
+  plugin API.** Engine side of schema 26 (design: KTPInfrastructure
+  `docs/handover/SCHEMA_26_SHOT_HITGROUP_AND_REWIND.md`). Until now nothing recorded the rewind
+  per shot: the `rewind:` and `net:` lines are 10 s aggregates behind profiling, and they cannot
+  say how many shots a different `sv_maxunlag` would have served.
+
+  - `SV_SetupMove` writes one current-rewind record on **every** exit (the not-attempted gates,
+    `SV_UPDATE_BACKUP <= 0`, the history miss, and a completed rewind): owner slot, the packet's
+    `incoming_sequence`, flags, depth and want. `SV_RestoreMove` closes it before any of its
+    exits. Every usercmd in the packet runs between the two, so a consumer reading it from a
+    cmd's PreThink reads the rewind that cmd's traces ran against, replayed cmds included.
+    A fakeclient never reaches `SV_SetupMove`, so a bot always finds the record closed or
+    owned by another slot.
+  - Flags: bit0 attempted, bit1 reached (the history reached the target time), bit2 clamped
+    (pre-clamp latency `>= sv_maxunlag`, the engine's own comparison), bit3 hardcap (raw
+    latency over the fixed 1.5 s cap, so want is a floor), bit4 pushed (target clamped to
+    `realtime`), bit5 `sv_unlag_estimator` on, bit6 interp capped or floored. `depth_ms` is
+    `realtime - targettime` after the clamp; `want_ms` is the same arithmetic on the pre-clamp
+    latency, so it equals depth unless bit2 is set.
+  - The write is unconditional, not behind `g_ktp_profiling_enabled`: a handful of stores per
+    packet on values the function already computes. No rewind arithmetic changes.
+  - Exposed through `Rehlds_RegisterPluginApi("ktp_rewind_v1", ...)`, registered in
+    `LoadExtensionDLLs` before any extension loads. The struct is in a NEW header,
+    `rehlds/public/rehlds/ktp_rewind_api.h`: a leading `size` and one function,
+    `GetCurrent(slot, out)`, false unless the record is open and owned by `slot`.
+    **`rehlds_api.h` is not touched** — no vtable slot, no `RehldsFuncs_t` entry, no
+    `REHLDS_API_VERSION_MINOR` bump — so engine and KTPAMXX deploy in either order and a
+    module on an older engine reads NULL. A layout change is `ktp_rewind_v2`, never an edit.
+  - `KtpRewind` unit tests: every exit writes the record, restore closes it on both paths,
+    `GetCurrent` refuses a closed record and a foreign slot, each bit matches the input that
+    sets it, and want equals depth whenever bit2 is clear. KTP CI byte-diffs the header
+    against KTPAMXX's `public/resdk/engine/ktp_rewind_api.h` once KTPAMXX carries it.
+
+
 - **`[KTP_PROFILE] push:` — pushers that failed to move because something was in the way.**
   Players report getting stuck in doors as they open or shut, and until now that left no
   server-side trace. `SV_PushMove` and `SV_PushRotate` are the only engine paths that call

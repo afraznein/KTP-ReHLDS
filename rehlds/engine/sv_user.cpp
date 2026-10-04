@@ -29,6 +29,7 @@
 #include "precompiled.h"
 #include "ktp_nettelemetry.h"
 #include "ktp_steadyping.h"
+#include "ktp_rewind.h"
 
 
 // KTP: profiling state from sv_main.cpp (opcode/parsemove instrumentation)
@@ -61,6 +62,26 @@ edict_t *sv_player;
 
 //int giSkip;
 qboolean nofind;
+
+// KTP: written on every SV_SetupMove exit, closed by SV_RestoreMove. Unconditional,
+// not behind profiling: a per-shot consumer cannot depend on a profiling toggle.
+ktp_rewind_record_t g_ktp_rewind = { -1, 0, FALSE, { 0u, 0.0f, 0.0f } };
+
+bool EXT_FUNC KTP_RewindGetCurrent(int slot, ktp_rewind_sample_t *out)
+{
+	if (!out || !g_ktp_rewind.open || g_ktp_rewind.slot != slot)
+		return false;
+
+	*out = g_ktp_rewind.sample;
+	return true;
+}
+
+ktp_rewind_api_v1_t g_ktp_rewind_api_v1 = { sizeof(ktp_rewind_api_v1_t), &KTP_RewindGetCurrent };
+
+void KTP_RewindRegisterApi(void)
+{
+	Rehlds_RegisterPluginApi(KTP_REWIND_API_V1, &g_ktp_rewind_api_v1);
+}
 
 #if defined(SWDS) && defined(REHLDS_FIXES)
 const char *clcommands[] = { "status", "name", "kill", "pause", "spawn", "new", "sendres", "dropclient", "kick", "ping", "dlfile", "setinfo", "sendents", "fullupdate", "setpause", "unpause", "noclip", "god", "notarget", NULL };
@@ -1365,6 +1386,16 @@ void SV_SetupMove(client_t *_host_client)
 
 	Q_memset(truepositions, 0, sizeof(truepositions));
 	nofind = 1;
+
+	// KTP: opened here so every exit below, the not-attempted ones included, leaves
+	// a record that is this packet's and not the previous one's.
+	g_ktp_rewind.slot = _host_client - g_psvs.clients;
+	g_ktp_rewind.sequence = _host_client->netchan.incoming_sequence;
+	g_ktp_rewind.open = TRUE;
+	g_ktp_rewind.sample.flags = (sv_unlag_estimator.value != 0.0f) ? KTP_REWIND_ESTIMATOR : 0u;
+	g_ktp_rewind.sample.depth_ms = 0.0f;
+	g_ktp_rewind.sample.want_ms = 0.0f;
+
 	if (!gEntityInterface.pfnAllowLagCompensation())
 		return;
 
@@ -1375,6 +1406,7 @@ void SV_SetupMove(client_t *_host_client)
 		return;
 
 	nofind = 0;
+	g_ktp_rewind.sample.flags |= KTP_REWIND_ATTEMPTED;
 	const int ktp_shooter = _host_client - g_psvs.clients;
 	if (g_ktp_profiling_enabled)
 		KTP_RewindAttempt(ktp_shooter, _host_client->proxy);
@@ -1399,7 +1431,10 @@ void SV_SetupMove(client_t *_host_client)
 
 	float clientLatency = _host_client->latency;
 	if (clientLatency > 1.5)
+	{
 		clientLatency = 1.5f;
+		g_ktp_rewind.sample.flags |= KTP_REWIND_HARDCAP;
+	}
 
 	// Feeds the shadow ceiling below; the live clamp overwrites clientLatency.
 	const float ktp_latency_preclamp = clientLatency;
@@ -1411,6 +1446,7 @@ void SV_SetupMove(client_t *_host_client)
 
 		if (clientLatency >= sv_maxunlag.value)
 		{
+			g_ktp_rewind.sample.flags |= KTP_REWIND_CLAMPED;
 			// Proxies excluded — HLTV sets cl_lw/cl_lc and so reaches this
 			// clamp, and its WAN latency is not a player problem.
 			if (g_ktp_profiling_enabled && !_host_client->proxy)
@@ -1452,6 +1488,9 @@ void SV_SetupMove(client_t *_host_client)
 		KTP_NetSampleInterp(ktp_shooter, _host_client->proxy, ktp_interp_declared, cl_interptime,
 			ktp_interp_capped, ktp_interp_floored);
 
+	if (ktp_interp_capped || ktp_interp_floored)
+		g_ktp_rewind.sample.flags |= KTP_REWIND_INTERP_ADJUSTED;
+
 #ifdef REHLDS_FIXES
 	// FP Precision fix (targettime is double there, not float)
 	targettime = realtime - clientLatency - cl_interptime + sv_unlagpush.value;
@@ -1462,6 +1501,20 @@ void SV_SetupMove(client_t *_host_client)
 	if (targettime > realtime)
 		targettime = float(realtime);
 #endif // REHLDS_FIXES
+
+	// KTP: the same arithmetic on the pre-clamp latency. Interp and push are the
+	// same terms in both, so want - depth is exactly what the ceiling removed.
+	{
+		if (realtime - clientLatency - cl_interptime + sv_unlagpush.value > realtime)
+			g_ktp_rewind.sample.flags |= KTP_REWIND_PUSHED;
+
+		double ktp_want_time = realtime - ktp_latency_preclamp - cl_interptime + sv_unlagpush.value;
+		if (ktp_want_time > realtime)
+			ktp_want_time = realtime;
+
+		g_ktp_rewind.sample.depth_ms = (float)((realtime - targettime) * 1000.0);
+		g_ktp_rewind.sample.want_ms = (float)((realtime - ktp_want_time) * 1000.0);
+	}
 
 	// KTP: What a candidate ceiling WOULD have rewound to, from the inputs the
 	// live pass already computed. Arithmetic only — the rewind below is never
@@ -1653,6 +1706,8 @@ void SV_SetupMove(client_t *_host_client)
 		}
 	}
 
+	g_ktp_rewind.sample.flags |= KTP_REWIND_REACHED;
+
 	if (g_ktp_profiling_enabled)
 		KTP_RewindDepth(ktp_shooter, _host_client->proxy, (float)(realtime - targettime));
 }
@@ -1661,6 +1716,9 @@ void SV_RestoreMove(client_t *_host_client)
 {
 	sv_adjusted_positions_t *pos;
 	client_t *cli;
+
+	// KTP: closed before any exit, so a cmd outside the window never reads a record.
+	g_ktp_rewind.open = FALSE;
 
 	if (nofind)
 	{
