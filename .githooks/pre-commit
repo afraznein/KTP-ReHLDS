@@ -1,0 +1,45 @@
+#!/bin/sh
+# Refuse a commit in the shared main checkout that could sweep up another session's staged work.
+# Git names the index it hands this hook, and that tells the commit forms apart:
+#   git commit -m .. -- <paths>   next-index-<pid>.lock   only the named paths      allowed
+#   git commit -m ..              index                   the whole shared index    refused
+#   git commit -a -m ..           index.lock              every tracked change      refused
+# One-shot override (merge, revert, cherry-pick): KTP_COMMIT_SWEEP=1 git commit ...
+# Setup, once per clone: git config core.hooksPath .githooks
+
+abs() { (cd "$1" 2>/dev/null && pwd -P); }
+
+common=$(abs "$(git rev-parse --git-common-dir)")
+legacy="$common/hooks/pre-commit"
+if [ -x "$legacy" ] && [ "$(abs "$(dirname "$0")")" != "$common/hooks" ]; then
+  "$legacy" "$@" || exit $?            # core.hooksPath would otherwise silence it
+fi
+
+# A linked worktree has its own index, so nobody else's staging can reach this commit.
+[ "$(abs "$(git rev-parse --git-dir)")" = "$common" ] || exit 0
+
+case "$(basename "${GIT_INDEX_FILE:-index}")" in
+  next-index-*) exit 0 ;;
+esac
+
+[ "${KTP_COMMIT_SWEEP:-}" = "1" ] && exit 0
+
+staged=$(git diff --cached --name-only)
+[ -z "$staged" ] && exit 0
+
+{
+  echo "pre-commit: refusing a commit in the main checkout that is not scoped to explicit paths."
+  echo
+  echo "  Sessions share this checkout, so they share its index. A bare 'git commit' or"
+  echo "  'git commit -a' takes all of the following, and some of it may be someone else's:"
+  echo
+  echo "$staged" | sed 's/^/    /'
+  echo
+  echo "  Name your paths; this ignores whatever else is staged:"
+  echo "    git commit -m \"...\" -- <path> [<path>...]"
+  echo "  (a new file needs 'git add <path>' first; the pathspec commit still takes only what it names)"
+  echo
+  echo "  Better: work in your own worktree, where this check does not apply."
+  echo "  Finishing a merge, revert or cherry-pick: KTP_COMMIT_SWEEP=1 git commit ..."
+} >&2
+exit 1

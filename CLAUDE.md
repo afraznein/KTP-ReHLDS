@@ -5,6 +5,23 @@
 🔴 **A design that ships as a document is NOT done** — every proposal in a docs-only PR becomes a
 tracked board item in the same act (operator ruling 2026-09-14). See `DESIGN_DOCS_ARE_NOT_DONE.md`.
 
+## Launch-time setup: the commit-sweep guard
+
+Once per clone, before the first commit (linked worktrees share the setting):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The main checkout is shared by concurrent sessions, so its index is shared too: a bare `git commit` takes
+whatever anyone else has staged, and `git commit -a` takes every modified tracked file. `.githooks/pre-commit`
+refuses both in the main checkout whenever anything is staged. Commit by path instead:
+`git commit -m "..." -- <paths>` builds a private index from just those paths (a new file still needs
+`git add <path>` first). Linked worktrees have their own index and skip the check, so isolated work pays nothing.
+Finishing a conflicted merge, revert or cherry-pick legitimately commits the index:
+`KTP_COMMIT_SWEEP=1 git commit ...`. A hook already in `.git/hooks/pre-commit` still runs; the guard chains to it.
+Test: `sh .githooks/test-pre-commit.sh`.
+
 ## Build Command
 Build from the repo root with the in-repo CMake script (Linux or WSL):
 ```bash
