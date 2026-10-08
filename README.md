@@ -236,6 +236,23 @@ aggregator cannot explain.
 an rcon override reverts to the default at the next restart. To make `0` durable, write it
 into `dodserver.cfg` the way `ktp_profile_frame` already is.
 
+⚠️ **The cvar is deliberately unclamped, and out-of-range values are well-defined rather
+than undefined.** The phases partition the frame, so no phase can exceed `full`:
+
+| value | only detail line(s) emitted, per logged spike |
+|---|---|
+| `< 0` | identical to `0` — every detail line, on every logged spike |
+| `0` | always emit (pre-`.931`) |
+| `0 < v < 1` | the intended range |
+| `> 1` | no phase gate can open, so `[KTP_SPIKE_IO]` is the only **detail** line, via the no-other-detail backstop — **not** “no detail lines”, and the umbrella `[KTP_SPIKE]` line is unaffected |
+| `== 1` | the boundary. The gates are `>=`, so a phase that owned the *entire* frame would still clear it; in practice none does, because every phase delta is two `CLOCK_MONOTONIC` reads apart (`sys_dll.cpp` `Sys_FloatTime`) |
+
+A `[0, 1]` clamp would therefore change no output in either direction — and clamping down to
+`1.0` would *create* that boundary case rather than remove it, so there is no clamp.
+⛔ **A share above `1` is not a way to silence spike detail** — it makes `spike_io` equal the
+logged-spike count, the same aggregator defect `.931` was cut to fix. Use
+`ktp_profile_spike_threshold 0` to stop spike logging, or `ktp_profile_frame 0` to stop profiling.
+
 ⚠️ **The four `spike_*` columns change meaning at this boundary** — "spikes" before,
 "spikes this phase was material in" after. Historical rows are not wrong; they answer a
 different question. Do not compare across `.931`.

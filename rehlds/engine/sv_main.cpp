@@ -4113,6 +4113,18 @@ extern double g_ktp_read_time_recv;
 extern double g_ktp_read_time_process;
 extern double g_ktp_read_worst_pkt;
 
+// KTP: Charge elapsed time to the read-phase process accumulator and advance t0.
+// Rejected packets are charged too -- resetting t0 without charging hid ban and
+// preprocess-flood cost, which is what [KTP_SPIKE_READ] exists to explain.
+static inline void KTP_ReadChargeProcess(double &t0, double &proc_acc, double &worst)
+{
+	double now = Sys_FloatTime();
+	double elapsed = now - t0;
+	proc_acc += elapsed;
+	if (elapsed > worst) worst = elapsed;
+	t0 = now;
+}
+
 void SV_ReadPackets(void)
 {
 	// KTP: Read phase detail profiling (use global set in SV_Frame_Internal)
@@ -4148,20 +4160,13 @@ void SV_ReadPackets(void)
 		ktp_pkt_total++;
 
 #ifndef REHLDS_FIXES
+		// Never compiled -- REHLDS_FIXES is unconditional in rehlds/CMakeLists.txt.
+		// Share the accounting call so this copy cannot diverge unnoticed.
 		if (SV_FilterPacket())
 		{
 			SV_SendBan();
 			if (ktp_rp)
-			{
-				// Charge rejected packets too -- a ban/preprocess flood is exactly
-				// what [KTP_SPIKE_READ] exists to explain, and resetting t0 here
-				// silently discarded that cost.
-				ktp_t1 = Sys_FloatTime();
-				double elapsed = ktp_t1 - ktp_t0;
-				ktp_proc_acc += elapsed;
-				if (elapsed > ktp_worst) ktp_worst = elapsed;
-				ktp_t0 = ktp_t1;
-			}
+				KTP_ReadChargeProcess(ktp_t0, ktp_proc_acc, ktp_worst);
 			continue;
 		}
 #endif
@@ -4170,16 +4175,7 @@ void SV_ReadPackets(void)
 		if (!pass)
 		{
 			if (ktp_rp)
-			{
-				// Charge rejected packets too -- a ban/preprocess flood is exactly
-				// what [KTP_SPIKE_READ] exists to explain, and resetting t0 here
-				// silently discarded that cost.
-				ktp_t1 = Sys_FloatTime();
-				double elapsed = ktp_t1 - ktp_t0;
-				ktp_proc_acc += elapsed;
-				if (elapsed > ktp_worst) ktp_worst = elapsed;
-				ktp_t0 = ktp_t1;
-			}
+				KTP_ReadChargeProcess(ktp_t0, ktp_proc_acc, ktp_worst);
 			continue;
 		}
 
@@ -4194,16 +4190,7 @@ void SV_ReadPackets(void)
 				{
 					SV_SendBan();
 					if (ktp_rp)
-			{
-				// Charge rejected packets too -- a ban/preprocess flood is exactly
-				// what [KTP_SPIKE_READ] exists to explain, and resetting t0 here
-				// silently discarded that cost.
-				ktp_t1 = Sys_FloatTime();
-				double elapsed = ktp_t1 - ktp_t0;
-				ktp_proc_acc += elapsed;
-				if (elapsed > ktp_worst) ktp_worst = elapsed;
-				ktp_t0 = ktp_t1;
-			}
+						KTP_ReadChargeProcess(ktp_t0, ktp_proc_acc, ktp_worst);
 					continue;
 				}
 #endif
@@ -4213,13 +4200,7 @@ void SV_ReadPackets(void)
 			}
 
 			if (ktp_rp)
-			{
-				ktp_t1 = Sys_FloatTime();
-				double elapsed = ktp_t1 - ktp_t0;
-				ktp_proc_acc += elapsed;
-				if (elapsed > ktp_worst) ktp_worst = elapsed;
-				ktp_t0 = ktp_t1;
-			}
+				KTP_ReadChargeProcess(ktp_t0, ktp_proc_acc, ktp_worst);
 			continue;
 		}
 
@@ -4267,13 +4248,7 @@ void SV_ReadPackets(void)
 		}
 
 		if (ktp_rp)
-		{
-			ktp_t1 = Sys_FloatTime();
-			double elapsed = ktp_t1 - ktp_t0;
-			ktp_proc_acc += elapsed;
-			if (elapsed > ktp_worst) ktp_worst = elapsed;
-			ktp_t0 = ktp_t1;
-		}
+			KTP_ReadChargeProcess(ktp_t0, ktp_proc_acc, ktp_worst);
 	}
 
 	// KTP: Capture final NET_GetPacket time (the one that returned false)
@@ -7292,6 +7267,11 @@ cvar_t ktp_profile_steam_detail = { "ktp_profile_steam_detail", "0", 0, 0.0f, NU
 // Minimum share of the spike frame a phase must own before its detail line is
 // emitted. 0 restores the pre-.931 always-emit behaviour. Not archived and set in
 // no shipped cfg, so an rcon override reverts at the next restart.
+// Unclamped on purpose, and a [0,1] clamp would change no output: the phases
+// partition the frame, so a share above 1 leaves [KTP_SPIKE_IO] as the only detail
+// line via its no-other-detail backstop, while a negative share behaves exactly as
+// 0. The gates are >=, so clamping to 1.0 would CREATE the one case where a phase
+// owning the whole frame still emits, rather than remove it.
 cvar_t ktp_profile_spike_phase_share = { "ktp_profile_spike_phase_share", "0.25", 0, 0.0f, NULL };
 // Sub-toggle for the [KTP_PROFILE] net: record, under the ktp_profile_frame
 // master. Default 1 so the record appears wherever profiling is already on —
@@ -9643,6 +9623,7 @@ void EXT_FUNC SV_Frame_Internal()
 				// frame — emitted unconditionally, every spike produced every
 				// line and the aggregator's per-phase counters were all the same
 				// number. The umbrella line above still carries every phase.
+				// Out-of-range shares are documented at the declaration; do not clamp here.
 				double spike_phase_floor = full_frame_time * ktp_profile_spike_phase_share.value;
 				// Not a sum: logaddr and file are timed INSIDE the logio span
 				// (sv_log.cpp), and Log_Printf's echo puts most of conio there too,
