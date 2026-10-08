@@ -37,23 +37,35 @@ This engine has grown three threads beyond the main game thread: the .927
 async log writer, the Steam background thread (`sv_steam3.cpp`, since .913),
 and the Linux `-netthread` receive thread. Every one of them has produced a
 confirmed unsynchronized-race bug reachable from ordinary error paths:
-- `Con_Printf`/`Con_DebugLog` are **not** thread-safe (unsynchronized rcon
-  redirect buffer `outputbuf`, unsynchronized `g_ktp_conio_*` profiling
-  doubles) but both the Steam thread and the net thread can reach them on a
-  `sendto()` error path. Never let new background-thread code call
-  `Con_Printf` directly — route diagnostics through the async log ring, or
-  gate on a thread-identity check.
+- `Con_Printf`/`Con_DebugLog` are **not** thread-safe, and both the Steam thread
+  and the net thread reach them on a `sendto()` error path. Never let new
+  background-thread code call `Con_Printf` directly — route diagnostics through
+  the async log ring, or gate on a thread-identity check.
+  Two of the three hazards behind that rule are closed as of `.931`: the rcon
+  redirect capture into `outputbuf` is gated on `KTP_IsGameThread()`
+  (`sys_dll.cpp`), and the `g_ktp_conio_*` profiling counters are
+  `std::atomic<uint32>` microseconds rather than tearable doubles.
+  **`Con_DebugLog` is the one still open** — its `static FILE*` / `static char[]`
+  path cache is unsynchronized and it writes through the engine FS layer, which
+  the async writer deliberately bypasses for exactly that reason. An off-thread
+  `Con_Printf` reaches it whenever `con_debuglog` is set, which `-condebug`
+  makes the fleet default.
 - Any global mutated from more than one thread needs an atomic or a mutex,
-  full stop — `NET_SendLong`'s static `gSequenceNumber` became cross-thread
-  reachable the moment Steam sends moved off the main thread, with no atomic
-  added. Before moving any `NET_SendPacket`-calling code onto a new thread,
-  grep everything it touches for other callers.
+  full stop. `NET_SendLong`'s `gSequenceNumber` is the case that proved it: it
+  became cross-thread reachable the moment Steam sends moved off the main
+  thread and stayed a plain static until `.931` made it atomic. Before moving
+  any `NET_SendPacket`-calling code onto a new thread, grep everything it
+  touches for other callers — `sendto()` being atomic says nothing about the
+  rest of the path. A comment in `sv_steam3.cpp` asserted otherwise from `.913`
+  until `.931`, which is why the race survived.
 - **New background threads must use `pthread_create` with a checked return,
   never `std::thread`/`new std::thread`.** This engine builds `-fno-exceptions`;
   `std::thread`'s constructor throws on resource exhaustion, which aborts the
-  process instead of degrading. The .927 log writer and the `-netthread` port
-  do this correctly; `sv_steam3.cpp`'s thread creation (predates the
-  convention) does not — don't copy that call site.
+  process instead of degrading. The .927 log writer, the `-netthread` port and
+  `sv_steam3.cpp` (converted in `.931`) all do this correctly — copy any of them.
+  ⚠️ `sv_steam3.cpp` escalates a failed creation to `Sys_Error` rather than
+  degrading, because `.913` left no synchronous Steam pump to fall back to. A
+  new thread that has a working fallback should take the fallback instead.
 - `-netthread` shutdown is a known hang: `NET_Shutdown` closes sockets before
   stopping the thread, and the thread's `select()` has no bounded timeout by
   default, so it never re-polls the stop flag. Opt-in only today (fleet runs

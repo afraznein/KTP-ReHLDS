@@ -29,10 +29,16 @@ bash build.sh -j=$(nproc)
 ```
 Output lands in `build/` — `engine_i486.so` and `hlds_linux`.
 
-**KTP maintainers** run a wrapper (`build_linux.sh` in the repo root, gitignored —
-it hardcodes a box-specific staging path, so it never ships to a clone). It runs
-the same `build.sh` and then copies the artifacts into the local `KTP DoD Server`
-test tree. The repo build is `build.sh`.
+**KTP maintainers** run the `build_linux.sh` wrapper in the repo root. It is
+**tracked** — the staging path moved to `KTP_STAGING_DIR` (defaulting to the
+maintainer box's `KTP DoD Server` tree) and the staging block is skipped entirely
+when that directory is absent, so a clean clone builds and simply does not stage.
+`KTP_NO_STAGE=1` builds without staging on a box that does have it.
+
+⚠️ **Prefer the wrapper over a bare `build.sh` for anything you intend to ship.**
+`build.sh` ends in an unconditional `exit 0`, so a failed `make` still exits 0 and
+leaves the previous artifacts in place — which then md5-verify perfectly all the way
+to the fleet. The wrapper gates on artifacts newer than the run it just made.
 
 `build.sh` also builds the HLTV Proxy target, and neither it nor `build_linux.sh`
 stages the result — both look for `engine_i486.so`/`hlds_linux` only. `proxy.so` has
@@ -51,6 +57,8 @@ restart. The script refuses to emit an artifact that would.
 
 ## Project Structure
 - `build.sh` - CMake build script (repo root; this is the build)
+- `REVIEWS.md` - what has been read against what range, and what was left unread.
+  A range absent from it has no recorded review; that is not the same as unreviewed.
 - `rehlds/` - Main source directory
 - `build/` - Build output (gitignored)
 - `msvc/` - Visual Studio project files
