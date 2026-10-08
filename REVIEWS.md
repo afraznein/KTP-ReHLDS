@@ -66,9 +66,11 @@ active, so this is the older exposure rather than a new one.
 **Not checked.**
 
 - **Nothing was built or run.** No compile was performed for this review and no artifact was
-  produced. The repo's own CI compiled the range's tip green; it did not compile every
-  intermediate commit, and a compile is not evidence that the engine loads or that a hookchain
-  dispatches.
+  produced. The repo's own CI compiled the range's tip green — the 32-bit build leg and the
+  `rehlds_api.h` drift leg, which were the whole run at that date; the unit-test leg that runs
+  today was not part of it. A push creates one run at its head, so the intermediate commits
+  have no run of their own. And a compile is not evidence that the engine loads or that a
+  hookchain dispatches.
 - **Nothing was read from a live host.** This review cannot say what any server is running,
   and the only identity that would answer that is an md5 of the deployed binary.
 - **The Windows build was not exercised.** Several changes in the range are Windows-only
