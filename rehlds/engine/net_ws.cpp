@@ -535,6 +535,9 @@ char *NET_ErrorString(int code)
 	default: return "NO ERROR";
 	}
 #else // _WIN32
+	// Reached from the Steam send thread too, but deliberately not strerror_r: a
+	// thread_local buffer sets DF_STATIC_TLS on this non-PIC .so and spends dlopen's
+	// static-TLS surplus, and glibc already gives this per-thread storage.
 	return strerror(code);
 #endif // _WIN32
 }
