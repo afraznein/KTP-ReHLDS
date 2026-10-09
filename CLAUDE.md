@@ -110,7 +110,7 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 [KTP_PROFILE] frames=9823 fps=982.3 edicts_max=156
 [KTP_PROFILE] avg: read=0.120ms phys=0.450ms misc1=0.005ms send=0.080ms post=0.003ms steam=0.010ms full=0.680ms
 [KTP_PROFILE] peak: read=0.450ms phys=1.200ms misc1=0.020ms send=0.300ms post=0.010ms steam=0.050ms full=2.100ms
-[KTP_PROFILE] gap=0.012ms (full - sum of phases)
+[KTP_PROFILE] gap=-0.000ms (full - sum of phases)
 [KTP_PROFILE] phys_detail_peak: startframe=0.010ms entloop=0.430ms   (.929: interval peaks, tracked inside SV_Physics so paused frames contribute nothing — was an instantaneous last-frame sample)
 [KTP_PROFILE] io: logprintf_worst=… conprintf_worst=… logaddr_worst=… file_worst=… fileq_worst=… logq_drops=… ctl_drops=… writer_alive=…   (see Async Log-File Writer § for field meanings)
 [KTP_PROFILE] send_detail_peak: worst_client=3(name) time=0.290ms clients_sent=11   (.931: interval PEAK; was send_detail, which sampled the boundary frame and never showed a spike)
@@ -123,6 +123,8 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 [KTP_PROFILE] push_detail: pusher_worst=87(func_door_rotating/door_axis2) pusher_worst_n=1398 pusher_worst_episodes=2 victim_worst=4(PlayerA) victim_worst_n=1398   (conditional: only when something was blocked)
 ```
 
+⚠️ **`gap=` is zero by construction, in the summary line and in the `[KTP_SPIKE]` line below alike** — each phase is timed as `now - frame_start` with `frame_start` reassigned on the next line, so the six spans telescope to exactly `full` and only float rounding survives the subtraction (which is why the sign varies). It would measure something only if a phase stopped being contiguous with its neighbours.
+
 ⚠️ **New fields are only ever appended to the END of `net:` / `net_detail:`** — the aggregator's parsers are not end-anchored and read old and new engines alike only because nothing before the last field moves. Never reorder or rename one.
 
 ⚠️ **`rewind:` `attempts` only counts shooters that already passed the `lw && lc` gate** (`SV_SetupMove` returns before `KTP_RewindAttempt`), so `attempts > 0` says nothing about self-handicap — only `lagcomp_off` does. The `interp_*` fields come from the same pass and share that population.
@@ -131,7 +133,7 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 
 **Spike alert output (immediate, rate-limited to 1/sec) — the umbrella line always, plus whichever detail lines cleared the phase-share gate:**
 ```
-[KTP_SPIKE] full=12.340ms read=0.150ms phys=0.500ms misc1=0.010ms send=0.100ms post=0.005ms steam=11.500ms gap=0.075ms
+[KTP_SPIKE] full=12.340ms read=0.150ms phys=0.500ms misc1=0.010ms send=0.100ms post=0.005ms steam=11.500ms gap=0.000ms
 [KTP_SPIKE_READ] pkts=… recv=… proc=… worst=…
 [KTP_SPIKE_PHYS] startframe=… entloop=… paused_startframe=… paused_hud=…
 [KTP_SPIKE_IO] logio=… logaddr=… file=… conio=… faults=…   (replaced [KTP_SPIKE_ENT] in .926 — I/O-stall + page-fault attribution)
