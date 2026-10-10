@@ -4116,6 +4116,9 @@ extern double g_ktp_read_worst_pkt;
 // KTP: Charge elapsed time to the read-phase process accumulator and advance t0.
 // Rejected packets are charged too -- resetting t0 without charging hid ban and
 // preprocess-flood cost, which is what [KTP_SPIKE_READ] exists to explain.
+// Five call sites; the #ifndef REHLDS_FIXES one never compiles (that macro is
+// unconditional in rehlds/CMakeLists.txt). Comment all five or none -- a tripwire on
+// only some becomes the de-facto index, so a grep anchored on it undercounts.
 static inline void KTP_ReadChargeProcess(double &t0, double &proc_acc, double &worst)
 {
 	double now = Sys_FloatTime();

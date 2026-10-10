@@ -208,6 +208,45 @@ Fixed artificial FPS cap that limited servers to sys_ticrate - 1.
 
 Also changed `fps` variable from `float` to `double` for precision consistency with `realtime`/`oldrealtime`.
 
+### `sys_ticrate` is a frame-REJECTION gate, not the loop rate — so it is the wrong lever
+
+`Host_FilterTime` returns `FALSE` for any frame that arrives sooner than `1/sys_ticrate`
+(`host.cpp`): the frame is **discarded**, not scheduled. The loop rate itself comes from the
+launcher's sleep mode — the fleet runs `-pingboost 2 -absgrid`, i.e. a ~1 ms iteration — so raising
+the cvar only stops good frames being thrown away. ⚠️ **Raising or lowering it does not change
+`host_frametime` for anything that is already passing the gate.** Measured: the 2026-05-13 move from
+1000 → 1500 took the fleet from ~975 to ~999 fps, i.e. `host_frametime` 1.026 ms → 1.000 ms, a 2.5%
+change — and the canary that had been at 690 fps under a gate rejecting ~31% of its frames went to
+1000. ➡️ **To change the frame interval you drop `-absgrid`/`-pingboost 2` or set the gate genuinely
+low; say which you are testing.** ⛔ **Dropping 1500 → 1000 is not that test** — it re-creates the
+rejection regime and nothing else. ⚠️ And ~1 ms frames are what `sv_maxupdaterate 120`, the 300 ms
+rewind and the shadow measurement are built on, so this is a trade, not a free knob.
+
+### Pusher displacement scales with 1/fps while `DIST_EPSILON` does not — the door-stuck mechanism
+
+`SV_Physics_Pusher` sets `movetime = host_frametime` (`sv_phys.cpp`) and hands it to `SV_PushMove` /
+`SV_PushRotate`, so **per-frame door displacement is inversely proportional to the frame rate**: a
+100 u/s door advances ~1.0 unit per frame at 100 fps and ~0.067 at 1000. `DIST_EPSILON = 0.03125`
+units (`world.cpp`) is an **absolute** trace backoff, so the share of each frame's push thrown away
+rises with fps — about 2.8% at 100 fps against about 28% at 1000. Three facts make it stick rather
+than merely slow: `SV_PushMove`/`SV_PushRotate` rewind and call `pfnBlocked` but never resolve
+penetration; `move = velocity * movetime` is recomputed fresh each frame, so motion lost to the
+epsilon is never repaid; and `SV_PushEntity` does one trace with no slide/retry, so a grazing contact
+truncates the whole move. ⚠️ **Plausible and untested as the cause of a stuck report** — the
+`push:` counters are the baseline, and `blocked=0` in the window of a report points at the hull test
+rather than this path.
+
+⛔ **Two cvars look decisive here and are not, so nobody re-raises them:** `sv_force_ent_intersection`
+forces the sphere-intersection check for `SOLID_SLIDEBOX` (player-vs-player) and doors are
+`SOLID_BSP`/`MOVETYPE_PUSH`; `sv_rehlds_hull_centering` only fires on a hull whose mins/maxs sum to
+zero, which DoD's standing hull is not. Both default `0`.
+
+🔑 **The pushers themselves are byte-identical to upstream** (our only `sv_phys.cpp` divergence is KTP
+profiling), and upstream has not functionally touched them since 2017 — so an engine fix is genuinely
+available to us, but it is a fork delta in upstream code and changes core physics for every entity
+every frame. ⚠️ **Carry-the-remainder can push a player THROUGH geometry**, which is worse than the
+bug being fixed.
+
 ### Client updates are quantised to whole frames — `cl_updaterate 102` delivers a phase-locked 100/s
 
 `SV_SendClientMessages` books the next update off the frame it actually went out on:
