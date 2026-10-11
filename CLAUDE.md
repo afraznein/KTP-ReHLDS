@@ -236,6 +236,25 @@ truncates the whole move. ⚠️ **Plausible and untested as the cause of a stuc
 `push:` counters are the baseline, and `blocked=0` in the window of a report points at the hull test
 rather than this path.
 
+📌 **Where the door fights actually land, so a repro starts in the right place.** The live
+S10 rotation is **38 `func_door_rotating` against 1 `func_door`** (entity lumps read off the live
+BSPs; `mapcycle.txt` governs and `maps.ini` is comment-only), and they are strikingly uniform --
+speed 100 deg/s on all 38, 90° travel on 37 of 38, spawnflags 0 on all 38, about a 0.9 s swing
+-- so one repro generalises rather than describing one door.
+🔑 **`dod_railroad2_s10a` carries 17 of the 38, four times the next map, and the measured
+per-map episode baseline follows the DOOR COUNT rather than playtime.** Over 2026-10-01 to 10-05,
+attributing each `push:` record to the map named by the preceding `Started map` line, railroad led
+on episodes per hour of live half by roughly 4x over `dod_lennon5_b1`, while `dod_anzio` -- the
+most-played map in that window -- trailed both by more than an order of magnitude, and
+`dod_saints2_b5e`, `dod_armory_b7`, `dod_anjou_a5` and `dod_solitude2` read zero across several
+live matches.
+⚠️ **The ordering is the finding; the rates are not durable.** Railroad's lead rests on
+two live matches in that window, both on one instance, so re-derive before quoting any rate -- and
+compare episodes, never raw `blocked`, for the reason recorded above.
+✅ **Episodes cluster on a FEW doors and spread across many victims** -- two rotating doors
+carry over half of railroad's worst-pusher episodes, four on lennon -- so this is not one player
+parked in a doorway, and a repro wants those specific doors rather than the map at large.
+
 ⛔ **Two cvars look decisive here and are not, so nobody re-raises them:** `sv_force_ent_intersection`
 forces the sphere-intersection check for `SOLID_SLIDEBOX` (player-vs-player) and doors are
 `SOLID_BSP`/`MOVETYPE_PUSH`; `sv_rehlds_hull_centering` only fires on a hull whose mins/maxs sum to
