@@ -116,7 +116,7 @@ next map change. Writer-side timings land on the `[KTP_PROFILE] io:` line; see
 | `ktp_profile_frame` | `0` | Enable frame profiling |
 | `ktp_profile_interval` | `10` | Seconds between profiling summary logs |
 | `ktp_profile_spike_threshold` | `5.0` | Log a `[KTP_SPIKE]` alert when a frame exceeds this many ms (`0` = off) |
-| `ktp_profile_spike_phase_share` | `0.25` | (.931) Minimum share of a spike frame a phase must own to emit its `[KTP_SPIKE_<phase>]` detail line; `0` = always emit (pre-.931). **Not archived — an rcon override reverts at the next restart** |
+| `ktp_profile_spike_phase_share` | `0.25` | (.931) Minimum share of a spike frame a phase must own to emit its `[KTP_SPIKE_<phase>]` detail line; `0` = always emit (pre-.931). **Not archived — set it in the config, because an rcon override dies at the next `changelevel`** |
 | `ktp_profile_steam_detail` | `0` | Granular `Steam_RunFrame()` sub-timing |
 | `ktp_log_async` | `1` | Async log-file writer; `0` restores the synchronous path (rollback switch) |
 | `ktp_extension_loaded` | `0` | Sentinel — counts extensions loaded from `extensions.ini`. Assert `>= 1` after a restart |
@@ -232,9 +232,15 @@ aggregator cannot explain.
 |---|---|---|
 | `ktp_profile_spike_phase_share` | `0.25` | Minimum share of the frame a phase must own to emit its detail line. **`0` = always emit (pre-`.931` behaviour).** |
 
-⚠️ **`ktp_profile_spike_phase_share` is not archived and is set in no shipped `.cfg`**, so
-an rcon override reverts to the default at the next restart. To make `0` durable, write it
-into `dodserver.cfg` the way `ktp_profile_frame` already is.
+⚠️ **`ktp_profile_spike_phase_share` is not archived, so an rcon override is lost at the
+next `changelevel`** — a `changelevel` re-execs `dodserver.cfg` and nothing reports the
+revert, which is why this cvar is the rollback lever for the whole per-phase detail feature
+and the one place it must not live only in rcon. **The shipped config templates now carry it
+at the engine default `0.25`** (`KTPInfrastructure` `config/online/dodserver.cfg.example` and
+its canonical twin in `KTPDoDServerConfig`), so making `0` durable is editing that line
+rather than adding it. ⛔ **A template is not a server:** a running instance execs its own
+`dodserver.cfg`, and on the KTP fleet that file is pushed from a distributor — so the value
+reaching a server is a deploy, not a merge.
 
 ⚠️ **The cvar is deliberately unclamped, and out-of-range values are well-defined rather
 than undefined.** The phases partition the frame, so no phase can exceed `full`:
