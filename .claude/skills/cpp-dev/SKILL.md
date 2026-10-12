@@ -63,6 +63,31 @@ confirmed unsynchronized-race bug reachable from ordinary error paths:
   ⚠️ **Closed does not mean free: the write is still synchronous on the game
   thread** — the async ring covers the L-log only, and that latency exposure is
   the live half (`conprintf_worst=`, root `CLAUDE.md`).
+  🔑 **Most of the above is now a CI check rather than a comment you are trusted
+  to have read**: `.github/scripts/con_thread_safety.py` (job *Cross-thread
+  console invariants*) reds on the format buffer leaving `Con_DebugLog`'s body
+  (anchored to the buffer `Q_vsnprintf` writes into, so moving it to file scope
+  does not slip past), a handle that is not atomic / not release-published / not
+  acquire-read / stored as anything but the handle just opened, **the cached
+  handle being closed or un-published** — the use-after-free, whose likeliest
+  shape is closing it on a write failure — an `FS_Open`-family or raw `open`
+  with no `KTP_IsGameThread()` refusal that **returns** ahead of it, a refusal
+  that does not increment `condbg_drops`, an untested write, an
+  `FS_GetLocalPath`/`fopen` swap, an ungated redirect capture in any operand
+  order, `g_ktp_conio_*` non-atomic at their **definition**, `condbg_drops=`
+  dropped from the `io:` line, and a `Con_Printf`/`Con_DPrintf`/`Con_DebugLog`/
+  `Con_SafePrintf`/`Sys_Printf` in **any** body the Steam thread reaches — the
+  thread function, `SteamRefresh_ProcessIfPending`, the callback enqueue and the
+  `On*` handlers — plus deletion of the note above the send site.
+  ⚠️ **The reason it exists is that the rule was already written down — 34 lines
+  above the loop that broke it — for eighteen builds.** A comment is not a gate.
+  ⛔ **And it is not a substitute for the read, because it cannot be:** it
+  judges shape, not control flow, it sees only these four files, and a red
+  blocks nothing until the job is a required status check. If you move this code,
+  run `--selftest` — it mutates the real sources per assertion and asserts each
+  mutation is rejected and each legitimate refactor is not. Two correct
+  refactors do red it (factoring the drop increments into a helper; hoisting the
+  thread check into a named local, which exits 2); there, fix the gate.
 - Any global mutated from more than one thread needs an atomic or a mutex,
   full stop. `NET_SendLong`'s `gSequenceNumber` is the case that proved it: it
   became cross-thread reachable the moment Steam sends moved off the main

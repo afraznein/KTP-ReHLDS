@@ -780,6 +780,77 @@ interval, and a new connection in a reused slot does not inherit it.
 
 - README now points at the in-tree `README-UPSTREAM.md` from § Related Projects.
 
+### CI
+
+- **The cross-thread console rule now reds CI instead of being written down.**
+  `sv_steam3.cpp` has carried *"the Steam thread must never reach `Con_Printf`"*
+  since `.913`, and 34 lines below it the thread's send loop called
+  `NET_SendPacket`, whose `ca_dedicated` failure branch logs through exactly that
+  path. The comment was true, documented, and violated by the same file pair for
+  eighteen builds; the race itself is closed above, but nothing made the rule
+  fail when it is broken — which is why a comment was not enough the first time.
+
+  `.github/scripts/con_thread_safety.py` (job *Cross-thread console invariants*)
+  reds on:
+
+  - the buffer `Q_vsnprintf` writes into not being declared inside
+    `Con_DebugLog`'s body — anchored to that buffer rather than to the absence of
+    `static` in the body, because **moving the declaration to file scope restores
+    the shared buffer in full and leaves the body with no statics at all**;
+  - a handle that is not `std::atomic`, published without a release store, read
+    without an acquire load, or stored as anything but the handle just opened —
+    all checked **per access and per statement**, so one platform arm cannot pass
+    on the other's token and an 80-column wrap is not a missing memory order;
+  - the cached handle being **closed or un-published**. This is the
+    use-after-free the design forbids, and *"the write failed, so close it and
+    let the next line reopen"* is what the mistake looks like when someone means
+    well;
+  - any `FS_Open`-family or raw `open` call reached with no `KTP_IsGameThread()`
+    refusal ahead of it — the refusal must actually **return**, because keeping
+    the test and the counter while deleting one `return;` re-opens the off-thread
+    path and is the cheapest possible regression;
+  - an off-thread refusal that does not increment `g_ktp_condbg_drops`, and the
+    write through the cached handle not being tested with a failure counted;
+  - an `FS_GetLocalPath` + raw `fopen` swap;
+  - an rcon-redirect capture in `Con_Printf_internal` not gated on the game
+    thread, in **whatever order** the condition is written;
+  - `g_ktp_conio_*` not atomic **at their definition** — an `extern` declaration
+    satisfies a substring search while the real definition is unchecked — or
+    `condbg_drops=` no longer printed from that counter on the `io:` line;
+  - a `Con_Printf`/`Con_DPrintf`/`Con_DebugLog`/`Con_SafePrintf`/`Sys_Printf` in
+    **any** body the Steam thread reaches: the thread function, the refresh
+    publisher it calls, the callback enqueue, and the `On*` handlers this file
+    documents as *"called from background thread via Steam API"*. The `.913` bug
+    was a violation one frame **down** from the comment, so a rule reading only
+    the thread body would mechanize the one shape of the bug that did not happen
+    — and banning `Con_Printf` while leaving `Sys_Printf`, which it funnels into,
+    is a one-token bypass;
+  - deletion of the note above the send site that names the one deliberate
+    exception.
+
+  Controls, so a blind run cannot pass: each file must be found and clear a size
+  floor, each body must be located and **closed** and non-trivial, handle
+  accesses and refusals must be present in plausible numbers, and the body finder
+  must **refuse** a name that is not in the file. A rule with nothing to judge
+  raises, and every raise — plus any unexpected exception — exits **2**, not 1,
+  so a dead probe is never confusable with a verdict. Comments are stripped
+  **statefully** (shared with `rehlds_api_prefix.py`): a per-line regex lets a
+  brace inside a multi-line comment close a body early, after which every rule
+  judges a prefix of the function and the gate reports that all invariants hold
+  over code it never read. `#if 0` blocks are treated as dead.
+
+  `--selftest` mutates the real sources in a temp tree **per assertion** and
+  asserts each mutation is rejected, each legitimate refactor is not, and the
+  unmutated copy passes; CI runs it before the verdict, because a gate nobody has
+  watched fail is not a gate. Real sources rather than a fixture on purpose: a
+  fixture is simpler than production and stops catching the shapes production
+  has.
+
+  ⚠️ A red here informs until the job is added to `main`'s required status checks
+  beside the header-drift one.
+
+  Source-only — no engine binary change, so no version bump.
+
 ## [KTP-ReHLDS `3.22.0.931`] - 2026-08-14
 
 Things that reported something untrue, and protections that were never wired up. Profiling telemetry
