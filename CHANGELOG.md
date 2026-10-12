@@ -721,6 +721,17 @@ interval, and a new connection in a reused slot does not inherit it.
 
 ### Documentation
 
+- **README said `ktp_profile_spike_phase_share` is "set in no shipped `.cfg`" and that
+  went stale the moment the config repos merged it.** `KTPInfrastructure`#687
+  (`config/online/dodserver.cfg.example`) and `KTPDoDServerConfig`#20 (its canonical twin)
+  both now persist the cvar at the engine default `0.25`, which this README itself asked
+  for: *"to make `0` durable, write it into `dodserver.cfg`"*. Making it durable is now
+  editing that line rather than adding it. Also replaces *"reverts at the next restart"* in
+  the cvar table — the revert happens at the next `changelevel`, which re-execs the config
+  and reports nothing, and that is sooner and quieter than a restart. ⛔ States the half a
+  merged template does not reach: a running instance execs its own `dodserver.cfg`, pushed
+  from a distributor on the KTP fleet, so the value arriving on a server is a deploy.
+
 - **`extensions.ini` was documented at a path that doesn't exist, with contents
   that wouldn't load.** README and `CLAUDE.md` said to create
   `rehlds/extensions.ini` containing `ktpamx/dlls/ktpamx_i386.so`. The loader
