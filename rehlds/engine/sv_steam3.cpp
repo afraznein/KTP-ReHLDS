@@ -286,7 +286,8 @@ static void *Steam_ThreadFunc(void *)
 
 			// Despite the "must never reach Con_Printf" rule above, this one does: a failed
 			// sendto() logs from here (net_ws.cpp, ca_dedicated branch) into Con_DebugLog,
-			// which is safe off-thread now. Anything else added here is not — audit it.
+			// which is safe off-thread now. Anything else added here is not — audit it,
+			// and CI reds on it (.github/scripts/con_thread_safety.py).
 			NET_SendPacket(NS_SERVER, iLen, szOutBuf, netAdr);
 
 			iLen = CRehldsPlatformHolder::get()->SteamGameServer()->GetNextOutgoingPacket(szOutBuf, sizeof(szOutBuf), &ip, &port);

@@ -1,6 +1,6 @@
 # KTP CI — build gate + header drift check across ALL THREE rehlds_api.h copies.
 #
-# Two jobs, both cheap, both meaningful:
+# Every job here is cheap and meaningful; the list is what runs, not a count:
 #  - header-drift: rehlds_api.h is manually duplicated THREE times — this repo
 #    (authoritative), KTP-ReAPI (a byte mirror) and KTPAMXX's
 #    public/resdk/engine copy, which is compiled into both shipped KTPAMXX
@@ -17,6 +17,14 @@
 #    KTPAMXX runs the reverse check on its own pushes (its Header Drift
 #    workflow); this leg is what catches an engine-side change at the moment it
 #    is made, rather than whenever KTPAMXX next happens to build.
+#  - console-thread-safety: the invariant `sv_steam3.cpp` has stated since .913
+#    — the Steam thread must never reach an unsynchronized console write — as a
+#    check that reds instead of a comment that does not. The rule was written
+#    down and broken by the same file pair for eighteen builds; .931 made the
+#    path safe, and this is what keeps it that way. Source-only, no toolchain.
+#    ⚠️ A red here only BLOCKS a merge once this job is a required status check
+#    on `main`, next to the header-drift one; until then it informs.
+#  - engine-unittests: cppunitlite, pinned to debian:11 for the Unittests link.
 #  - build-linux: compile gate only. Fleet binaries are built locally and
 #    verified by md5 (builds are not reproducible) — the CI artifact is never
 #    the deploy artifact. Its verify step names every artifact that has a deploy
@@ -180,6 +188,24 @@ jobs:
             echo "::error::ktp_rewind_api.h has DRIFTED between KTP-ReHLDS and KTPAMXX @ $REF. The struct is read across the module boundary by layout; a change is a new ktp_rewind_vN name, never an edit."
             exit 1
           fi
+
+  console-thread-safety:
+    name: Cross-thread console invariants
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Mutates the real sources in a temp tree, once per rule, and asserts every
+      # mutation is rejected and the clean tree passes. Run FIRST, so the verdict
+      # below is only believed from a checker that has been watched fail.
+      # -I so sys.path[0] is not .github/scripts -- the gate imports only the
+      # stdlib, and an isolated interpreter keeps it that way.
+      - name: Selftest the gate
+        run: python3 -I .github/scripts/con_thread_safety.py --selftest
+
+      - name: Check the invariants
+        run: python3 -I .github/scripts/con_thread_safety.py
 
   engine-unittests:
     name: Engine unit tests (cppunitlite)
