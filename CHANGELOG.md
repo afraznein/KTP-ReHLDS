@@ -531,6 +531,71 @@ interval, and a new connection in a reused slot does not inherit it.
 
 ### Fixed
 
+- **`Con_DebugLog` was an unsynchronized write reachable from the Steam background
+  thread on every failed `sendto()`, 34 lines below the comment forbidding exactly
+  that.** `sv_steam3.cpp`'s send loop calls `NET_SendPacket`, whose failure path takes
+  the `g_pcls.state == ca_dedicated` branch on every dedicated server and calls
+  `Con_Printf`. With the rcon-redirect capture gated on `KTP_IsGameThread()` since
+  `.931`, an off-thread print lands in `Con_Printf_internal`'s `else` branch, and that
+  branch calls `Con_DebugLog("qconsole.log", ...)` whenever `con_debuglog` is set —
+  which `-condebug` makes the fleet default. Three pieces of shared state were exposed
+  there: a `static char data[8192]` format buffer two threads could interleave into, a
+  `static FILE*` plus `static char[MAX_PATH]` path cache whose reopen branch could
+  `FS_Close` a handle another thread was writing through, and the engine FS layer
+  itself, which is not thread-safe against main-thread map loads — the reason the
+  `.927` async log writer owns its own `FILE*` through plain stdio.
+
+  A thread-identity gate cannot close this, which is why the `.931` gate did not: the
+  off-thread line reaches that branch *because* the capture is gated, so gating harder
+  only discards the diagnostic — and a failed Steam `sendto()` is exactly the event
+  someone would later want logged. The write is kept and made safe instead:
+
+  - The format buffer moves to the stack.
+  - The handle is opened once and published with a release store, read with an acquire
+    load, and never reopened. `stdio` locks the `FILE` itself, so concurrent writers
+    interleave by call rather than corrupting the stream.
+  - Only the game thread enters the FS layer. It creates the file through `FS_Open`
+    and then takes the real on-disk name with `FS_GetLocalPath` before handing it to
+    `fopen` — the same handoff `Log_Open` performs for the async writer, and
+    load-bearing rather than tidy: `FS_Open("qconsole.log")` resolves through the
+    search paths into the gamedir, so a bare `fopen()` would write to the process CWD
+    and silently move the file HLStatsX tails.
+  - A background-thread line arriving before the handle exists is counted on a new
+    `condbg_drops=` field rather than dropped silently. It is appended *after*
+    `writer_alive=` on the `[KTP_PROFILE] io:` line so no existing field shifts
+    position. Nonzero is also the only in-engine evidence that a background thread
+    has printed at all, so it reads as a signal and not merely a loss.
+  - A call with a `file` other than the published one — which no shipped caller makes,
+    every one passes `"qconsole.log"` — takes the stock per-line open/write/close on
+    the game thread instead of reopening the cached handle.
+
+  Observable behaviour is unchanged: one `write()` per line reaches the kernel
+  (`setvbuf` line-buffered plus the same per-call flush the previous code did), so a
+  tail-based reader still sees lines immediately.
+
+  **Not fixed here, and deliberately:** the write is still synchronous on the game
+  thread. That is the separate latency exposure recorded as a known limitation in
+  `CLAUDE.md` (`conprintf_worst=` ~4.2 ms/week worst), and offloading it onto the
+  `.927` ring is a larger cut than the race needed — the ring's writer owns one
+  `FILE*` bound to a `Log_Open` session, so a second sink means either a second thread
+  or a lifecycle change to the hottest log path on the fleet. The correctness half does
+  not depend on it.
+
+  **Whether this has ever fired in production is not established by this change.**
+  `grep -c 'NET_SendPacket: ERROR:'` across the 24 hosts' logs is the read that would
+  say, and it is an operator read. If it is zero over a long window this is a
+  latent-correctness fix, and it should be priced that way.
+
+  Incidental, found while editing the adjacent lines and corrected in the same change:
+  two comments named the wrong sink for `g_ktp_file_io_frame` / `file_worst=`
+  (`sv_main.cpp` at the `io:` print and `sv_log.cpp` at the extern). That timer wraps
+  the **server L-log** write — `FS_FPrintf((FileHandle_t)g_psvs.log.file, ...)` or its
+  ring enqueue — and both comments said `qconsole.log`, which is a different sink and
+  is `conprintf_worst=`. `CLAUDE.md`'s field list already described it correctly, so
+  the defect was in the code comments only. It mattered more after this change, which
+  removes the last `FS_FPrintf` to `qconsole.log` and would have left the comments
+  naming a call that no longer exists.
+
 - **An HLTV demo stopped 26-59 s before the end of the half it recorded.** The demo
   client follows the spectator clock (`DemoClient::SendDatagram` takes
   `GetFrameByTime(GetSpectatorTime())` whenever a delay is set), so with `delay 60`

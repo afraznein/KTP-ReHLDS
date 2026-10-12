@@ -7427,6 +7427,10 @@ extern std::atomic<uint32> g_ktp_fileq_worst_us;
 uint32 KTP_Steam_CallbackDrops(void);
 extern std::atomic<uint32> g_ktp_logq_ctl_drops;
 qboolean KTP_Log_WriterAlive(void);
+// KTP: qconsole.log lines a background thread emitted before the game thread had
+// opened the file (sys_dll.cpp). Nonzero means the Steam or -netthread side
+// printed during early boot, the only window where no handle is published yet.
+extern std::atomic<uint32> g_ktp_condbg_drops;
 
 // KTP: Page-fault counters at frame start, for spike-frame deltas. Only
 // consumed by spike alerts, so the snapshot is skipped when those are off
@@ -9758,14 +9762,17 @@ void EXT_FUNC SV_Frame_Internal()
 				g_ktp_phys_startframe_peak * 1000.0, g_ktp_phys_entloop_peak * 1000.0);
 			// Worst single log/console write this interval. logaddr_worst vs
 			// file_worst splits the logio sink: UDP sendto to a logaddress
-			// (HLStatsX backpressure) vs FS_FPrintf to qconsole.log (disk).
-			Log_Printf("[KTP_PROFILE] io: logprintf_worst=%.3fms conprintf_worst=%.3fms logaddr_worst=%.3fms file_worst=%.3fms fileq_worst=%.3fms logq_drops=%u ctl_drops=%u writer_alive=%d\n",
+			// (HLStatsX backpressure) vs the server L-log write (disk, or just
+			// the ring enqueue with the async writer on). qconsole.log is a
+			// different sink and is conprintf_worst, not this one.
+			Log_Printf("[KTP_PROFILE] io: logprintf_worst=%.3fms conprintf_worst=%.3fms logaddr_worst=%.3fms file_worst=%.3fms fileq_worst=%.3fms logq_drops=%u ctl_drops=%u writer_alive=%d condbg_drops=%u\n",
 				g_ktp_logio_worst * 1000.0, g_ktp_conio_worst_us.load(std::memory_order_relaxed) / 1000.0,
 				g_ktp_logaddr_io_worst * 1000.0, g_ktp_file_io_worst * 1000.0,
 				g_ktp_fileq_worst_us.load(std::memory_order_relaxed) / 1000.0,
 				g_ktp_logq_drops.load(std::memory_order_relaxed),
 				g_ktp_logq_ctl_drops.load(std::memory_order_relaxed),
-				KTP_Log_WriterAlive() ? 1 : 0);
+				KTP_Log_WriterAlive() ? 1 : 0,
+				g_ktp_condbg_drops.load(std::memory_order_relaxed));
 			uint32 ktp_cb_drops = KTP_Steam_CallbackDrops();
 			if (ktp_cb_drops)
 				Log_Printf("[KTP_STEAM_CB_DROPS] lifetime=%u -- auth/policy callbacks were discarded\n", ktp_cb_drops);

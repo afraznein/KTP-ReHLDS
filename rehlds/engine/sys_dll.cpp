@@ -1579,6 +1579,8 @@ void Con_Init(void)
 	Cmd_AddCommand("condebug", Con_Debug_f);
 }
 
+static bool KTP_IsGameThread(void);
+
 // KTP: Persistent-fd variant of the original open/write/close-per-line path.
 // Stock code called FS_Open("at") + FS_FPrintf + FS_Close on EVERY log line,
 // which is ~3 syscalls per line. Under -condebug (default on KTP servers for
@@ -1589,12 +1591,37 @@ void Con_Init(void)
 // immediately (same observable behavior as the old close-after-every-line
 // semantics, minus the open/close syscall pair).
 //
-// Cached per `file` argument — callers currently always pass "qconsole.log"
-// but we handle path changes by closing and reopening if the path differs.
+// Reached off the game thread: Con_Printf_internal's else-branch lands here
+// whenever a background thread prints, which the Steam thread does on every
+// failed sendto() (net_ws.cpp, ca_dedicated branch). Gating harder cannot fix
+// that — the off-thread line arrives here precisely BECAUSE the rcon-redirect
+// capture is gated, so a thread check only discards the diagnostic. Three
+// things make the write safe instead:
+//   - the format buffer is on the stack, not one static two threads interleave;
+//   - the handle is published once with release/acquire and never reopened, so
+//     no thread can close a handle another is writing through;
+//   - only the game thread ever enters the engine FS layer, which is not
+//     thread-safe against main-thread map loads — the same reason the .927
+//     async log writer owns its FILE* through plain stdio.
+// FS_GetLocalPath is load-bearing, not tidiness: FS_Open("qconsole.log")
+// resolves through the search paths into the gamedir, so a bare fopen() would
+// write to the process CWD and silently move the file HLStatsX tails.
+#ifdef _WIN32
+static std::atomic<int> s_condbgFd(-1);
+#else
+static std::atomic<FILE *> s_condbgFp(nullptr);
+#endif
+// Game thread writes this before publishing the handle and never again, so an
+// acquire-load of the handle makes it stable for every other reader.
+static char s_condbgName[MAX_PATH] = {0};
+// Off-thread lines discarded because no handle was open yet. Printed on the
+// [KTP_PROFILE] io: line — a drop with no counter reads the same as no drop.
+std::atomic<uint32> g_ktp_condbg_drops(0);
+
 void Con_DebugLog(const char *file, const char *fmt, ...)
 {
 	va_list argptr;
-	static char data[8192];
+	char data[8192];
 
 	va_start(argptr, fmt);
 	Q_vsnprintf(data, sizeof(data), fmt, argptr);
@@ -1604,52 +1631,98 @@ void Con_DebugLog(const char *file, const char *fmt, ...)
 
 #ifdef _WIN32
 
-	static int s_cached_fd = -1;
-	static char s_cached_file[MAX_PATH] = {0};
-
-	if (Q_strcmp(s_cached_file, file) != 0)
+	int fd = s_condbgFd.load(std::memory_order_acquire);
+	if (fd < 0)
 	{
-		if (s_cached_fd >= 0)
-			_close(s_cached_fd);
-		s_cached_fd = _open(file, _O_WRONLY | _O_APPEND | _O_CREAT, _S_IREAD | _S_IWRITE);
-		if (s_cached_fd >= 0)
-			Q_strncpy(s_cached_file, file, sizeof(s_cached_file) - 1);
-		else
-			s_cached_file[0] = 0;
+		if (!KTP_IsGameThread())
+		{
+			g_ktp_condbg_drops.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		// Retried per line until it succeeds, exactly as the stock path was: the
+		// first Con_Printf can precede a usable filesystem, and latching a single
+		// early failure would silently kill qconsole.log for the whole session.
+		fd = _open(file, _O_WRONLY | _O_APPEND | _O_CREAT, _S_IREAD | _S_IWRITE);
+		if (fd < 0)
+			return;
+		Q_strlcpy(s_condbgName, file, sizeof(s_condbgName));
+		s_condbgFd.store(fd, std::memory_order_release);
+	}
+	else if (Q_strcmp(s_condbgName, file) != 0)
+	{
+		// No shipped caller reaches this — every one passes "qconsole.log".
+		// A second destination gets the stock per-line open/write/close rather
+		// than a reopen, because reopening frees a handle another thread may be
+		// inside. FS layer, so the game thread only.
+		if (!KTP_IsGameThread())
+		{
+			g_ktp_condbg_drops.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		FileHandle_t once = FS_Open(file, "at");
+		if (once)
+		{
+			FS_FPrintf(once, "%s", data);
+			FS_Close(once);
+		}
+		return;
 	}
 
-	if (s_cached_fd >= 0)
-	{
-		int len = Q_strlen(data);
-		_write(s_cached_fd, data, len);
-		// Win32 _write is unbuffered at the CRT level, so no explicit flush needed
-		// to make the bytes visible to a concurrent reader of the same file.
-	}
+	int len = Q_strlen(data);
+	// Win32 _write is unbuffered at the CRT level, so no explicit flush needed
+	// to make the bytes visible to a concurrent reader of the same file.
+	_write(fd, data, len);
 
 #else // _WIN32
 
-	static FILE *s_cached_fp = NULL;
-	static char s_cached_file[MAX_PATH] = {0};
-
-	if (Q_strcmp(s_cached_file, file) != 0)
+	FILE *fp = s_condbgFp.load(std::memory_order_acquire);
+	if (!fp)
 	{
-		if (s_cached_fp)
-			FS_Close(s_cached_fp);
-		s_cached_fp = FS_Open(file, "at");
-		if (s_cached_fp)
-			Q_strncpy(s_cached_file, file, sizeof(s_cached_file) - 1);
-		else
-			s_cached_file[0] = 0;
+		if (!KTP_IsGameThread())
+		{
+			g_ktp_condbg_drops.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		// Create through the FS layer first so the file lands on the engine's
+		// write path, then take its real on-disk name — the same handoff
+		// Log_Open does before the async writer takes over its handle. Retried
+		// per line until it succeeds, exactly as the stock path was: the first
+		// Con_Printf can precede a usable filesystem, and latching a single early
+		// failure would silently kill qconsole.log for the whole session.
+		char localPath[MAX_PATH * 2];
+		FileHandle_t seed = FS_Open(file, "at");
+		if (seed)
+			FS_Close(seed);
+		if (!FS_GetLocalPath(file, localPath, sizeof(localPath)) || !(fp = fopen(localPath, "a")))
+			return;
+		// Line-buffered so one write() per line reaches the kernel; the flush
+		// below still runs, because a Con_Printf without a trailing newline
+		// would otherwise sit in the buffer and stall a tail-based reader.
+		setvbuf(fp, nullptr, _IOLBF, 0);
+		Q_strlcpy(s_condbgName, file, sizeof(s_condbgName));
+		s_condbgFp.store(fp, std::memory_order_release);
+	}
+	else if (Q_strcmp(s_condbgName, file) != 0)
+	{
+		// See the _WIN32 twin above: stock per-line path, game thread only.
+		if (!KTP_IsGameThread())
+		{
+			g_ktp_condbg_drops.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		FileHandle_t once = FS_Open(file, "at");
+		if (once)
+		{
+			FS_FPrintf(once, "%s", data);
+			FS_Close(once);
+		}
+		return;
 	}
 
-	if (s_cached_fp)
-	{
-		FS_FPrintf(s_cached_fp, "%s", data);
-		// Flush to kernel so tail-based readers (HLStatsX) see new lines without
-		// having to wait for the default 4KB stdio buffer to fill. Cheap: one
-		// write() syscall instead of open()+write()+close() per line.
-		FS_Flush(s_cached_fp);
-	}
+	// stdio locks the FILE itself, so two threads interleave by call rather
+	// than corrupting the stream. One write() syscall per line, as before.
+	fputs(data, fp);
+	fflush(fp);
 
 #endif // _WIN32
 }

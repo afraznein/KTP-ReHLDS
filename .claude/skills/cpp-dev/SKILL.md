@@ -41,15 +41,23 @@ confirmed unsynchronized-race bug reachable from ordinary error paths:
   and the net thread reach them on a `sendto()` error path. Never let new
   background-thread code call `Con_Printf` directly — route diagnostics through
   the async log ring, or gate on a thread-identity check.
-  Two of the three hazards behind that rule are closed as of `.931`: the rcon
-  redirect capture into `outputbuf` is gated on `KTP_IsGameThread()`
-  (`sys_dll.cpp`), and the `g_ktp_conio_*` profiling counters are
-  `std::atomic<uint32>` microseconds rather than tearable doubles.
-  **`Con_DebugLog` is the one still open** — its `static FILE*` / `static char[]`
-  path cache is unsynchronized and it writes through the engine FS layer, which
-  the async writer deliberately bypasses for exactly that reason. An off-thread
-  `Con_Printf` reaches it whenever `con_debuglog` is set, which `-condebug`
-  makes the fleet default.
+  All three hazards behind that rule are now closed. `.931`: the rcon redirect
+  capture into `outputbuf` is gated on `KTP_IsGameThread()` (`sys_dll.cpp`), and
+  the `g_ktp_conio_*` profiling counters are `std::atomic<uint32>` microseconds
+  rather than tearable doubles. **`Con_DebugLog` was the last one** — a shared
+  `static char[8192]` format buffer, an unsynchronized `static FILE*` /
+  `static char[MAX_PATH]` path cache, and the engine FS layer. A thread-identity
+  gate could never have fixed it: an off-thread `Con_Printf` reaches that branch
+  *because* the redirect capture is gated, so gating harder only loses the
+  diagnostic. It now formats on the stack, publishes its handle once with
+  release/acquire and never reopens, and lets only the game thread enter the FS
+  layer — which must resolve the on-disk name with `FS_GetLocalPath` before
+  handing it to stdio, or the file moves from the gamedir to the process CWD.
+  Off-thread lines that arrive before the handle exists are counted on
+  `condbg_drops=`.
+  ⚠️ **Closed does not mean free: the write is still synchronous on the game
+  thread** — the async ring covers the L-log only, and that latency exposure is
+  the live half (`conprintf_worst=`, root `CLAUDE.md`).
 - Any global mutated from more than one thread needs an atomic or a mutex,
   full stop. `NET_SendLong`'s `gSequenceNumber` is the case that proved it: it
   became cross-thread reachable the moment Steam sends moved off the main
@@ -133,7 +141,8 @@ disk write off the game thread. Kill switch: `ktp_log_async` (default 1, `0`
 shape — bounded ring, drop-with-counter, `pthread_create`-with-sync-fallback —
 for any new work that touches disk or network from a hot path. Con_DebugLog
 (qconsole.log via `-condebug`) is a known exception the async writer does NOT
-cover; watch `conprintf_worst=` on the `io:` line if that ever needs fixing.
+cover — it is thread-safe but still writes on the game thread; watch
+`conprintf_worst=` on the `io:` line if that latency ever needs fixing.
 
 ## Never run a destructive simulation inside the working tree
 Verifying a fix often means simulating the failure — writing a fake `build.sh`, a

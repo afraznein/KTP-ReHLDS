@@ -112,7 +112,7 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 [KTP_PROFILE] peak: read=0.450ms phys=1.200ms misc1=0.020ms send=0.300ms post=0.010ms steam=0.050ms full=2.100ms
 [KTP_PROFILE] gap=-0.000ms (full - sum of phases)
 [KTP_PROFILE] phys_detail_peak: startframe=0.010ms entloop=0.430ms   (.929: interval peaks, tracked inside SV_Physics so paused frames contribute nothing — was an instantaneous last-frame sample)
-[KTP_PROFILE] io: logprintf_worst=… conprintf_worst=… logaddr_worst=… file_worst=… fileq_worst=… logq_drops=… ctl_drops=… writer_alive=…   (see Async Log-File Writer § for field meanings)
+[KTP_PROFILE] io: logprintf_worst=… conprintf_worst=… logaddr_worst=… file_worst=… fileq_worst=… logq_drops=… ctl_drops=… writer_alive=… condbg_drops=…   (see Async Log-File Writer § for field meanings)
 [KTP_PROFILE] send_detail_peak: worst_client=3(name) time=0.290ms clients_sent=11   (.931: interval PEAK; was send_detail, which sampled the boundary frame and never showed a spike)
 [KTP_PROFILE] interframe: avg=1.018ms peak=2.400ms
 [KTP_PROFILE] net: clients=10 unlag=1 lagcomp_off=1 ignorecmd_hits=2 drops=14 latzero=3 choke_peak=4 loss_worst=6 latency_worst=87.3ms jitter_worst=22.1ms maxunlag=300ms maxunlag_hits=18 maxunlag_excess_worst=412.7ms shadow=0ms shadow_hits=0 shadow_worst=0.0ms updates=9968 subinterval=310 connecting=1 synth_ms=240 interp_cap_hits=0 interp_floor_hits=12 interp_diff_worst=1.7ms lat_pop=1/6/2/1/0/0/0 jit_pop=6/2/1/0/0   (gated on ktp_profile_net; the half of the shot pipeline the CPU records cannot see — see CHANGELOG for field meanings)
@@ -178,13 +178,15 @@ The synchronous log-file write in `Log_Printf` blocked the game thread up to 167
 
 **CVar:** `ktp_log_async 1` (default) — set `0` for the exact legacy synchronous path. Mode latches per log session at `Log_Open` (takes effect next map change).
 
-**Telemetry:** the full `[KTP_PROFILE] io:` line (8 fields, in order) is:
-`logprintf_worst= conprintf_worst= logaddr_worst= file_worst= fileq_worst= logq_drops= ctl_drops= writer_alive=`
+**Telemetry:** the full `[KTP_PROFILE] io:` line, in order, is:
+`logprintf_worst= conprintf_worst= logaddr_worst= file_worst= fileq_worst= logq_drops= ctl_drops= writer_alive= condbg_drops=`
+⚠️ `condbg_drops=` is appended AFTER `writer_alive=` deliberately — a new field in the middle would shift every later position for anything that ever reads this line by index.
 - `file_worst=` — with async on, measures only the enqueue (~µs); the actual disk write is on the writer thread.
 - `fileq_worst=` — writer-thread worst single write per interval (this is where the SSD stall now lands).
 - `logq_drops=` — lifetime count of dropped WRITE lines (queue full / writer had no file / write error).
 - `ctl_drops=` — (.928) lifetime count of dropped OPEN/CLOSE control ops. Expect 0 forever; nonzero = a whole map's log file may be missing or misrouted (control op couldn't get a ring slot within the bounded retry).
 - `writer_alive=` — (.928) 0 only if work is pending AND the writer processed nothing for a full profile interval (a wedged/dead writer). Expect 1.
+- `condbg_drops=` — lifetime count of `qconsole.log` lines a BACKGROUND thread emitted before the game thread had opened the file. Only the game thread may enter the FS layer, so a line arriving in that window is counted instead of written. Expect 0. 🔑 Nonzero is also the only in-engine evidence that a background thread has printed at all — which on the fleet means a Steam `sendto()` failed — so read it as a signal, not just a loss.
 - `conprintf_worst=` — qconsole.log write cost (see the Con_DebugLog note below). **(.931) Backed by `std::atomic<uint32>` microseconds** — `Con_Printf` is reachable from the Steam and `-netthread` background threads, and the previous plain `double` could tear and print garbage on this very tripwire. ⚠️ Whole microseconds, so a sub-µs call records 0 and this field cannot resolve below 1µs — fine for the millisecond stalls it exists to catch; `logaddr_worst=` — UDP send to a logaddress.
 
 ### 3.22.0.928
@@ -198,7 +200,9 @@ Engine-side fix wave (see `CHANGELOG.md` for detail):
 
 **Design constraints:** writer thread deliberately bypasses the engine FS layer (not thread-safe vs main-thread map loads); `Log_Open` creates the file via FS then hands the `FS_GetLocalPath`-resolved path to the writer; OPEN/CLOSE are queued ops so rotation ordering holds; `Host_Shutdown` → `KTP_Log_AsyncShutdown()` drains + joins.
 
-**Known-limitation — Con_DebugLog / qconsole.log is NOT covered by the async writer.** With `-condebug` (default on the fleet) + `mp_logecho 1`, every `Log_Printf` also drives `Con_Printf` → `Con_DebugLog("qconsole.log")` → `FS_FPrintf`+`FS_Flush` **synchronously on the game thread** — a second disk sink the async writer never offloaded. Realized cost is small (`conprintf_worst=` ~4.2ms/week worst — `FS_Flush` is `fflush`, page-cache not `fsync`), but it's a bad-writeback-tail exposure on the consumer SSDs. Cheap mitigation if it ever matters: `mp_logecho 0` fleet-wide (the L-log + logaddress still capture everything; only the redundant console echo + its qconsole write go away). Tripwire: watch `conprintf_worst=` on the `io:` line.
+**Known-limitation — Con_DebugLog / qconsole.log is NOT covered by the async writer.** With `-condebug` (default on the fleet) + `mp_logecho 1`, every `Log_Printf` also drives `Con_Printf` → `Con_DebugLog("qconsole.log")` → one `fputs`+`fflush` **synchronously on the game thread** — a second disk sink the async writer never offloaded. Realized cost is small (`conprintf_worst=` ~4.2ms/week worst — the flush is `fflush`, page-cache not `fsync`), but it's a bad-writeback-tail exposure on the consumer SSDs. Cheap mitigation if it ever matters: `mp_logecho 0` fleet-wide (the L-log + logaddress still capture everything; only the redundant console echo + its qconsole write go away). Tripwire: watch `conprintf_worst=` on the `io:` line.
+
+⛔ **That limitation is about LATENCY and is still open. Its thread-safety half is closed, and the two are easy to conflate.** `Con_DebugLog` is reachable off the game thread — `Con_Printf_internal`'s `else` branch is where a background-thread print lands, which the Steam thread does on every failed `sendto()` — and it used to get there through a shared `static char[8192]` format buffer, an unsynchronized `static FILE*`/`static char[MAX_PATH]` path cache, and the engine FS layer, which is not thread-safe against main-thread map loads. 🔑 **A thread-identity gate cannot fix that**, because the off-thread line arrives in that branch *precisely because* the rcon-redirect capture is already gated — gating harder only discards the diagnostic. ✅ **Now: stack format buffer, handle published once with release/acquire and never reopened, and only the game thread ever enters the FS layer** (it resolves the real on-disk name with `FS_GetLocalPath`, exactly as `Log_Open` does for the async writer, and hands plain stdio the result). ⚠️ **`FS_GetLocalPath` is load-bearing, not tidiness** — `FS_Open("qconsole.log")` resolves through the search paths into the gamedir, so a bare `fopen()` would write to the process CWD and silently move the file HLStatsX tails.
 
 ### Host_FilterTime Fix (v3.22.0.904+)
 Fixed artificial FPS cap that limited servers to sys_ticrate - 1.
