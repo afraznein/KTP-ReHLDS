@@ -550,28 +550,44 @@ interval, and a new connection in a reused slot does not inherit it.
   only discards the diagnostic — and a failed Steam `sendto()` is exactly the event
   someone would later want logged. The write is kept and made safe instead:
 
-  - The format buffer moves to the stack.
+  - The format buffer moves to the stack. Removing that `static` is the line that
+    actually fixes the interleaving.
   - The handle is opened once and published with a release store, read with an acquire
-    load, and never reopened. `stdio` locks the `FILE` itself, so concurrent writers
-    interleave by call rather than corrupting the stream.
-  - Only the game thread enters the FS layer. It creates the file through `FS_Open`
-    and then takes the real on-disk name with `FS_GetLocalPath` before handing it to
-    `fopen` — the same handoff `Log_Open` performs for the async writer, and
-    load-bearing rather than tidy: `FS_Open("qconsole.log")` resolves through the
-    search paths into the gamedir, so a bare `fopen()` would write to the process CWD
-    and silently move the file HLStatsX tails.
-  - A background-thread line arriving before the handle exists is counted on a new
-    `condbg_drops=` field rather than dropped silently. It is appended *after*
-    `writer_alive=` on the `[KTP_PROFILE] io:` line so no existing field shifts
-    position. Nonzero is also the only in-engine evidence that a background thread
-    has printed at all, so it reads as a signal and not merely a loss.
+    load, and never reopened. `s_condbgName` is written before that store and never
+    again, so an acquire-load of the handle makes the name stable for every reader.
+  - `FS_Open`/`FS_Close` are confined to the game thread, because opening walks the
+    search paths and mutates the filesystem's open-file list. **Writing is not the
+    same, and that is what keeps this small:** `FS_FPrintf` and `FS_Flush` reach only
+    that handle's own `FILE*` (`FileHandle_t` *is* `FILE*`), so they are exactly as
+    thread-safe as the stdio calls underneath them and need no gate.
+  - The destination is therefore byte-identical to before. An earlier cut of this fix
+    resolved the path with `FS_GetLocalPath` and took a raw `fopen`; that is wrong and
+    is now warned against at the call site. `FS_Open("at")` writes to the first search
+    path that *allows writing*, while `FS_GetLocalPath` returns the first one a `stat`
+    *hits*, pack files included — so the two disagree as soon as a `qconsole.log`
+    exists earlier in the search order, silently moving the file HLStatsX tails, and a
+    pack hit yields a `<path>pak0.pak/qconsole.log` that `fopen` can never open, losing
+    every line for the session.
+  - Lines lost for any reason are counted on a new `condbg_drops=` field: an off-thread
+    print before the handle existed, a failed open, or a failed write. Counting the
+    failed *open* matters most — without it a `qconsole.log` that is never written
+    reports zero and reads as perfect health. Appended *after* `writer_alive=` on the
+    `[KTP_PROFILE] io:` line so no existing field shifts position. Nonzero is also the
+    only in-engine evidence that a background thread has printed at all.
   - A call with a `file` other than the published one — which no shipped caller makes,
-    every one passes `"qconsole.log"` — takes the stock per-line open/write/close on
-    the game thread instead of reopening the cached handle.
+    every one passes `"qconsole.log"` — takes a per-line open/write/close on the game
+    thread instead of reopening the cached handle, opening the same way the cached path
+    does so both land in one place.
 
-  Observable behaviour is unchanged: one `write()` per line reaches the kernel
-  (`setvbuf` line-buffered plus the same per-call flush the previous code did), so a
-  tail-based reader still sees lines immediately.
+  Observable behaviour is unchanged: same call, same handle semantics, same per-line
+  flush, so a tail-based reader still sees lines immediately.
+
+  The off-thread guarantee holds for a background thread joined before the filesystem
+  is released. `Steam_Shutdown()` runs only via `Host_ShutdownServer`, which
+  early-returns while `g_psv.active` is false, so a teardown in the window between
+  `Steam_Activate()` and `g_psv.active = TRUE` leaves the thread unjoined and writing
+  through a dead handle — unchanged by this fix, and stated at the call site rather
+  than implied away.
 
   **Not fixed here, and deliberately:** the write is still synchronous on the game
   thread. That is the separate latency exposure recorded as a known limitation in

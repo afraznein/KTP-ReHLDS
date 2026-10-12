@@ -47,14 +47,19 @@ confirmed unsynchronized-race bug reachable from ordinary error paths:
   rather than tearable doubles. **`Con_DebugLog` was the last one** — a shared
   `static char[8192]` format buffer, an unsynchronized `static FILE*` /
   `static char[MAX_PATH]` path cache, and the engine FS layer. A thread-identity
-  gate could never have fixed it: an off-thread `Con_Printf` reaches that branch
-  *because* the redirect capture is gated, so gating harder only loses the
-  diagnostic. It now formats on the stack, publishes its handle once with
-  release/acquire and never reopens, and lets only the game thread enter the FS
-  layer — which must resolve the on-disk name with `FS_GetLocalPath` before
-  handing it to stdio, or the file moves from the gamedir to the process CWD.
-  Off-thread lines that arrive before the handle exists are counted on
-  `condbg_drops=`.
+  gate could never have fixed it: that `else` branch is the ordinary destination
+  for every print made while no redirect is active, and the only one a background
+  thread can take, so gating harder only loses the diagnostic. It now formats on
+  the stack, publishes its handle once with release/acquire and never reopens, and
+  keeps `FS_Open`/`FS_Close` on the game thread. **The useful distinction: opening
+  walks the search paths and mutates the FS open-file list; WRITING does not** —
+  `FS_FPrintf`/`FS_Flush` touch only that handle's own `FILE*`, so a write off the
+  game thread is as safe as the stdio call underneath it. ⛔ **Do not "resolve the
+  path and `fopen` it" instead** — `FS_Open("at")` picks the first WRITABLE search
+  path while `FS_GetLocalPath` picks the first one a `stat` hits, pack files
+  included, so that swap can move the file HLStatsX tails or hand back a `.pak`
+  interior path that never opens. Lines lost to any cause are counted on
+  `condbg_drops=` (lifetime).
   ⚠️ **Closed does not mean free: the write is still synchronous on the game
   thread** — the async ring covers the L-log only, and that latency exposure is
   the live half (`conprintf_worst=`, root `CLAUDE.md`).

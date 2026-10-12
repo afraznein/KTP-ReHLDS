@@ -7427,9 +7427,10 @@ extern std::atomic<uint32> g_ktp_fileq_worst_us;
 uint32 KTP_Steam_CallbackDrops(void);
 extern std::atomic<uint32> g_ktp_logq_ctl_drops;
 qboolean KTP_Log_WriterAlive(void);
-// KTP: qconsole.log lines a background thread emitted before the game thread had
-// opened the file (sys_dll.cpp). Nonzero means the Steam or -netthread side
-// printed during early boot, the only window where no handle is published yet.
+// KTP: qconsole.log lines lost (sys_dll.cpp) — a background thread printed before
+// the handle existed, or the open or the write failed. Lifetime. Nonzero is NOT
+// only an early-boot artifact: it also covers a runtime `condebug` enable, and it
+// keeps climbing for the whole session if the open never succeeds.
 extern std::atomic<uint32> g_ktp_condbg_drops;
 
 // KTP: Page-fault counters at frame start, for spike-frame deltas. Only
