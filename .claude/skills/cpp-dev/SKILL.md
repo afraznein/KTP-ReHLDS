@@ -174,6 +174,13 @@ out to the scratch dir over running tools "in place".
 1. **Build**: `wsl bash -c "cd '/mnt/n/Nein_/KTP Git Projects/KTPReHLDS' && bash build_linux.sh"`
    (CMake → `rehlds/build/`, auto-stages to the KTP DoD Server test tree).
 2. **Review**: `ktp-code-review` agent before staging anything nontrivial.
+   For a refactor claimed behaviour-neutral, compare compiler output against the
+   base commit and judge it by the **line diff**, not by the mnemonic histogram:
+   an operand-swapped compare with a mirrored predicate leaves the histogram
+   identical, so a histogram that matches proves nothing. Prove the comparison
+   can fail — mutate one operand and confirm the line diff grows — and say which
+   optimisation level you built at, because a `-O3` compare without `-flto` is
+   not the shipped binary's codegen.
 3. **Smoke test on the Tier-2 runner** (data server, `/opt/ktp-tier2-runner`):
    before/after comparison for crash-class fixes (boot → map change → quit,
    exit 0, ordered log rotation). The runner's module stack must match the
