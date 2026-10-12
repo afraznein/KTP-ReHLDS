@@ -300,7 +300,7 @@ extern double g_ktp_logio_frame;  // accumulated Log_Printf time this frame
 extern double g_ktp_logio_worst;  // worst single Log_Printf this interval
 // Split of logio by sink, to find which one blocks on a spike:
 extern double g_ktp_logaddr_io_frame;  // Netchan_OutOfBandPrint UDP sendto (logaddress)
-extern double g_ktp_file_io_frame;     // FS_FPrintf to qconsole.log (disk)
+extern double g_ktp_file_io_frame;     // the L-log write below, or its enqueue (NOT qconsole.log)
 extern double g_ktp_logaddr_io_worst;
 extern double g_ktp_file_io_worst;
 

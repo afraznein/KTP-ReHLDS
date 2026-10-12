@@ -531,6 +531,87 @@ interval, and a new connection in a reused slot does not inherit it.
 
 ### Fixed
 
+- **`Con_DebugLog` was an unsynchronized write reachable from the Steam background
+  thread on every failed `sendto()`, 34 lines below the comment forbidding exactly
+  that.** `sv_steam3.cpp`'s send loop calls `NET_SendPacket`, whose failure path takes
+  the `g_pcls.state == ca_dedicated` branch on every dedicated server and calls
+  `Con_Printf`. With the rcon-redirect capture gated on `KTP_IsGameThread()` since
+  `.931`, an off-thread print lands in `Con_Printf_internal`'s `else` branch, and that
+  branch calls `Con_DebugLog("qconsole.log", ...)` whenever `con_debuglog` is set —
+  which `-condebug` makes the fleet default. Three pieces of shared state were exposed
+  there: a `static char data[8192]` format buffer two threads could interleave into, a
+  `static FILE*` plus `static char[MAX_PATH]` path cache whose reopen branch could
+  `FS_Close` a handle another thread was writing through, and the engine FS layer
+  itself, which is not thread-safe against main-thread map loads — the reason the
+  `.927` async log writer owns its own `FILE*` through plain stdio.
+
+  A thread-identity gate cannot close this, which is why the `.931` gate did not: the
+  off-thread line reaches that branch *because* the capture is gated, so gating harder
+  only discards the diagnostic — and a failed Steam `sendto()` is exactly the event
+  someone would later want logged. The write is kept and made safe instead:
+
+  - The format buffer moves to the stack. Removing that `static` is the line that
+    actually fixes the interleaving.
+  - The handle is opened once and published with a release store, read with an acquire
+    load, and never reopened. `s_condbgName` is written before that store and never
+    again, so an acquire-load of the handle makes the name stable for every reader.
+  - `FS_Open`/`FS_Close` are confined to the game thread, because opening walks the
+    search paths and mutates the filesystem's open-file list. **Writing is not the
+    same, and that is what keeps this small:** `FS_FPrintf` and `FS_Flush` reach only
+    that handle's own `FILE*` (`FileHandle_t` *is* `FILE*`), so they are exactly as
+    thread-safe as the stdio calls underneath them and need no gate.
+  - The destination is therefore byte-identical to before. An earlier cut of this fix
+    resolved the path with `FS_GetLocalPath` and took a raw `fopen`; that is wrong and
+    is now warned against at the call site. `FS_Open("at")` writes to the first search
+    path that *allows writing*, while `FS_GetLocalPath` returns the first one a `stat`
+    *hits*, pack files included — so the two disagree as soon as a `qconsole.log`
+    exists earlier in the search order, silently moving the file HLStatsX tails, and a
+    pack hit yields a `<path>pak0.pak/qconsole.log` that `fopen` can never open, losing
+    every line for the session.
+  - Lines lost for any reason are counted on a new `condbg_drops=` field: an off-thread
+    print before the handle existed, a failed open, or a failed write. Counting the
+    failed *open* matters most — without it a `qconsole.log` that is never written
+    reports zero and reads as perfect health. Appended *after* `writer_alive=` on the
+    `[KTP_PROFILE] io:` line so no existing field shifts position. Nonzero is also the
+    only in-engine evidence that a background thread has printed at all.
+  - A call with a `file` other than the published one — which no shipped caller makes,
+    every one passes `"qconsole.log"` — takes a per-line open/write/close on the game
+    thread instead of reopening the cached handle, opening the same way the cached path
+    does so both land in one place.
+
+  Observable behaviour is unchanged: same call, same handle semantics, same per-line
+  flush, so a tail-based reader still sees lines immediately.
+
+  The off-thread guarantee holds for a background thread joined before the filesystem
+  is released. `Steam_Shutdown()` runs only via `Host_ShutdownServer`, which
+  early-returns while `g_psv.active` is false, so a teardown in the window between
+  `Steam_Activate()` and `g_psv.active = TRUE` leaves the thread unjoined and writing
+  through a dead handle — unchanged by this fix, and stated at the call site rather
+  than implied away.
+
+  **Not fixed here, and deliberately:** the write is still synchronous on the game
+  thread. That is the separate latency exposure recorded as a known limitation in
+  `CLAUDE.md` (`conprintf_worst=` ~4.2 ms/week worst), and offloading it onto the
+  `.927` ring is a larger cut than the race needed — the ring's writer owns one
+  `FILE*` bound to a `Log_Open` session, so a second sink means either a second thread
+  or a lifecycle change to the hottest log path on the fleet. The correctness half does
+  not depend on it.
+
+  **Whether this has ever fired in production is not established by this change.**
+  `grep -c 'NET_SendPacket: ERROR:'` across the 24 hosts' logs is the read that would
+  say, and it is an operator read. If it is zero over a long window this is a
+  latent-correctness fix, and it should be priced that way.
+
+  Incidental, found while editing the adjacent lines and corrected in the same change:
+  two comments named the wrong sink for `g_ktp_file_io_frame` / `file_worst=`
+  (`sv_main.cpp` at the `io:` print and `sv_log.cpp` at the extern). That timer wraps
+  the **server L-log** write — `FS_FPrintf((FileHandle_t)g_psvs.log.file, ...)` or its
+  ring enqueue — and both comments said `qconsole.log`, which is a different sink and
+  is `conprintf_worst=`. `CLAUDE.md`'s field list already described it correctly, so
+  the defect was in the code comments only. It mattered more after this change, which
+  removes the last `FS_FPrintf` to `qconsole.log` and would have left the comments
+  naming a call that no longer exists.
+
 - **An HLTV demo stopped 26-59 s before the end of the half it recorded.** The demo
   client follows the spectator clock (`DemoClient::SendDatagram` takes
   `GetFrameByTime(GetSpectatorTime())` whenever a delay is set), so with `delay 60`

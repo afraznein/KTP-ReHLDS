@@ -285,8 +285,8 @@ static void *Steam_ThreadFunc(void *)
 			netAdr.type = NA_IP;
 
 			// Despite the "must never reach Con_Printf" rule above, this one does: a failed
-			// sendto() logs from here (net_ws.cpp, ca_dedicated branch) and lands in the
-			// unsynchronized Con_DebugLog path, which a thread-identity gate cannot reach.
+			// sendto() logs from here (net_ws.cpp, ca_dedicated branch) into Con_DebugLog,
+			// which is safe off-thread now. Anything else added here is not — audit it.
 			NET_SendPacket(NS_SERVER, iLen, szOutBuf, netAdr);
 
 			iLen = CRehldsPlatformHolder::get()->SteamGameServer()->GetNextOutgoingPacket(szOutBuf, sizeof(szOutBuf), &ip, &port);
