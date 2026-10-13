@@ -57,6 +57,8 @@ public:
 	void SetProxy(IProxy *proxy);
 	void SetFileName(char *fileName);
 	DemoFile *GetDemoFile();
+	// KTP: lets the flush tell a WriteDatagram that returned early from one that ran.
+	unsigned int GetLastFrameSeqNr() const { return m_LastFrameSeqNr; }
 	void FinishDemo();
 	void SendDatagram();
 	void WriteDatagram(double time, frame_t *frame);
