@@ -1902,6 +1902,10 @@ void Proxy::FlushDemoBuffer()
 	// Live spectators are untouched: this is the demo client only, so the broadcast
 	// delay and the anti-ghosting it buys are unchanged.
 	if (GetDelay() <= 0 || !m_DemoClient.IsActive()) {
+		// Writing nothing here looks exactly like writing nothing because the buffer
+		// was empty, and the demo file records neither.
+		m_System->Printf("[KTP_FLUSH] not attempted, delay %.1f, demo client %s\n",
+			GetDelay(), m_DemoClient.IsActive() ? "active" : "inactive");
 		return;
 	}
 
@@ -1912,6 +1916,11 @@ void Proxy::FlushDemoBuffer()
 	}
 
 	if (!frame || !lastFrame) {
+		// Both frame getters read the same list, so there is no case where only one of
+		// them is null. The gap between the clocks is what explains an empty buffer.
+		m_System->Printf("[KTP_FLUSH] no frames, spectator %.1f, world %.1f, world %s\n",
+			GetSpectatorTime(), m_World->GetTime(),
+			m_World->IsActive() ? "active" : "inactive");
 		return;
 	}
 
@@ -1919,11 +1928,15 @@ void Proxy::FlushDemoBuffer()
 	// change, so the demo clock stays continuous across the flush.
 	double demoTimeOffset = GetProxyTime() - GetSpectatorTime();
 	float lastCmdTime = frame->time;
+	unsigned int firstSeqNr = frame->seqnr;
+	unsigned int demoFrameBefore = m_DemoClient.GetLastFrameSeqNr();
+	unsigned int absentFrames = 0;
 
 	for (unsigned int seqnr = frame->seqnr; seqnr <= lastFrame->seqnr; seqnr++)
 	{
 		frame = m_World->GetFrameBySeqNr(seqnr);
 		if (!frame) {
+			absentFrames++;
 			continue;
 		}
 
@@ -1945,6 +1958,17 @@ void Proxy::FlushDemoBuffer()
 		m_DemoClient.WriteDatagram(frame->time + demoTimeOffset, frame);
 		lastCmdTime = frame->time;
 	}
+
+	// The frame counter advances before the write, so it says WriteDatagram ran rather
+	// than that bytes landed -- a demo whose file never opened marches the whole span.
+	// Hence the file state here, which is the only leg that distinguishes that case.
+	DemoFile *demoFile = m_DemoClient.GetDemoFile();
+	const char *demoName = demoFile->GetFileName();
+	m_System->Printf("[KTP_FLUSH] frames %u..%u, %u absent, demo frame %u -> %u, file %s %s\n",
+		firstSeqNr, lastFrame->seqnr, absentFrames, demoFrameBefore,
+		m_DemoClient.GetLastFrameSeqNr(),
+		demoFile->IsRecording() ? "recording" : "closed",
+		(demoName && demoName[0]) ? demoName : "(none)");
 }
 
 void Proxy::CMD_OffLineText(char *cmdLine)

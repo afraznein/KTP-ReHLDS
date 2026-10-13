@@ -10,6 +10,56 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ### Added
 
+- **`Proxy::FlushDemoBuffer` now says which of its no-write paths it took.** The flush has
+  written **zero** frames to every demo the patched proxy has produced since it was deployed,
+  on both halves of every match. Measured by differencing each frame's embedded `svc_time`
+  against its own `demo_time`: the live write path writes the delay once and the flush writes
+  it twice, so the two separate inside the file with no log reading. That offset is flat at the
+  delay from the first frame to the last on every demo examined, which is what a file with no
+  flushed tail looks like, and `nFrames / fTrackTime` across the archive sits in one band with
+  no demo approaching the rate a recovered minute would produce.
+
+  **Five** paths write nothing and the demo file cannot tell them apart: the delay/inactive
+  guard, the null-frame guard, a seqnr span that leaves the loop body unreachable,
+  `DemoClient::WriteDatagram` returning on `deltaFrameSeqNr == frame->seqnr`, and -- the one a
+  first pass misses -- the demo file never having opened at all. `WriteDatagram` discards
+  `StartRecording`'s return, sets `m_LastFrameSeqNr` *before* the overflow checks and the
+  write, and `DemoFile::WriteDemoMessage` returns silently on an invalid handle, so the frame
+  counter can march the whole span with nothing on disk. The counter proves the call RAN, not
+  that bytes landed, which is why the line also reports the demo file's own recording state and
+  name.
+
+  Measurement rules out a zero delay (it would put the demo's offset near zero rather than at
+  the delay) and an inactive demo client (the file is still open, since `Completed demo` comes
+  from world signal 2 and this runs on signal 1). The early-return leg is also narrower than it
+  looks: `m_LastFrameSeqNr` changes nowhere else, so at most the FIRST present frame can take
+  it -- a wide span with `absent < span` excludes that hypothesis outright.
+
+  Known residual, deliberately not chased here: if the unreliable stream overflowed it is
+  cleared before the write, so the written length can reduce to zero with the counter advanced.
+  And a mid-loop `Disconnect` on reliable overflow resets the counter and starts a second
+  timestamped `.dem`, which this line would read as a clean flush -- pre-existing behaviour,
+  named rather than changed.
+
+  `Printf` rather than `DPrintf` deliberately: a `DPrintf` is invisible at `developer 0`, so it
+  would make the next measurement a clean zero either way. One line per level change is the
+  whole cost, which is why this is observability to keep rather than a patch to revert.
+  `DemoClient` gains a const accessor for its frame counter -- the only change to an upstream
+  file, one line, no behaviour.
+
+  Reading it: world signal 1 has two emitters, and `World::NewGame` runs on every serverinfo
+  packet rather than only a map change, so a proxy that is not recording logs the
+  `not attempted ... inactive` line at every connect -- that is the idle norm, not a fault. A
+  relay proxy reports `delay 0.0` by construction, since `GetDelay()` returns 0 when it is not
+  master. And these ride the proxy's stdout, so read the unit journal WITHOUT a priority
+  filter or the measurement comes back a clean zero.
+
+  This changes nothing about what the flush writes, so a demo recorded with this build is still
+  short by the tail. `proxy.so` is not on the `stage-wave.py` fleet path: it is one binary
+  shared by all 24 HLTV instances on the data server, must be built by `build_proxy.sh` against
+  the target's own glibc, and is delivered by hand per the coordination repo's `NEIN-DEPLOY.md`.
+  Reading the answer costs one HLTV restart.
+
 - **`ktp_rewind_v1` — the rewind lag compensation set up for the packet being run, as a named
   plugin API.** Engine side of schema 26 (design: KTPInfrastructure
   `docs/handover/SCHEMA_26_SHOT_HITGROUP_AND_REWIND.md`). Until now nothing recorded the rewind
