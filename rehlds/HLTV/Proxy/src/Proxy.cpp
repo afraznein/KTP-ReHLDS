@@ -1891,14 +1891,11 @@ void Proxy::ReconnectClients()
 
 void Proxy::FlushDemoBuffer()
 {
-	// KTP: World::NewGame fires this signal and then Reset()s, freeing every frame
-	// still in the buffer. With a delay set, that buffer holds the tail of the level
-	// the demo has not written yet -- the demo client follows the spectator clock,
-	// which trails the world clock by design. An idle map rotation leaves the proxy
-	// alone long enough to play that tail out by itself, but a match `changelevel` at
-	// half end does not, and the demo closes short: 26-59 s (median 49) across 24
-	// measured S10 halves, holding 280 deaths and 55 flag-state events that exist in
-	// no recording. Write the remainder here, while the frames still exist.
+	// KTP: World::NewGame frees the frame buffer, so write anything still in it first.
+	// In practice there is nothing: RunFrame holds the delayed reconnect until
+	// m_ClientWorldTime passes world time, so SendDatagram has already drained the
+	// buffer by the time this runs -- every observed span is one frame. Kept as a
+	// guard for a reconnect path that does not wait.
 	// Live spectators are untouched: this is the demo client only, so the broadcast
 	// delay and the anti-ghosting it buys are unchanged.
 	if (GetDelay() <= 0 || !m_DemoClient.IsActive()) {
