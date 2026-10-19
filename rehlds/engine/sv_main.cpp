@@ -2654,6 +2654,7 @@ void EXT_FUNC SV_ConnectClient_internal(void)
 	host_client->fully_connected = FALSE;
 	// KTP: here and not SV_New_f, which re-runs on every map of the same connection.
 	KTP_NetSessionBegin(host_client - g_psvs.clients, realtime);
+	KTP_NetClientBegin(host_client - g_psvs.clients, realtime);
 
 #ifdef REHLDS_FIXES
 	host_client->m_bSentNewResponse = FALSE;
@@ -5026,6 +5027,11 @@ void SV_EmitPacketEntities(client_t *client, packet_entities_t *to, sizebuf_t *m
 		deltaType = sv_packet_nodelta;
 	} else {
 		deltaType = sv_packet_delta;
+		// KTP: an ack older than the frame ring is masked into a wrong baseline
+		// below and the client answers with FlushEntityPacket. Counted, not fixed.
+		if (g_ktp_profiling_enabled
+			&& ((client->netchan.outgoing_sequence - client->delta_sequence) & 0xff) >= SV_UPDATE_BACKUP)
+			KTP_NetClientStaleDelta(client - g_psvs.clients, client->proxy);
 	}
 	SV_CreatePacketEntities(deltaType, client, to, msg);
 }
@@ -7412,6 +7418,7 @@ uint32 g_ktp_net_interp_floor_hits = 0;
 float g_ktp_net_interp_diff_peak = 0.0f;
 int g_ktp_net_interp_diff_slot = -1;
 ktp_net_session_t g_ktp_net_session[MAX_CLIENTS];
+ktp_net_client_t g_ktp_net_client[MAX_CLIENTS];
 // logio split: which sink blocks — logaddr = Netchan_OutOfBandPrint UDP sendto
 // per logaddress (HLStatsX), file = FS_FPrintf to qconsole.log on disk.
 double g_ktp_logaddr_io_frame = 0.0;
@@ -7677,9 +7684,15 @@ void KTP_NetSampleInterp(int slot, qboolean proxy, float declared, float used, q
 		return;
 
 	if (capped)
+	{
 		++g_ktp_net_interp_cap_hits;
+		++g_ktp_net_client[slot].interp_cap;
+	}
 	if (floored)
+	{
 		++g_ktp_net_interp_floor_hits;
+		++g_ktp_net_client[slot].interp_floor;
+	}
 
 	float diff = used - declared;
 	if (diff < 0.0f)
@@ -7813,6 +7826,109 @@ void KTP_NetSessionEmit(client_t *cl)
 		s.jitter_n ? s.jitter_sum / s.jitter_n * 1000.0 : 0.0,
 		s.loss_n ? s.loss_sum / s.loss_n : 0.0,
 		s.loss_max);
+}
+
+void KTP_NetClientBegin(int slot, double now)
+{
+	if (slot < 0 || slot >= MAX_CLIENTS)
+		return;
+
+	Q_memset(&g_ktp_net_client[slot], 0, sizeof(g_ktp_net_client[slot]));
+	g_ktp_net_client[slot].started = now;
+}
+
+void KTP_NetClientSampleMove(int slot, qboolean proxy, const usercmd_t *cmds, int numcmds, uint32 dropped, double now)
+{
+	if (!KTP_NetSlotUsable(slot, proxy))
+		return;
+
+	ktp_net_client_t *c = &g_ktp_net_client[slot];
+	++c->packets;
+	c->drops += dropped;
+	for (int i = 0; i < numcmds; i++)
+	{
+		++c->cmds;
+		++c->msec_hist[cmds[i].msec];	// msec is a byte: always inside the 256 bins
+	}
+	if (c->last_move > 0.0)
+	{
+		double gap_ms = (now - c->last_move) * 1000.0;
+		int bin = gap_ms < 0.0 ? 0 : (gap_ms >= KTP_NET_HIST_N - 1 ? KTP_NET_HIST_N - 1 : (int)(gap_ms + 0.5));
+		++c->arrival_hist[bin];
+	}
+	c->last_move = now;
+}
+
+void KTP_NetClientStaleDelta(int slot, qboolean proxy)
+{
+	if (!KTP_NetSlotUsable(slot, proxy))
+		return;
+
+	++g_ktp_net_client[slot].stale_delta;
+}
+
+uint32 KTP_HistPercentile(const uint32 *hist, int n, uint32 total, int pct)
+{
+	if (total == 0)
+		return 0;
+
+	// Rank rounds up so p50 of one sample is that sample, never bin 0.
+	uint32 rank = (uint32)(((uint64)total * pct + 99) / 100);
+	uint32 seen = 0;
+	for (int i = 0; i < n; i++)
+	{
+		seen += hist[i];
+		if (seen >= rank)
+			return (uint32)i;
+	}
+	return (uint32)(n - 1);
+}
+
+void KTP_NetClientEmitAll(const char *match, const char *half, double now)
+{
+	for (int slot = 0; slot < g_psvs.maxclients; slot++)
+	{
+		client_t *cl = &g_psvs.clients[slot];
+		ktp_net_client_t *c = &g_ktp_net_client[slot];
+		if (cl->active && !cl->proxy && !cl->fakeclient && c->packets)
+		{
+			uint32 msec_max = 0, arr_max = 0, arrivals = 0;
+			for (int i = 0; i < KTP_NET_HIST_N; i++)
+			{
+				if (c->msec_hist[i])
+					msec_max = i;
+				if (c->arrival_hist[i])
+				{
+					arr_max = i;
+					arrivals += c->arrival_hist[i];
+				}
+			}
+			double span = c->started > 0.0 ? now - c->started : 0.0;
+			Log_Printf("[KTP_PROFILE] net_client: client=%d(%s) steamid=%s match=%s half=%s span=%.0fs pkts=%u cmds=%u drops=%u pps=%.1f cmds_pkt=%.2f msec_p50=%u msec_p95=%u msec_max=%u arr_p50=%u arr_p95=%u arr_max=%u interp_cap=%u interp_floor=%u stale_delta=%u\n",
+				slot, cl->name, SV_GetClientIDString(cl), match, half, span,
+				c->packets, c->cmds, c->drops,
+				span > 0.0 ? c->packets / span : 0.0,
+				c->packets ? (double)c->cmds / c->packets : 0.0,
+				KTP_HistPercentile(c->msec_hist, KTP_NET_HIST_N, c->cmds, 50),
+				KTP_HistPercentile(c->msec_hist, KTP_NET_HIST_N, c->cmds, 95),
+				msec_max,
+				KTP_HistPercentile(c->arrival_hist, KTP_NET_HIST_N, arrivals, 50),
+				KTP_HistPercentile(c->arrival_hist, KTP_NET_HIST_N, arrivals, 95),
+				arr_max,
+				c->interp_cap, c->interp_floor, c->stale_delta);
+		}
+		// Every slot restarts, populated or not, so the next half never inherits a gap sample.
+		KTP_NetClientBegin(slot, now);
+	}
+}
+
+// ktp_net_flush [match] [half] -- a match plugin closes the per-client slice at half end.
+void KTP_NetFlush_f(void)
+{
+	if (!g_ktp_profiling_enabled || ktp_profile_net.value == 0.0f)
+		return;
+
+	KTP_NetClientEmitAll(Cmd_Argc() > 1 ? Cmd_Argv(1) : "-", Cmd_Argc() > 2 ? Cmd_Argv(2) : "-", realtime);
 }
 
 // KTP: Helper function to broadcast pause state to clients
@@ -10259,6 +10375,7 @@ void SV_Init(void)
 	Cvar_RegisterVariable(&ktp_profile_frame);
 	Cvar_RegisterVariable(&ktp_profile_interval);
 	Cvar_RegisterVariable(&ktp_profile_net);
+	Cmd_AddCommand("ktp_net_flush", KTP_NetFlush_f);
 	Cvar_RegisterVariable(&ktp_profile_spike_threshold);
 	Cvar_RegisterVariable(&ktp_profile_steam_detail);
 	Cvar_RegisterVariable(&ktp_profile_spike_phase_share);

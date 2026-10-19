@@ -78,6 +78,28 @@ typedef struct ktp_net_session_s
 } ktp_net_session_t;
 extern ktp_net_session_t g_ktp_net_session[MAX_CLIENTS];
 
+// One client since connect or the last ktp_net_flush. The session is the whole
+// connection; this is the slice a match plugin closes at half end, so a half
+// can be read against the settings the client ran in it. Two histograms: the
+// client's own frame time (usercmd.msec, one count per command) and the gap
+// between its move packets (one count per packet, ms, capped). Steady msec with
+// a bursty gap is the upload path; a bursty msec is the client hitching.
+#define KTP_NET_HIST_N 256
+typedef struct ktp_net_client_s
+{
+	double started;
+	double last_move;     // realtime of the previous move packet, 0 = none yet
+	uint32 packets;
+	uint32 cmds;
+	uint32 drops;
+	uint32 interp_cap;
+	uint32 interp_floor;
+	uint32 stale_delta;   // delta built from an ack older than the frame ring: the client sees FlushEntityPacket
+	uint32 msec_hist[KTP_NET_HIST_N];
+	uint32 arrival_hist[KTP_NET_HIST_N];
+} ktp_net_client_t;
+extern ktp_net_client_t g_ktp_net_client[MAX_CLIENTS];
+
 // lat_pop leads with clients that had no positive sample, then the latency buckets.
 #define KTP_NET_LAT_POP_N 7
 #define KTP_NET_JIT_POP_N 5
@@ -111,6 +133,15 @@ void KTP_NetSessionBegin(int slot, double now);
 // Copies and clears the slot; FALSE when there is nothing a human session should report.
 qboolean KTP_NetSessionTake(int slot, qboolean proxy, qboolean fakeclient, ktp_net_session_t *out);
 void KTP_NetSessionEmit(client_t *cl);
+
+void KTP_NetClientBegin(int slot, double now);
+// cmds[0..numcmds-1] are this packet's new commands; dropped is the clamped count KTP_NetSampleDrops returned.
+void KTP_NetClientSampleMove(int slot, qboolean proxy, const usercmd_t *cmds, int numcmds, uint32 dropped, double now);
+void KTP_NetClientStaleDelta(int slot, qboolean proxy);
+// Smallest bin whose cumulative count reaches pct% of total; 0 when total is 0.
+uint32 KTP_HistPercentile(const uint32 *hist, int n, uint32 total, int pct);
+// Prints one net_client: line per populated human slot, then restarts every slot. match/half are echoed verbatim.
+void KTP_NetClientEmitAll(const char *match, const char *half, double now);
 
 // Declared rather than file-static so a test can assert the reset list covers
 // every accumulator -- it has drifted from its callers before.
