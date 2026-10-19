@@ -63,6 +63,7 @@ static void ktp_reset_all()
 		g_ktp_net_subinterval_slot[i] = 0;
 		g_ktp_net_synth_ms_slot[i] = 0;
 		Q_memset(&g_ktp_net_session[i], 0, sizeof(g_ktp_net_session[i]));
+		Q_memset(&g_ktp_net_client[i], 0, sizeof(g_ktp_net_client[i]));
 	}
 }
 
@@ -626,4 +627,60 @@ TEST(SessionRollup, KtpNetTelemetry, 1000)
 	g_ktp_net_session[7].cmds = 4;
 	CHECK("a bot session was reported", KTP_NetSessionTake(7, PLAYER, TRUE, &s) == FALSE);
 	CHECK("out-of-range take", KTP_NetSessionTake(MAX_CLIENTS, PLAYER, FALSE, &s) == FALSE);
+}
+
+// The per-client slice: frame time per command, gap per packet, and the
+// percentile read of both. Drew's 285-cmdrate stutter never moved a server
+// counter; these are the two that would have.
+static usercmd_t ktp_cmd(byte msec)
+{
+	usercmd_t c;
+	Q_memset(&c, 0, sizeof(c));
+	c.msec = msec;
+	return c;
+}
+
+TEST(ClientSliceHistograms, KtpNetTelemetry, 1000)
+{
+	ktp_reset_all();
+	KTP_NetClientBegin(2, 100.0);
+
+	usercmd_t a[3] = { ktp_cmd(4), ktp_cmd(4), ktp_cmd(5) };
+	usercmd_t b[1] = { ktp_cmd(40) };
+	KTP_NetClientSampleMove(2, PLAYER, a, 3, 0, 100.010);
+	KTP_NetClientSampleMove(2, PLAYER, b, 1, 3, 100.030);	// 20 ms after the first
+	KTP_NetClientSampleMove(2, PLAYER, a, 3, 0, 100.0404);	// 10.4 ms: rounds to bin 10
+
+	ktp_net_client_t *c = &g_ktp_net_client[2];
+	UINT32_EQUALS("packets", 3u, c->packets);
+	UINT32_EQUALS("cmds", 7u, c->cmds);
+	UINT32_EQUALS("drops", 3u, c->drops);
+	UINT32_EQUALS("msec bin 4", 4u, c->msec_hist[4]);
+	UINT32_EQUALS("msec bin 5", 2u, c->msec_hist[5]);
+	UINT32_EQUALS("msec bin 40", 1u, c->msec_hist[40]);
+	// First packet has no predecessor, so two gaps from three packets.
+	UINT32_EQUALS("arrival bin 20", 1u, c->arrival_hist[20]);
+	UINT32_EQUALS("arrival bin 10", 1u, c->arrival_hist[10]);
+	UINT32_EQUALS("no gap for the first packet", 0u, c->arrival_hist[0]);
+
+	UINT32_EQUALS("msec p50", 4u, KTP_HistPercentile(c->msec_hist, KTP_NET_HIST_N, c->cmds, 50));
+	UINT32_EQUALS("msec p95", 40u, KTP_HistPercentile(c->msec_hist, KTP_NET_HIST_N, c->cmds, 95));
+	UINT32_EQUALS("arrival p50", 10u, KTP_HistPercentile(c->arrival_hist, KTP_NET_HIST_N, 2, 50));
+	UINT32_EQUALS("empty histogram reads 0", 0u, KTP_HistPercentile(c->arrival_hist, KTP_NET_HIST_N, 0, 50));
+
+	// Proxies and the interval reset leave the slice alone: it belongs to the match plugin's flush.
+	KTP_NetClientSampleMove(3, PROXY, a, 3, 0, 100.05);
+	UINT32_EQUALS("proxy reached the slice", 0u, g_ktp_net_client[3].packets);
+	KTP_NetClientStaleDelta(2, PLAYER);
+	KTP_NetClientStaleDelta(2, PROXY);
+	UINT32_EQUALS("stale delta", 1u, c->stale_delta);
+	KTP_NetSampleInterp(2, PLAYER, 0.2f, 0.1f, TRUE, TRUE);
+	UINT32_EQUALS("interp cap on the slice", 1u, c->interp_cap);
+	UINT32_EQUALS("interp floor on the slice", 1u, c->interp_floor);
+	KTP_ProfileResetInterval();
+	UINT32_EQUALS("interval reset wiped the slice", 7u, c->cmds);
+
+	// A gap wider than the histogram lands in the last bin instead of past it.
+	KTP_NetClientSampleMove(2, PLAYER, a, 3, 0, 101.0);
+	UINT32_EQUALS("gap clamp", 1u, c->arrival_hist[KTP_NET_HIST_N - 1]);
 }

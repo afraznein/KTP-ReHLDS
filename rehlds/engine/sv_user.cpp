@@ -2040,8 +2040,13 @@ void SV_ParseMove(client_t *pSenderClient)
 	// KTP: Counted before the loops below consume net_drop, while lastcmd is
 	// still the previous packet's command -- the one a replay runs.
 	if (ktp_pm_prof)
+	{
 		KTP_NetSampleMove(host_client - g_psvs.clients, host_client->proxy, numcmds, net_drop,
 			numbackup, host_client->lastcmd.msec);
+		// Same clamp KTP_NetSampleDrops applies, so the per-client slice and the session agree.
+		KTP_NetClientSampleMove(host_client - g_psvs.clients, host_client->proxy, cmds, numcmds,
+			(net_drop > 0 && net_drop < 24) ? (uint32)net_drop : 0u, realtime);
+	}
 
 	if (net_drop < 24)
 	{
