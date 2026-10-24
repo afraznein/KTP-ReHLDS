@@ -7890,7 +7890,11 @@ void KTP_NetClientEmitAll(const char *match, const char *half, double now)
 	{
 		client_t *cl = &g_psvs.clients[slot];
 		ktp_net_client_t *c = &g_ktp_net_client[slot];
-		if (cl->active && !cl->proxy && !cl->fakeclient && c->packets)
+		// connected, not active: the match plugin flushes at half end, and by the time the
+		// buffered command runs the level change has already inactivated every client. Gating
+		// on active printed nothing while the reset below still ran -- each half was discarded
+		// (measured 2026-10-24, 1.3-7116-NY1: prelive slices only, half-2 prelive spanning 74 s).
+		if (cl->connected && !cl->proxy && !cl->fakeclient && c->packets)
 		{
 			uint32 msec_max = 0, arr_max = 0, arrivals = 0;
 			for (int i = 0; i < KTP_NET_HIST_N; i++)
