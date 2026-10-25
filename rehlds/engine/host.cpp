@@ -465,6 +465,7 @@ void SV_DropClient_internal(client_t *cl, qboolean crash, const char *string)
 
 	// KTP: before anything below clears the name and the auth id.
 	KTP_NetSessionEmit(cl);
+	KTP_NetClientEmitDisconnect(cl, string, realtime);
 
 	if (!crash)
 	{

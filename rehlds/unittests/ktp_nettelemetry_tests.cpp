@@ -684,3 +684,40 @@ TEST(ClientSliceHistograms, KtpNetTelemetry, 1000)
 	KTP_NetClientSampleMove(2, PLAYER, a, 3, 0, 101.0);
 	UINT32_EQUALS("gap clamp", 1u, c->arrival_hist[KTP_NET_HIST_N - 1]);
 }
+
+
+// A disconnect prints the departing client's slice under the live half's label. The label is
+// the last ktp_net_flush's, and only while fresh: the plugin flushes every 10 s in a live half,
+// so an older label means there is no live half and the slice is filed under "-".
+TEST(FlushLabelGoesStaleOutsideALiveHalf, KtpNetTelemetry, 1000)
+{
+	const char *m, *h;
+	KTP_NetFlushRemember("1792953627-NY1", "1", 100.0);
+	KTP_NetFlushLabel(110.0, &m, &h);
+	CHECK("fresh match label", !strcmp(m, "1792953627-NY1"));
+	CHECK("fresh half label", !strcmp(h, "1"));
+	KTP_NetFlushLabel(100.0 + KTP_NET_LABEL_FRESH_S + 0.5, &m, &h);
+	CHECK("stale match label", !strcmp(m, "-"));
+	CHECK("stale half label", !strcmp(h, "-"));
+	// A match id longer than the buffer is cut, not overrun.
+	KTP_NetFlushRemember("0123456789012345678901234567890123456789012345678901234567890123456789", "prelive", 200.0);
+	KTP_NetFlushLabel(200.0, &m, &h);
+	CHECK("long id truncated", strlen(m) == 63);
+	CHECK("prelive kept", !strcmp(h, "prelive"));
+}
+
+
+// The drop reason rides at the end of the line; a newline or a control byte in a kick message
+// must not split it into a second, unparseable record.
+TEST(DisconnectReasonIsOneLine, KtpNetTelemetry, 1000)
+{
+	char out[32];
+	KTP_NetSanitizeReason("Timed out", out, sizeof(out));
+	CHECK("plain reason kept", !strcmp(out, "Timed out"));
+	KTP_NetSanitizeReason("Kicked\nfake\tline", out, sizeof(out));
+	CHECK("controls replaced", !strcmp(out, "Kicked?fake?line"));
+	KTP_NetSanitizeReason("0123456789012345678901234567890123456789", out, 8);
+	CHECK("truncated to the buffer", !strcmp(out, "0123456"));
+	KTP_NetSanitizeReason(NULL, out, sizeof(out));
+	CHECK("null reason is empty", out[0] == '\0');
+}
