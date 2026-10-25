@@ -7884,9 +7884,64 @@ uint32 KTP_HistPercentile(const uint32 *hist, int n, uint32 total, int pct)
 	return (uint32)(n - 1);
 }
 
+static char g_ktp_net_label_match[64] = "-";
+static char g_ktp_net_label_half[16] = "-";
+static double g_ktp_net_label_at = -1.0e9;
+
+void KTP_NetFlushRemember(const char *match, const char *half, double now)
+{
+	Q_strncpy(g_ktp_net_label_match, match ? match : "-", sizeof(g_ktp_net_label_match) - 1);
+	g_ktp_net_label_match[sizeof(g_ktp_net_label_match) - 1] = '\0';
+	Q_strncpy(g_ktp_net_label_half, half ? half : "-", sizeof(g_ktp_net_label_half) - 1);
+	g_ktp_net_label_half[sizeof(g_ktp_net_label_half) - 1] = '\0';
+	g_ktp_net_label_at = now;
+}
+
+void KTP_NetFlushLabel(double now, const char **match, const char **half)
+{
+	bool fresh = now - g_ktp_net_label_at <= KTP_NET_LABEL_FRESH_S;
+	*match = fresh ? g_ktp_net_label_match : "-";
+	*half = fresh ? g_ktp_net_label_half : "-";
+}
+
 void KTP_NetClientEmitAll(const char *match, const char *half, double now)
 {
 	for (int slot = 0; slot < g_psvs.maxclients; slot++)
+		KTP_NetClientEmitOne(slot, match, half, NULL, now);
+}
+
+// KTP: a disconnect used to lose the slice it interrupted -- the reconnect's KTP_NetClientBegin
+// restarted the slot and nothing printed, so the seconds before a drop, the ones a player who
+// was dropped complains about, never reached the table (measured 2026-10-25: baron's three
+// sessions peaked at 1.1-1.5 s latency, none of it in any slice). Printed here under the label of
+// the live half, or "-" outside one.
+// A session or a slice ending says a connection ended, not why: on 2026-10-25 seven players left
+// NY1 inside 30 s with no drop and no latency spike (the match breaking up), indistinguishable
+// from timeouts without this. The reason is the last field, so it may contain spaces.
+void KTP_NetSanitizeReason(const char *in, char *out, int outlen)
+{
+	int i = 0;
+	for (; in && in[i] && i < outlen - 1; i++)
+		out[i] = (in[i] >= 32 && in[i] < 127) ? in[i] : '?';
+	out[i] = '\0';
+}
+
+void KTP_NetClientEmitDisconnect(client_t *cl, const char *reason, double now)
+{
+	const char *match, *half;
+	char end[96];
+	if (!g_ktp_profiling_enabled || ktp_profile_net.value == 0.0f)
+		return;
+	KTP_NetFlushLabel(now, &match, &half);
+	Q_strcpy(end, "disconnect reason=");
+	KTP_NetSanitizeReason(reason ? reason : "", end + 18, sizeof(end) - 18);
+	KTP_NetClientEmitOne(cl - g_psvs.clients, match, half, end, now);
+}
+
+void KTP_NetClientEmitOne(int slot, const char *match, const char *half, const char *end, double now)
+{
+	if (slot < 0 || slot >= g_psvs.maxclients)
+		return;
 	{
 		client_t *cl = &g_psvs.clients[slot];
 		ktp_net_client_t *c = &g_ktp_net_client[slot];
@@ -7908,7 +7963,7 @@ void KTP_NetClientEmitAll(const char *match, const char *half, double now)
 				}
 			}
 			double span = c->started > 0.0 ? now - c->started : 0.0;
-			Log_Printf("[KTP_PROFILE] net_client: client=%d(%s) steamid=%s match=%s half=%s span=%.0fs pkts=%u cmds=%u drops=%u pps=%.1f cmds_pkt=%.2f msec_p50=%u msec_p95=%u msec_max=%u arr_p50=%u arr_p95=%u arr_max=%u interp_cap=%u interp_floor=%u stale_delta=%u\n",
+			Log_Printf("[KTP_PROFILE] net_client: client=%d(%s) steamid=%s match=%s half=%s span=%.0fs pkts=%u cmds=%u drops=%u pps=%.1f cmds_pkt=%.2f msec_p50=%u msec_p95=%u msec_max=%u arr_p50=%u arr_p95=%u arr_max=%u interp_cap=%u interp_floor=%u stale_delta=%u%s%s\n",
 				slot, cl->name, SV_GetClientIDString(cl), match, half, span,
 				c->packets, c->cmds, c->drops,
 				span > 0.0 ? c->packets / span : 0.0,
@@ -7919,7 +7974,9 @@ void KTP_NetClientEmitAll(const char *match, const char *half, double now)
 				KTP_HistPercentile(c->arrival_hist, KTP_NET_HIST_N, arrivals, 50),
 				KTP_HistPercentile(c->arrival_hist, KTP_NET_HIST_N, arrivals, 95),
 				arr_max,
-				c->interp_cap, c->interp_floor, c->stale_delta);
+				c->interp_cap, c->interp_floor, c->stale_delta,
+				// Appended, never inserted: the aggregator's parser is not end-anchored.
+				end ? " end=" : "", end ? end : "");
 		}
 		// Every slot restarts, populated or not, so the next half never inherits a gap sample.
 		KTP_NetClientBegin(slot, now);
@@ -7932,7 +7989,10 @@ void KTP_NetFlush_f(void)
 	if (!g_ktp_profiling_enabled || ktp_profile_net.value == 0.0f)
 		return;
 
-	KTP_NetClientEmitAll(Cmd_Argc() > 1 ? Cmd_Argv(1) : "-", Cmd_Argc() > 2 ? Cmd_Argv(2) : "-", realtime);
+	const char *match = Cmd_Argc() > 1 ? Cmd_Argv(1) : "-";
+	const char *half = Cmd_Argc() > 2 ? Cmd_Argv(2) : "-";
+	KTP_NetFlushRemember(match, half, realtime);
+	KTP_NetClientEmitAll(match, half, realtime);
 }
 
 // KTP: Helper function to broadcast pause state to clients

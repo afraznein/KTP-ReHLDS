@@ -142,6 +142,18 @@ void KTP_NetClientStaleDelta(int slot, qboolean proxy);
 uint32 KTP_HistPercentile(const uint32 *hist, int n, uint32 total, int pct);
 // Prints one net_client: line per populated human slot, then restarts every slot. match/half are echoed verbatim.
 void KTP_NetClientEmitAll(const char *match, const char *half, double now);
+// One slot's slice, printed and restarted. `end` is appended as `end=<end>` when non-NULL.
+void KTP_NetClientEmitOne(int slot, const char *match, const char *half, const char *end, double now);
+// The match/half the last ktp_net_flush carried, while it is fresh; "-" otherwise. During a live
+// half the plugin flushes every 10 s, so a label older than KTP_NET_LABEL_FRESH_S means no live half.
+#define KTP_NET_LABEL_FRESH_S 15.0
+void KTP_NetFlushLabel(double now, const char **match, const char **half);
+void KTP_NetFlushRemember(const char *match, const char *half, double now);
+// At disconnect: print the departing client's slice under the current label, then restart the slot.
+// `reason` is SV_DropClient's own string ("Timed out", "Client sent 'drop'", a kick message).
+void KTP_NetClientEmitDisconnect(client_t *cl, const char *reason, double now);
+// Copies `in` to `out` with every byte outside printable ASCII made '?', so a reason cannot break the line.
+void KTP_NetSanitizeReason(const char *in, char *out, int outlen);
 
 // Declared rather than file-static so a test can assert the reset list covers
 // every accumulator -- it has drifted from its callers before.
