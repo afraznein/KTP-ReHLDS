@@ -86,9 +86,14 @@ extern ktp_net_session_t g_ktp_net_session[MAX_CLIENTS];
 // a bursty gap is the upload path; a bursty msec is the client hitching.
 // The gap histogram tops out at 255 ms, so the longest gap and the count of
 // stalls are kept beside it: a 1.2 s stall must not read as 255.
+// A third histogram runs the other way: the gap between the client's acks of
+// new server updates. Arrivals measure the upload; a steady arrival gap with a
+// long ack gap means updates stopped reaching the client, and for that long it
+// rendered other players from a stale snapshot (past its interp: extrapolated or held).
 #define KTP_NET_HIST_N 256
 #define KTP_NET_STALL_MS 250
 #define KTP_NET_GAP_MAX_MS 65535	// the aggregator's SMALLINT UNSIGNED
+#define KTP_NET_ACK_LATE_MS 50		// the report's frame-hitch line: a gap a player can see
 typedef struct ktp_net_client_s
 {
 	double started;
@@ -101,8 +106,14 @@ typedef struct ktp_net_client_s
 	uint32 stale_delta;   // delta built from an ack older than the frame ring: the client sees FlushEntityPacket
 	uint32 gap_max_ms;    // longest gap between move packets, exact (capped at KTP_NET_GAP_MAX_MS)
 	uint32 stalls;        // gaps of KTP_NET_STALL_MS or more
+	int ack;              // newest server sequence the client acknowledged
+	double ack_at;        // realtime it first arrived, 0 = none yet
+	uint32 acks;          // ack advances, one per sample in ack_hist
+	uint32 ack_max_ms;    // longest ack gap, exact (capped at KTP_NET_GAP_MAX_MS)
+	uint32 ack_late;      // ack gaps of KTP_NET_ACK_LATE_MS or more
 	uint32 msec_hist[KTP_NET_HIST_N];
 	uint32 arrival_hist[KTP_NET_HIST_N];
+	uint32 ack_hist[KTP_NET_HIST_N];
 } ktp_net_client_t;
 extern ktp_net_client_t g_ktp_net_client[MAX_CLIENTS];
 
@@ -144,6 +155,7 @@ void KTP_NetClientBegin(int slot, double now);
 // cmds[0..numcmds-1] are this packet's new commands; dropped is the clamped count KTP_NetSampleDrops returned.
 void KTP_NetClientSampleMove(int slot, qboolean proxy, const usercmd_t *cmds, int numcmds, uint32 dropped, double now);
 void KTP_NetClientStaleDelta(int slot, qboolean proxy);
+void KTP_NetClientSampleAck(int slot, qboolean proxy, int ack, double now);
 // Smallest bin whose cumulative count reaches pct% of total; 0 when total is 0.
 uint32 KTP_HistPercentile(const uint32 *hist, int n, uint32 total, int pct);
 // Prints one net_client: line per populated human slot, then restarts every slot. match/half are echoed verbatim.

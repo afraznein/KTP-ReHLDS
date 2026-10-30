@@ -701,6 +701,43 @@ TEST(ClientSliceHistograms, KtpNetTelemetry, 1000)
 }
 
 
+// The ack gap is the downstream twin of the arrival gap: first arrival to first arrival of
+// successive new acks. Repeats of an ack (a 250 pps client acks each update ~2.5 times) add nothing.
+TEST(ClientSliceAckGap, KtpNetTelemetry, 1000)
+{
+	ktp_reset_all();
+	KTP_NetClientBegin(4, 100.0);
+	ktp_net_client_t *c = &g_ktp_net_client[4];
+
+	KTP_NetClientSampleAck(4, PLAYER, 500, 100.000);	// baseline, no gap
+	KTP_NetClientSampleAck(4, PLAYER, 500, 100.004);	// repeat
+	KTP_NetClientSampleAck(4, PLAYER, 501, 100.010);	// 10 ms
+	KTP_NetClientSampleAck(4, PLAYER, 501, 100.040);	// repeat: the gap still runs from 100.010
+	KTP_NetClientSampleAck(4, PLAYER, 503, 100.0702);	// 60.2 ms: late
+	UINT32_EQUALS("one sample per advance", 2u, c->acks);
+	UINT32_EQUALS("ack bin 10", 1u, c->ack_hist[10]);
+	UINT32_EQUALS("ack bin 60", 1u, c->ack_hist[60]);
+	UINT32_EQUALS("longest ack gap", 60u, c->ack_max_ms);
+	UINT32_EQUALS("one late ack", 1u, c->ack_late);
+
+	KTP_NetClientSampleAck(4, PLAYER, 504, 100.1192);	// 49 ms: under the late line
+	UINT32_EQUALS("49 ms is not late", 1u, c->ack_late);
+	KTP_NetClientSampleAck(4, PLAYER, 505, 101.5);	// 1.38 s: past the histogram, exact as the max
+	UINT32_EQUALS("ack gap clamp", 1u, c->ack_hist[KTP_NET_HIST_N - 1]);
+	UINT32_EQUALS("longest ack gap is exact", 1381u, c->ack_max_ms);
+	UINT32_EQUALS("ack p50", 49u, KTP_HistPercentile(c->ack_hist, KTP_NET_HIST_N, c->acks, 50));
+
+	KTP_NetClientSampleAck(5, PROXY, 1, 100.0);
+	KTP_NetClientSampleAck(5, PROXY, 2, 100.5);
+	UINT32_EQUALS("proxy reached the ack gap", 0u, g_ktp_net_client[5].acks);
+
+	KTP_NetClientBegin(4, 102.0);
+	UINT32_EQUALS("a new slice clears the acks", 0u, c->acks);
+	KTP_NetClientSampleAck(4, PLAYER, 506, 102.5);
+	UINT32_EQUALS("a new slice re-baselines instead of spanning the flush", 0u, c->acks);
+}
+
+
 // A disconnect prints the departing client's slice under the live half's label. The label is
 // the last ktp_net_flush's, and only while fresh: the plugin flushes every 10 s in a live half,
 // so an older label means there is no live half and the slice is filed under "-".

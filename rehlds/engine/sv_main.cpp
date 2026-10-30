@@ -7864,6 +7864,32 @@ void KTP_NetClientSampleMove(int slot, qboolean proxy, const usercmd_t *cmds, in
 	c->last_move = now;
 }
 
+// Every packet, not only moves: the ack rides each one. The gap runs from first arrival to
+// first arrival of successive new acks, so a client sending 250 pps resolves it to ~4 ms.
+void KTP_NetClientSampleAck(int slot, qboolean proxy, int ack, double now)
+{
+	if (!KTP_NetSlotUsable(slot, proxy))
+		return;
+
+	ktp_net_client_t *c = &g_ktp_net_client[slot];
+	if (c->ack_at > 0.0 && ack == c->ack)
+		return;
+	if (c->ack_at > 0.0)
+	{
+		double gap_ms = (now - c->ack_at) * 1000.0;
+		int bin = gap_ms < 0.0 ? 0 : (gap_ms >= KTP_NET_HIST_N - 1 ? KTP_NET_HIST_N - 1 : (int)(gap_ms + 0.5));
+		++c->ack_hist[bin];
+		++c->acks;
+		uint32 exact = gap_ms < 0.0 ? 0 : (gap_ms >= KTP_NET_GAP_MAX_MS ? KTP_NET_GAP_MAX_MS : (uint32)(gap_ms + 0.5));
+		if (exact > c->ack_max_ms)
+			c->ack_max_ms = exact;
+		if (exact >= KTP_NET_ACK_LATE_MS)
+			++c->ack_late;
+	}
+	c->ack = ack;
+	c->ack_at = now;
+}
+
 void KTP_NetClientStaleDelta(int slot, qboolean proxy)
 {
 	if (!KTP_NetSlotUsable(slot, proxy))
@@ -7964,7 +7990,7 @@ void KTP_NetClientEmitOne(int slot, const char *match, const char *half, const c
 				arrivals += c->arrival_hist[i];
 			}
 			double span = c->started > 0.0 ? now - c->started : 0.0;
-			Log_Printf("[KTP_PROFILE] net_client: client=%d(%s) steamid=%s match=%s half=%s span=%.0fs pkts=%u cmds=%u drops=%u pps=%.1f cmds_pkt=%.2f msec_p50=%u msec_p95=%u msec_max=%u arr_p50=%u arr_p95=%u arr_max=%u interp_cap=%u interp_floor=%u stale_delta=%u stalls=%u%s%s\n",
+			Log_Printf("[KTP_PROFILE] net_client: client=%d(%s) steamid=%s match=%s half=%s span=%.0fs pkts=%u cmds=%u drops=%u pps=%.1f cmds_pkt=%.2f msec_p50=%u msec_p95=%u msec_max=%u arr_p50=%u arr_p95=%u arr_max=%u interp_cap=%u interp_floor=%u stale_delta=%u stalls=%u ack_p50=%u ack_p95=%u ack_p99=%u ack_max=%u ack_late=%u%s%s\n",
 				slot, cl->name, SV_GetClientIDString(cl), match, half, span,
 				c->packets, c->cmds, c->drops,
 				span > 0.0 ? c->packets / span : 0.0,
@@ -7976,8 +8002,12 @@ void KTP_NetClientEmitOne(int slot, const char *match, const char *half, const c
 				KTP_HistPercentile(c->arrival_hist, KTP_NET_HIST_N, arrivals, 95),
 				c->gap_max_ms,	// exact, not the histogram's last bin: a long stall reads as itself
 				c->interp_cap, c->interp_floor, c->stale_delta, c->stalls,
-				// Appended, never inserted: the aggregator's parser is not end-anchored. stalls sits
-				// before end= because reason= is the last field by contract (it may hold spaces).
+				KTP_HistPercentile(c->ack_hist, KTP_NET_HIST_N, c->acks, 50),
+				KTP_HistPercentile(c->ack_hist, KTP_NET_HIST_N, c->acks, 95),
+				KTP_HistPercentile(c->ack_hist, KTP_NET_HIST_N, c->acks, 99),
+				c->ack_max_ms, c->ack_late,
+				// Appended, never inserted: the aggregator's parser is not end-anchored. stalls and
+				// ack_* sit before end= because reason= is the last field by contract (it may hold spaces).
 				end ? " end=" : "", end ? end : "");
 		}
 		// Every slot restarts, populated or not, so the next half never inherits a gap sample.
