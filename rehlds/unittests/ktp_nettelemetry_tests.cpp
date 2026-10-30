@@ -680,9 +680,24 @@ TEST(ClientSliceHistograms, KtpNetTelemetry, 1000)
 	KTP_ProfileResetInterval();
 	UINT32_EQUALS("interval reset wiped the slice", 7u, c->cmds);
 
-	// A gap wider than the histogram lands in the last bin instead of past it.
+	// A gap wider than the histogram lands in the last bin instead of past it, and is still
+	// recorded exactly as the longest gap and counted as a stall.
+	UINT32_EQUALS("longest gap so far", 20u, c->gap_max_ms);
+	UINT32_EQUALS("no stall yet", 0u, c->stalls);
 	KTP_NetClientSampleMove(2, PLAYER, a, 3, 0, 101.0);
 	UINT32_EQUALS("gap clamp", 1u, c->arrival_hist[KTP_NET_HIST_N - 1]);
+	UINT32_EQUALS("longest gap is exact past the histogram", 960u, c->gap_max_ms);
+	UINT32_EQUALS("one stall", 1u, c->stalls);
+	KTP_NetClientSampleMove(2, PLAYER, a, 3, 0, 101.249);	// 249 ms: under the stall line
+	UINT32_EQUALS("249 ms is not a stall", 1u, c->stalls);
+	KTP_NetClientSampleMove(2, PLAYER, a, 3, 0, 101.499);	// 250 ms
+	UINT32_EQUALS("250 ms is a stall", 2u, c->stalls);
+	UINT32_EQUALS("a shorter stall leaves the longest gap", 960u, c->gap_max_ms);
+	KTP_NetClientSampleMove(2, PLAYER, a, 3, 0, 201.5);	// 100 s: capped to the column
+	UINT32_EQUALS("longest gap caps at the column", (uint32)KTP_NET_GAP_MAX_MS, c->gap_max_ms);
+	KTP_NetClientBegin(2, 202.0);
+	UINT32_EQUALS("a new slice clears the longest gap", 0u, c->gap_max_ms);
+	UINT32_EQUALS("a new slice clears the stalls", 0u, c->stalls);
 }
 
 

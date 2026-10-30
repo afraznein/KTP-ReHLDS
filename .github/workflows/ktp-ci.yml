@@ -283,6 +283,10 @@ jobs:
           sudo apt-get install -y cmake gcc-multilib g++-multilib
 
       - name: Build
+        # ubuntu-latest now ships CMake 4, which refuses cmake_minimum_required below 3.5
+        # (every CMakeLists here asks for less); the policy floor keeps the old files building.
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: |
           sed -i 's/\r$//' build.sh rehlds/version/appversion.sh
           chmod +x build.sh rehlds/version/appversion.sh
