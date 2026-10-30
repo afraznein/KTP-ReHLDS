@@ -78,9 +78,34 @@ bool EXT_FUNC KTP_RewindGetCurrent(int slot, ktp_rewind_sample_t *out)
 
 ktp_rewind_api_v1_t g_ktp_rewind_api_v1 = { sizeof(ktp_rewind_api_v1_t), &KTP_RewindGetCurrent };
 
+// truepositions holds both ends: oldorg where the target really is, neworg where this
+// rewind put it. SV_SetupMove zeroes the array on entry, so a target the rewind skipped
+// or never reached reads as not moved, never as a previous packet's shift.
+bool EXT_FUNC KTP_RewindGetTargetShift(int shooter, int target, float *units)
+{
+	if (!units || !g_ktp_rewind.open || g_ktp_rewind.slot != shooter || target < 0 || target >= MAX_CLIENTS)
+		return false;
+
+	const sv_adjusted_positions_t *pos = &truepositions[target];
+	if (!pos->active || !pos->needrelink)
+	{
+		*units = 0.0f;
+		return true;
+	}
+
+	float dx = pos->neworg[0] - pos->oldorg[0];
+	float dy = pos->neworg[1] - pos->oldorg[1];
+	float dz = pos->neworg[2] - pos->oldorg[2];
+	*units = Q_sqrt(dx * dx + dy * dy + dz * dz);
+	return true;
+}
+
+ktp_rewind_shift_api_v1_t g_ktp_rewind_shift_api_v1 = { sizeof(ktp_rewind_shift_api_v1_t), &KTP_RewindGetTargetShift };
+
 void KTP_RewindRegisterApi(void)
 {
 	Rehlds_RegisterPluginApi(KTP_REWIND_API_V1, &g_ktp_rewind_api_v1);
+	Rehlds_RegisterPluginApi(KTP_REWIND_SHIFT_API_V1, &g_ktp_rewind_shift_api_v1);
 }
 
 #if defined(SWDS) && defined(REHLDS_FIXES)
@@ -2300,6 +2325,7 @@ void SV_ExecuteClientMessage(client_t *cl)
 		KTP_NetSamplePacket(cl - g_psvs.clients, cl->proxy, cl->lw, cl->lc,
 			cl->latency, cl->connection_started, ktp_latzero_ok, ktp_subinterval,
 			cl->fully_connected ? FALSE : TRUE);
+		KTP_NetClientSampleAck(cl - g_psvs.clients, cl->proxy, cl->netchan.incoming_acknowledged, realtime);
 	}
 	host_client = cl;
 	sv_player = cl->edict;

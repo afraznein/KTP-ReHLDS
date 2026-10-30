@@ -6,6 +6,7 @@
 #pragma once
 
 #include "ktp_rewind_api.h"
+#include "ktp_rewind_shift_api.h"
 
 typedef struct ktp_rewind_record_s
 {
@@ -17,8 +18,10 @@ typedef struct ktp_rewind_record_s
 
 extern ktp_rewind_record_t g_ktp_rewind;
 extern ktp_rewind_api_v1_t g_ktp_rewind_api_v1;
+extern ktp_rewind_shift_api_v1_t g_ktp_rewind_shift_api_v1;
 
 bool EXT_FUNC KTP_RewindGetCurrent(int slot, ktp_rewind_sample_t *out);
+bool EXT_FUNC KTP_RewindGetTargetShift(int shooter, int target, float *units);
 void KTP_RewindRegisterApi(void);
 
 // rehlds_api_impl.cpp; the plugin-API registry has no header of its own.

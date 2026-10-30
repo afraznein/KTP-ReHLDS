@@ -10,6 +10,24 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ### Added
 
+- **Two measurements of what LAN removes.** In 15 12-mans (78,334 shots) settings changed
+  neither registration (99.97%) nor the rewind's reach. What separates an online match from a
+  LAN is how stale the picture is on each side of a shot, and the engine recorded neither.
+  - **`net_client:` gains `ack_p50/p95/p99`, `ack_max` and `ack_late`.** The time between the
+    client acknowledging successive new server updates, measured on every packet. Arrivals
+    already measure the upload. A steady arrival gap beside a long ack gap means updates
+    stopped reaching the client, and for that long it drew everyone else from a stale
+    snapshot. That is the stutter and teleporting a player sees. `ack_late` counts gaps of
+    50 ms or more, the report's frame-hitch line. The fields are appended before `end=`,
+    because `reason=` stays last.
+  - **New named plugin API `ktp_rewind_shift_v1` (`ktp_rewind_shift_api.h`).**
+    `GetTargetShift(shooter, target, &units)` returns how far the open rewind moved a target
+    from its true origin (`truepositions[].neworg` vs `oldorg`). A consumer stamps it when a
+    trace hits a player. It is the victim's "shot behind the wall", measured per hit. The API
+    gets its own header and name, so the frozen `ktp_rewind_v1` layout is not edited. CI
+    byte-diffs the KTPAMXX mirror the same way, warning (not failing) until KTPAMXX carries
+    the file.
+
 - **`Proxy::FlushDemoBuffer` now says which of its no-write paths it took.** The flush has
   written **zero** frames to every demo the patched proxy has produced since it was deployed,
   on both halves of every match. Measured by differencing each frame's embedded `svc_time`

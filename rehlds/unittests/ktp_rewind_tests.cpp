@@ -236,6 +236,49 @@ TEST(GetCurrentRefusesClosedAndForeign, KtpRewind, 1000)
 	CHECK("api GetCurrent is not the engine's", api->GetCurrent == &KTP_RewindGetCurrent);
 }
 
+TEST(TargetShiftReadsTheOpenRewind, KtpRewind, 1000)
+{
+	KtpRewindFixture f;
+	float units = -1.0f;
+
+	CHECK("a closed record gave a shift", !KTP_RewindGetTargetShift(1, 0, &units));
+
+	// No entities in the fixture's frames: SV_SetupMove zeroed truepositions and moved nobody.
+	f.Setup();
+	CHECK("owner could not read a shift", KTP_RewindGetTargetShift(1, 0, &units));
+	DOUBLES_EQUAL("an unmoved target", 0.0, units, 0.0001);
+
+	// A target the rewind moved: 3-4-12 is 13 units.
+	sv_adjusted_positions_t *pos = &truepositions[0];
+	pos->active = 1;
+	pos->needrelink = 1;
+	pos->oldorg[0] = 100.0f; pos->oldorg[1] = 200.0f; pos->oldorg[2] = 36.0f;
+	pos->neworg[0] = 103.0f; pos->neworg[1] = 204.0f; pos->neworg[2] = 48.0f;
+	CHECK("moved target refused", KTP_RewindGetTargetShift(1, 0, &units));
+	DOUBLES_EQUAL("moved target", 13.0, units, 0.0001);
+
+	// needrelink clear: neworg was filled but equals the present position, nothing moved.
+	pos->needrelink = 0;
+	KTP_RewindGetTargetShift(1, 0, &units);
+	DOUBLES_EQUAL("stored but not moved", 0.0, units, 0.0001);
+	pos->needrelink = 1;
+
+	CHECK("another shooter read the shift", !KTP_RewindGetTargetShift(0, 0, &units));
+	CHECK("a negative target was accepted", !KTP_RewindGetTargetShift(1, -1, &units));
+	CHECK("a target past the slots was accepted", !KTP_RewindGetTargetShift(1, MAX_CLIENTS, &units));
+	CHECK("a NULL out was accepted", !KTP_RewindGetTargetShift(1, 0, NULL));
+
+	SV_RestoreMove(f.cl);
+	CHECK("a closed record gave a shift after restore", !KTP_RewindGetTargetShift(1, 0, &units));
+	Q_memset(truepositions, 0, sizeof(truepositions));
+
+	KTP_RewindRegisterApi();
+	ktp_rewind_shift_api_v1_t *api = (ktp_rewind_shift_api_v1_t *)Rehlds_GetPluginApi(KTP_REWIND_SHIFT_API_V1);
+	CHECK("ktp_rewind_shift_v1 is not registered", api == &g_ktp_rewind_shift_api_v1);
+	UINT32_EQUALS("api size", (uint32)sizeof(ktp_rewind_shift_api_v1_t), api->size);
+	CHECK("api GetTargetShift is not the engine's", api->GetTargetShift == &KTP_RewindGetTargetShift);
+}
+
 TEST(BitsMatchTheirInputs, KtpRewind, 1000)
 {
 	{
