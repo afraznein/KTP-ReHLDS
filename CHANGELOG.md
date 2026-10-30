@@ -599,6 +599,49 @@ interval, and a new connection in a reused slot does not inherit it.
 
 ### Fixed
 
+- **A pusher's own clock ticks at a different rate than its push moves, so a door
+  arrives at its think time off the angle that was planned.** `pev->ltime` is a float
+  that runs for as long as the entity keeps moving or waiting, and `SV_PushMove` /
+  `SV_PushRotate` advance it with `ltime += movetime` while deriving the push itself
+  from the unrounded `movetime`. Past a few hundred seconds the clock cannot hold
+  `ltime + movetime`, and because every step is the same size the loss is not noise —
+  the clock advances by `round(movetime / ulp) * ulp` every frame, a fixed ratio. The
+  game DLL's `AngularMoveDone` then assigns the final angle directly, without pushing
+  anyone, so whatever the swing overshot or undershot is given back as a jump that
+  moves no player.
+
+  `ktp_pusher_clock_quantize 1` quantizes `movetime` to what the clock can represent
+  at its current magnitude before either push call, so the push distance and the clock
+  advance agree. Default `0`; the `0` path is byte-for-byte the previous one.
+
+  The size is set by where `movetime` falls on the clock's resolution, which is why
+  this is a high-frame-rate problem. Simulating the engine's own loop for a 90 degree
+  swing of a 100 deg/s door — every `func_door_rotating` in the live rotation — a 1 ms
+  frame ends **+2.16 degrees** past the planned angle at a clock of 513 s and **-0.63
+  degrees** short of it at 400 s; the sign flips at 512 s because `0.001 / ulp` rounds
+  down above the boundary and up below it. A 10 ms frame at the same clocks stays
+  inside 0.09 degrees, and the quantized path inside 0.01 degrees at both rates.
+
+  ⚠️ **The two-line form of this fix compiles to nothing here.** `float newl = ltime +
+  movetime; movetime = newl - ltime;` returns `movetime` unchanged at `-O2` and above,
+  because the engine is 32-bit with GCC's default `-mfpmath=387`: the sum stays in an
+  80-bit x87 register and the rounding being measured never happens. Measured against
+  `-mfpmath=sse`, which quantizes at every level. The `volatile` store in
+  `KTP_PusherClockStep` is the mechanism, not a style choice — removing it changes the
+  shipped `engine_i486.so` md5 and reds the swing test eight times.
+
+  Blocked pushes were checked: both `SV_PushMove` and `SV_PushRotate` undo with
+  `ltime -= movetime` on the same parameter they were handed, so a blocked door backs
+  the quantized amount out and lands on exactly the clock it started from. The
+  shortened final step, `thinktime - ltime`, is already representable and comes back
+  from the quantizer unchanged, so the clock still lands exactly on `thinktime`.
+  `SV_Physics_Pusher` is the only caller of either push function, so one call site
+  covers sliding and rotating pushers both.
+
+  Applies to every `MOVETYPE_PUSH` entity, not only doors. Untested on a live
+  1000-fps server: `ktp_pusherclock_tests.cpp` pins the arithmetic and a simulation of
+  the physics loop, which is not the same as watching a door.
+
 - **`Con_DebugLog` was an unsynchronized write reachable from the Steam background
   thread on every failed `sendto()`, 34 lines below the comment forbidding exactly
   that.** `sv_steam3.cpp`'s send loop calls `NET_SendPacket`, whose failure path takes

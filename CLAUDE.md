@@ -264,11 +264,33 @@ forces the sphere-intersection check for `SOLID_SLIDEBOX` (player-vs-player) and
 `SOLID_BSP`/`MOVETYPE_PUSH`; `sv_rehlds_hull_centering` only fires on a hull whose mins/maxs sum to
 zero, which DoD's standing hull is not. Both default `0`.
 
-🔑 **The pushers themselves are byte-identical to upstream** (our only `sv_phys.cpp` divergence is KTP
-profiling), and upstream has not functionally touched them since 2017 — so an engine fix is genuinely
-available to us, but it is a fork delta in upstream code and changes core physics for every entity
-every frame. ⚠️ **Carry-the-remainder can push a player THROUGH geometry**, which is worse than the
-bug being fixed.
+🔻 **CORRECTED — the pushers are NO LONGER byte-identical to upstream.** `sv_phys.cpp` now carries
+`ktp_pusher_clock_quantize` (default `0`) beside the KTP profiling, and upstream has not functionally
+touched these functions since 2017. ⚠️ **Carry-the-remainder can still push a player THROUGH
+geometry**, which is worse than the bug being fixed — the clock fix below is not that, and does not
+repay motion lost to `DIST_EPSILON`.
+
+### A pusher's clock ticks at a different rate than its push moves — `ktp_pusher_clock_quantize`
+
+`pev->ltime` is a **float** that runs for as long as the entity keeps moving or waiting, and
+`SV_PushMove` / `SV_PushRotate` advance it with `ltime += movetime` while deriving the push from the
+unrounded `movetime`. Past a few hundred seconds the clock cannot hold `ltime + movetime`, and
+🔑 **because every step is the same size the loss is a fixed RATIO, not noise** — the clock advances
+`round(movetime / ulp) * ulp` each frame. `AngularMoveDone` in the game DLL then assigns the final
+angle directly, pushing nobody, so the overshoot comes back as a jump that moves no player.
+⚠️ **The sign flips at a clock of 512 s** because `0.001 / ulp` is 32.768 below the boundary (rounds
+up, clock runs fast, door stops short) and 16.384 above it (rounds down, clock runs slow, door
+overshoots). Simulating the engine's loop for the live rotation's 90° / 100 deg/s door: a 1 ms frame
+ends **+2.16°** past the plan at 513 s and **−0.63°** short at 400 s, a 10 ms frame stays inside
+0.09° at both, and the quantized path inside 0.01°. ⚠️ **Simulation and unit tests only — never
+watched on a live 1000-fps server.**
+
+⛔ **DO NOT write the fix as the obvious two lines.** `float newl = ltime + movetime;
+movetime = newl - ltime;` returns `movetime` **unchanged** at `-O2` and above: the engine is 32-bit on GCC's default
+`-mfpmath=387`, so the sum stays in an 80-bit x87 register and the rounding being measured never
+happens (measured against `-mfpmath=sse`, which quantizes at every level). 🔑 **The `volatile` store
+in `KTP_PusherClockStep` IS the mechanism** — removing it changes the shipped `engine_i486.so` md5.
+⚠️ **This trap is general: any float-rounding fix in this engine needs a forced store.**
 
 ### Client updates are quantised to whole frames — `cl_updaterate 102` delivers a phase-locked 100/s
 

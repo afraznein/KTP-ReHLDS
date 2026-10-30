@@ -121,6 +121,7 @@ next map change. Writer-side timings land on the `[KTP_PROFILE] io:` line; see
 | `ktp_log_async` | `1` | Async log-file writer; `0` restores the synchronous path (rollback switch) |
 | `ktp_extension_loaded` | `0` | Sentinel — counts extensions loaded from `extensions.ini`. Assert `>= 1` after a restart |
 | `ktp_userinfo_hook` | `1` | `SV_ClientUserInfoChanged` hookchain dispatch; `0` disables it live (rollback switch) |
+| `ktp_pusher_clock_quantize` | `0` | `1` quantizes a pusher's `movetime` to what its float `ltime` can represent, so a door stops on the angle that was planned. Affects every `MOVETYPE_PUSH` entity |
 
 Full detail in `CLAUDE.md` and [CHANGELOG.md](CHANGELOG.md).
 
