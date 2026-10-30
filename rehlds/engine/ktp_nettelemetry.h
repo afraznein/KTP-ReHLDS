@@ -84,7 +84,11 @@ extern ktp_net_session_t g_ktp_net_session[MAX_CLIENTS];
 // client's own frame time (usercmd.msec, one count per command) and the gap
 // between its move packets (one count per packet, ms, capped). Steady msec with
 // a bursty gap is the upload path; a bursty msec is the client hitching.
+// The gap histogram tops out at 255 ms, so the longest gap and the count of
+// stalls are kept beside it: a 1.2 s stall must not read as 255.
 #define KTP_NET_HIST_N 256
+#define KTP_NET_STALL_MS 250
+#define KTP_NET_GAP_MAX_MS 65535	// the aggregator's SMALLINT UNSIGNED
 typedef struct ktp_net_client_s
 {
 	double started;
@@ -95,6 +99,8 @@ typedef struct ktp_net_client_s
 	uint32 interp_cap;
 	uint32 interp_floor;
 	uint32 stale_delta;   // delta built from an ack older than the frame ring: the client sees FlushEntityPacket
+	uint32 gap_max_ms;    // longest gap between move packets, exact (capped at KTP_NET_GAP_MAX_MS)
+	uint32 stalls;        // gaps of KTP_NET_STALL_MS or more
 	uint32 msec_hist[KTP_NET_HIST_N];
 	uint32 arrival_hist[KTP_NET_HIST_N];
 } ktp_net_client_t;

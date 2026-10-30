@@ -7855,6 +7855,11 @@ void KTP_NetClientSampleMove(int slot, qboolean proxy, const usercmd_t *cmds, in
 		double gap_ms = (now - c->last_move) * 1000.0;
 		int bin = gap_ms < 0.0 ? 0 : (gap_ms >= KTP_NET_HIST_N - 1 ? KTP_NET_HIST_N - 1 : (int)(gap_ms + 0.5));
 		++c->arrival_hist[bin];
+		uint32 exact = gap_ms < 0.0 ? 0 : (gap_ms >= KTP_NET_GAP_MAX_MS ? KTP_NET_GAP_MAX_MS : (uint32)(gap_ms + 0.5));
+		if (exact > c->gap_max_ms)
+			c->gap_max_ms = exact;
+		if (exact >= KTP_NET_STALL_MS)
+			++c->stalls;
 	}
 	c->last_move = now;
 }
@@ -7951,19 +7956,15 @@ void KTP_NetClientEmitOne(int slot, const char *match, const char *half, const c
 		// (measured 2026-10-24, 1.3-7116-NY1: prelive slices only, half-2 prelive spanning 74 s).
 		if (cl->connected && !cl->proxy && !cl->fakeclient && c->packets)
 		{
-			uint32 msec_max = 0, arr_max = 0, arrivals = 0;
+			uint32 msec_max = 0, arrivals = 0;
 			for (int i = 0; i < KTP_NET_HIST_N; i++)
 			{
 				if (c->msec_hist[i])
 					msec_max = i;
-				if (c->arrival_hist[i])
-				{
-					arr_max = i;
-					arrivals += c->arrival_hist[i];
-				}
+				arrivals += c->arrival_hist[i];
 			}
 			double span = c->started > 0.0 ? now - c->started : 0.0;
-			Log_Printf("[KTP_PROFILE] net_client: client=%d(%s) steamid=%s match=%s half=%s span=%.0fs pkts=%u cmds=%u drops=%u pps=%.1f cmds_pkt=%.2f msec_p50=%u msec_p95=%u msec_max=%u arr_p50=%u arr_p95=%u arr_max=%u interp_cap=%u interp_floor=%u stale_delta=%u%s%s\n",
+			Log_Printf("[KTP_PROFILE] net_client: client=%d(%s) steamid=%s match=%s half=%s span=%.0fs pkts=%u cmds=%u drops=%u pps=%.1f cmds_pkt=%.2f msec_p50=%u msec_p95=%u msec_max=%u arr_p50=%u arr_p95=%u arr_max=%u interp_cap=%u interp_floor=%u stale_delta=%u stalls=%u%s%s\n",
 				slot, cl->name, SV_GetClientIDString(cl), match, half, span,
 				c->packets, c->cmds, c->drops,
 				span > 0.0 ? c->packets / span : 0.0,
@@ -7973,9 +7974,10 @@ void KTP_NetClientEmitOne(int slot, const char *match, const char *half, const c
 				msec_max,
 				KTP_HistPercentile(c->arrival_hist, KTP_NET_HIST_N, arrivals, 50),
 				KTP_HistPercentile(c->arrival_hist, KTP_NET_HIST_N, arrivals, 95),
-				arr_max,
-				c->interp_cap, c->interp_floor, c->stale_delta,
-				// Appended, never inserted: the aggregator's parser is not end-anchored.
+				c->gap_max_ms,	// exact, not the histogram's last bin: a long stall reads as itself
+				c->interp_cap, c->interp_floor, c->stale_delta, c->stalls,
+				// Appended, never inserted: the aggregator's parser is not end-anchored. stalls sits
+				// before end= because reason= is the last field by contract (it may hold spaces).
 				end ? " end=" : "", end ? end : "");
 		}
 		// Every slot restarts, populated or not, so the next half never inherits a gap sample.
