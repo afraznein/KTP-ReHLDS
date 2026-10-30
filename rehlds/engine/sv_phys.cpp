@@ -53,6 +53,24 @@ cvar_t sv_stepsize = { "sv_stepsize", "18", FCVAR_SERVER, 0.0f, NULL };
 cvar_t sv_friction = { "sv_friction", "4", FCVAR_SERVER, 0.0f, NULL };
 cvar_t sv_stopspeed = { "sv_stopspeed", "100", FCVAR_SERVER, 0.0f, NULL };
 
+cvar_t ktp_pusher_clock_quantize = { "ktp_pusher_clock_quantize", "0", 0, 0.0f, NULL };
+
+// A pusher keeps its own float clock, so past a few hundred seconds that clock
+// cannot hold ltime + movetime: it then ticks at a different rate than the push
+// moves, and the entity arrives at its think time off the angle that was planned.
+float KTP_PusherClockStep(float ltime, float movetime)
+{
+	// volatile is the whole mechanism: this target evaluates float math on the x87
+	// stack, so without a store the sum keeps 80-bit precision and the difference
+	// comes back as movetime unchanged.
+	volatile float advanced = ltime + movetime;
+	float step = advanced - ltime;
+
+	// A step under half the clock's resolution quantizes to nothing, and the
+	// entity would then never reach its think time at all.
+	return (step != 0.0f) ? step : movetime;
+}
+
 NOXREF void SV_CheckAllEnts()
 {
 	NOXREFCHECK;
@@ -857,6 +875,9 @@ void SV_Physics_Pusher(edict_t *ent)
 
 	if (movetime)
 	{
+		if (ktp_pusher_clock_quantize.value != 0.0f)
+			movetime = KTP_PusherClockStep(ent->v.ltime, movetime);
+
 		if (!VectorIsZero(ent->v.avelocity))
 		{
 			if (!VectorIsZero(ent->v.velocity))

@@ -38,6 +38,7 @@ extern cvar_t sv_bounce;
 extern cvar_t sv_stepsize;
 extern cvar_t sv_friction;
 extern cvar_t sv_stopspeed;
+extern cvar_t ktp_pusher_clock_quantize;
 
 extern vec3_t *g_moved_from;
 extern edict_t **g_moved_edict;
@@ -54,6 +55,7 @@ NOXREF void SV_FixupGravityVelocity(edict_t *ent);
 trace_t SV_PushEntity(edict_t *ent, vec_t *push);
 void SV_PushMove(edict_t *pusher, float movetime);
 qboolean SV_PushRotate(edict_t *pusher, float movetime);
+float KTP_PusherClockStep(float ltime, float movetime);
 void SV_Physics_Pusher(edict_t *ent);
 qboolean SV_CheckWater(edict_t *ent);
 float SV_RecursiveWaterLevel(const vec_t *origin, float mins, float maxs, int depth);

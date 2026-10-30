@@ -196,6 +196,7 @@ set(UNITTESTS_SRCS
 	unittests/delta_tests.cpp
 	unittests/info_tests.cpp
 	unittests/ktp_nettelemetry_tests.cpp
+	unittests/ktp_pusherclock_tests.cpp
 	unittests/ktp_pushtelemetry_tests.cpp
 	unittests/ktp_rewind_tests.cpp
 	unittests/ktp_steadyping_tests.cpp
