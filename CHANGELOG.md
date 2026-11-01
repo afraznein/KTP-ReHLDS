@@ -693,6 +693,10 @@ interval, and a new connection in a reused slot does not inherit it.
   Observable behaviour is unchanged: same call, same handle semantics, same per-line
   flush, so a tail-based reader still sees lines immediately.
 
+  ⚠ For a line the GAME thread prints. An off-thread one is now refused and counted
+  rather than taking `FS_Open` itself, so a `qconsole.log` line count is not comparable
+  across this cut — fewer lines after it, and interleaved ones before.
+
   The off-thread guarantee holds for a background thread joined before the filesystem
   is released. `Steam_Shutdown()` runs only via `Host_ShutdownServer`, which
   early-returns while `g_psv.active` is false, so a teardown in the window between
