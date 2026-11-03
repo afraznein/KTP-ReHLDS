@@ -599,6 +599,27 @@ interval, and a new connection in a reused slot does not inherit it.
 
 ### Fixed
 
+- **The command-rate average check reads the *burst* cvar to decide whether it is
+  switched off, so neither `max_avg` cvar can disable the check it names and either
+  `max_burst` cvar silently disables two checks instead of one.**
+  `CMoveCommandRateLimiter::CheckAverageRate` and
+  `CStringCommandsRateLimiter::CheckAverageRate` both guarded on
+  `..._max_burst.value <= 0.0f` while comparing against `..._max_avg.value`. The
+  burst halves guard on their own cvar, so `<= 0` disabling a check is the
+  established convention here; the average halves were reading the wrong one.
+
+  Both directions matter and both are reachable from a plain config edit. Setting
+  `sv_rehlds_movecmdrate_max_avg 0` to switch the average limiter off left it armed
+  and comparing every client's rate against zero, so each active client exceeded the
+  limit at the next half-second tick and was kicked or auto-banned — the whole server
+  emptied. Setting `sv_rehlds_movecmdrate_max_burst 0` to drop only the burst check
+  also disarmed the average one, leaving no command-rate protection while the average
+  cvar still read as a live limit. The string-command limiter had the same pair.
+
+  Each guard now reads the cvar whose threshold the function enforces. No behaviour
+  changes while both cvars are positive, which is every configuration that was not
+  already hitting one of the two faults.
+
 - **A pusher's own clock ticks at a different rate than its push moves, so a door
   arrives at its think time off the angle that was planned.** `pev->ltime` is a float
   that runs for as long as the entity keeps moving or waiting, and `SV_PushMove` /

@@ -76,10 +76,10 @@ void CMoveCommandRateLimiter::CheckBurstRate(unsigned int clientId) {
 
 void CMoveCommandRateLimiter::CheckAverageRate(unsigned int clientId) {
 	client_t* cl = &g_psvs.clients[clientId];
-	if (!cl->active || sv_rehlds_movecmdrate_max_burst.value <= 0.0f) {
+	if (!cl->active || sv_rehlds_movecmdrate_max_avg.value <= 0.0f) {
 		return;
 	}
-	
+
 	if (m_AverageMoveCmdRate[clientId] > sv_rehlds_movecmdrate_max_avg.value) {
 		if(sv_rehlds_movecmdrate_avg_punish.value < 0) {
 			Con_DPrintf("%s Kicked for move commands flooding (Avg) (%.1f)\n", cl->name, m_AverageMoveCmdRate[clientId]);
@@ -157,7 +157,7 @@ void CStringCommandsRateLimiter::CheckBurstRate(unsigned int clientId) {
 
 void CStringCommandsRateLimiter::CheckAverageRate(unsigned int clientId) {
 	client_t* cl = &g_psvs.clients[clientId];
-	if (!cl->active || sv_rehlds_stringcmdrate_max_burst.value <= 0.0f) {
+	if (!cl->active || sv_rehlds_stringcmdrate_max_avg.value <= 0.0f) {
 		return;
 	}
 
