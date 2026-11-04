@@ -63,6 +63,14 @@ restart. The script refuses to emit an artifact that would.
 - `build/` - Build output (gitignored)
 - `msvc/` - Visual Studio project files
 
+⚠️ **This repo mixes line endings within itself, so normalise nothing on the way past.**
+`rehlds/engine/sv_phys.cpp` and `sv_phys.h` are CRLF throughout, while `sv_main.cpp`,
+`ktp_pushtelemetry.h`, `CHANGELOG.md` and this file are LF. An LF-normalising write to either
+`sv_phys` file rewrites every line, which buries the actual change in a whole-file diff and makes
+the review worthless. ➡️ **Derive the ending per file before editing** (`git show origin/main:<path> |
+tr -dc '\r' | wc -c` against the file's line count), and keep an edit a pure insertion — removing
+the added lines must return the original bytes.
+
 ## Purpose
 Custom ReHLDS (reverse-engineered HLDS) with extension loader. This is the game engine layer that:
 - Loads KTPAMXX as a ReHLDS extension (no Metamod required)
@@ -291,6 +299,72 @@ movetime = newl - ltime;` returns `movetime` **unchanged** at `-O2` and above: t
 happens (measured against `-mfpmath=sse`, which quantizes at every level). 🔑 **The `volatile` store
 in `KTP_PusherClockStep` IS the mechanism** — removing it changes the shipped `engine_i486.so` md5.
 ⚠️ **This trap is general: any float-rounding fix in this engine needs a forced store.**
+
+⛔ **And do not add the floor the function looks like it is missing.** When a step falls below half
+the clock's resolution the quantize would yield zero, and `KTP_PusherClockStep` hands back the raw
+`movetime` instead — it degrades to upstream rather than preventing both branches, deliberately.
+🔑 **One return value is both the clock advance and the push distance, so no single number serves
+both:** at the threshold one ulp of the clock is 0.00390625 s against a 0.001 s frame, so a floor at
+one ulp would run the clock and the push nearly four times fast — a new defect in the exact regime
+the fix exists for. ✅ **The branch is unreachable in practice anyway**: it needs one entity's own
+clock past 2^15 s at 1000 fps, which that clock only accrues while its door moves or waits, and it
+resets at every map load. ⚠️ **The "door freezes with no pending think" reading belongs to the
+two-liner above, not to this code** — `if (movetime)` is evaluated *before* the quantize.
+
+### A sliding door repays clock drift with a traced move and a rotating door does not
+
+🔑 **This is a second, independent reason the pusher clock only shows up on rotating doors**, and it
+is in the game DLL rather than here, so it is explanation and not a change we can make. The SDK's
+`CBaseToggle::LinearMoveDone` measures the residual to its final destination and, above `0.03125` —
+the same 1/32 unit as `DIST_EPSILON` — **re-issues the move**, which runs back through the pusher and
+therefore traces, pushes and can block. `AngularMoveDone` has no such check: it assigns
+`m_vecFinalAngle` and returns. ➡️ **So a linear pusher pays its drift back with a real traced move
+while a rotating one pays it with an untraced snap that pushes nobody.** ⚠️ **Read this with the
+38-rotating-to-1 locus above rather than instead of it** — the clock bug applies to every
+`MOVETYPE_PUSH` entity, and the map content and this asymmetry both point the same way for different
+reasons. ⛔ `KTPhlsdk` is what modules are built *against*, not the source of the shipped
+`dod_i386.so`, so there is no patch to make on this leg.
+
+### `FCVAR_ARCHIVE` is a complete no-op on this binary — persistence means `dodserver.cfg`
+
+🔴 **A new cvar that needs to survive a `changelevel` cannot get there with a flag.** `FCVAR_ARCHIVE`
+is read in exactly one place, `Cvar_WriteVariables`, which is `NOXREF`; both of its callers sit
+inside `#ifndef SWDS` and the second also returns early on `g_pcls.state == ca_dedicated` — and
+`SWDS` is a compile definition of the engine target in `rehlds/CMakeLists.txt`. ⛔ **So setting it
+advertises persistence that does not exist**, which is worse than leaving it off. `FCVAR_SPONLY` is
+tested against the client state and is decoration in a dedicated build.
+✅ **`FCVAR_SERVER` is the only flag with a live effect here**, and it buys something real for
+anything whose output is log lines: `Log_PrintServerVars` dumps the value in every log file's server
+cvar block and `Cvar_DirectSet` logs each change, so the arm state of a measurement is in the match
+log rather than inferred. ⚠️ **It also broadcasts the change to players; `FCVAR_UNLOGGED` suppresses
+the broadcast and the log line in the same branch, so the quiet option is also the blind one.**
+➡️ **Persist it in `dodserver.cfg` — an rcon set dies at the next map change**, because a
+`changelevel` re-execs that file.
+
+### Is a player left inside a door the engine never saw? — `ktp_pusher_contain_report`
+
+A block is already instrumented, but that path runs only for contacts the hull test **selected and
+pushed**, and a detected block reverts both the player and the pusher — so it cannot reach the
+reported case, where a door finishes its swing, parks, and a player is inside it with nothing logged.
+`ktp_pusher_contain_report 1` (default `0`, `FCVAR_SERVER`, and it also needs `ktp_profile_frame 1`
+since the interval record is the only reader) clips every connected client hull against **that pusher
+alone**; a `startsolid` is a containment. 🔑 **Read-only in a way that matters:**
+`SV_ClipMoveToEntity` returns its trace by value, so unlike `SV_TestEntityPosition` it never calls
+`SV_SetGlobalTrace` and cannot disturb the global trace the game DLL reads.
+
+```
+[KTP_PROFILE] contain: armed=1 stops=42 tests=168 hits=2 unblocked=2 blind=0 clients=1
+```
+
+⚠️ **Three reading rules, and the first is why the record carries fields that look redundant.**
+🔑 **`armed=` and `stops=` are what make a zero readable** — `hits=0` otherwise reads identically
+whether the probe found nothing, was never armed, or ran through an interval in which no pusher
+stopped at all. **`unblocked=` is the subset with no block on record for that pusher this interval**,
+which is the population a nudge inside the push path could never reach. ⛔ **`blind=` counts
+`unblocked` hits taken after the tracking table had already overflowed, where *no block on record*
+may be the table rather than the engine** — so `unblocked` is only trustworthy while `blind=0`.
+⚠️ **It samples the STOPPING EDGE only:** a door held open, or a player walking into a door that is
+already parked, is never tested, so this bounds the question rather than answering it in general.
 
 ### Client updates are quantised to whole frames — `cl_updaterate 102` delivers a phase-locked 100/s
 
