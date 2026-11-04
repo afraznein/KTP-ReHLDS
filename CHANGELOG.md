@@ -532,6 +532,48 @@ character**, so the silence was unfalsifiable. `LagcompMaskPredicate` now pins i
 `lw=0` and `lc=0` each raise the bit, `1/1` does not, the bit is sticky across the
 interval, and a new connection in a reused slot does not inherit it.
 
+### Verified — a multi-second client stall is the norm, the flood kick is its consequence, and "Atlanta-only" is refuted
+
+Two live player reports closed as negative findings on 2026-11-03. **Nothing in the engine
+changes.** Both are recorded because the obvious next step for either is a measurement that cannot
+be made; the durable halves are in `CLAUDE.md`.
+
+**Stalls are the ordinary case, not the symptom.** Across **1,050** per-client disconnect summaries
+from non-kicked clients on the same hosts, the p95 of each client's worst move-packet gap ran
+**2.9-3.8 s** by host while the servers held **~999 fps**. A reported 1-2 s freeze is inside that
+distribution, and the server was not behind during it.
+
+**The single flood kick in the retained window pairs with one of those summaries, and the pairing is
+what settles the direction.** Atlanta 27015, 2026-11-01 15:09:10: an ordinary client at ~91 packets
+a second and exactly one command per packet, an **18,765 ms** longest move-packet gap, kicked when
+the packet that ended the gap arrived. ✅ **Control: the worst gap among all 1,050 non-kicked
+summaries was 14,475 ms** — the kicked client's gap exceeds every one of them, so a long gap is not
+a property the kicked and the un-kicked share. ✅ `gap_max_ms` caps at 65,535 ms, so neither figure
+is a saturation.
+
+🔑 **The direction comes from the code rather than the correlation.** `SV_ParseMove` hands the
+limiter `numcmds + net_drop` and `net_drop` is the sequence gap, so the stall is itself the thing
+that exceeds the ceiling. The freeze is primary and the kick is downstream of it. There is no flood,
+and no queue of commands anywhere to look for.
+
+⛔ **Both `*_punish` values reading `-1` is a config property, not an engine default.** All four
+default to `5` minutes in `rehlds_security.cpp`, where `< 0` selects the kick branch and `>= 0`
+auto-bans; the `-1` comes from `dodserver.cfg`. Since `3.22.0.930` the ban branch is no longer a
+silent no-op, so that is a live prerequisite rather than a historical note.
+
+⛔ **Two measurements that look available and are not.** The limiter's measured rate is printed only
+by `Con_DPrintf`, which needs `developer != 0`, and `developer` is `0` on all 24 — the log keeps the
+drop reason and not the rate. And console retention floors at **2026-10-13** fleet-wide, so the
+reported 2026-09-12/13 onset window cannot be read, now or later.
+
+**"Atlanta-only" is refuted for the second time, and on a different window than the first.**
+Timeouts as a share of all client drops over 2026-10-13 to 2026-11-03: Dallas **7.47%**, Atlanta
+**5.51%**, Chicago **5.45%**, New York **4.69%**, Denver **2.99%**; Atlanta against the rest of the
+fleet **4.84%**, and the lowest of the three busy regions on overflow per session. ⚠️ A raw timeout
+count tracks how much a region is played and will always name the busiest one, which is the shape
+the original claim had. A separately root-caused crash in the same period — a map distributed
+without its models — does not cover the reporter's dates and is not its explanation.
+
 ### Changed
 
 - **`REHLDS_API_VERSION_MINOR` 15 → 16 — the fork's vtable has never matched the
