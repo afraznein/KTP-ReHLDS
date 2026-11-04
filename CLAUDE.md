@@ -472,6 +472,42 @@ original claim had.
 its models — and it does NOT explain this report:** its dates do not cover the reporter's
 2026-10-04/10-15. ➡️ Two findings in one window; do not collapse them into one.
 
+### Player movement and step sounds are NOT in this repo — `pm_shared/` is headers only
+
+`rehlds/pm_shared/` ships the GoldSrc movement headers and none of the implementation.
+`PM_PlayStepSound`, `PM_UpdateStepSound`, `PM_CheckParamters`, `velwalk` and `velrun` resolve
+nowhere in this tree, while `.cpp` files are everywhere else in it — so the grep is not blind, the
+code is genuinely absent. DoD owns it inside its own `dod/cl_dlls/client.so` and `dod/dlls/dod.so`,
+reached through a function pointer, and **this engine never references a `cl_*` cvar at all**
+(`git grep -c cl_upspeed origin/main` against an `sv_maxspeed` control).
+
+⛔ **So a movement, speed or footstep question cannot be answered from this tree, and the wrong
+answer it gives looks exactly like a fact.** Readings have been drafted off "our tree says X" and
+been wrong twice: the constants in our SDK copy are not the constants DoD ships.
+
+✅ **Read it on the fleet instead, and that is not a workaround — it is better evidence.** Both
+binaries are shipped **unstripped with DWARF** (`file` says `with debug_info, not stripped`), their
+compilation units include DoD's own `../dod/pm_shared/pm_shared.c`, and `objdump` / `readelf` / `nm`
+/ `gdb` are all present on the game hosts. So `gdb -batch -ex 'info line <symbol>'` gives DoD
+movement and sound behaviour real `file:line` provenance, and an out-of-range line is refused rather
+than answered — which is the control that makes the rest of it trustworthy.
+
+⚠️ **Two instrument traps, both of which returned a clean convincing zero:**
+- **`nm` undercounts.** A static function has no symbol entry, so it scores 0 while being present
+  and called. Resolve by **relocation name**, not by `nm` and not by absolute address — an
+  address grep of a disassembly also returned 0 for a symbol that was certainly there, and only
+  its control caught that.
+- **`strings` on an `.amxx` is blind** (AMX stores one character per 32-bit cell), so it is no way
+  to establish what a plugin enforces. On an ELF `.so` it is fine.
+
+What this engine *does* decide is that it trusts the client's move magnitudes verbatim. `SV_RunCmd`
+copies the usercmd straight into `pmove->cmd` (`rehlds/engine/sv_user.cpp`), and the only place the
+move axes are zeroed is the paused / `FL_FROZEN` branch. ⚠️ **`sv_maxspeed` and DoD's own parameter
+check are UPPER clamps — they scale a command down when it is too fast and leave it alone
+otherwise, so nothing anywhere bounds a player who moves slower than normal.** A rationale of the
+form "server-side maxspeed covers it" does not cover the slow case; it has been relied on once in
+this estate and was wrong at source.
+
 ### Extension Mode Hooks (KTPAMXX/DODX)
 | Hook | Purpose |
 |------|---------|
