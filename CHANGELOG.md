@@ -625,6 +625,42 @@ count tracks how much a region is played and will always name the busiest one, w
 the original claim had. A separately root-caused crash in the same period — a map distributed
 without its models — does not cover the reporter's dates and is not its explanation.
 
+### Documentation — four facts the pusher work paid for that only the PR bodies held
+
+**Nothing in the engine changes.** All four were measured while building
+`ktp_pusher_clock_quantize` and `ktp_pusher_contain_report`; each one is a conclusion a later reader
+of this code would get wrong by default, and each lived only in a PR body or a merged diff. The
+durable halves are now in `CLAUDE.md`.
+
+**`FCVAR_ARCHIVE` cannot persist a cvar in this binary, and reaching for it is the obvious move.**
+It is read in exactly one place — `Cvar_WriteVariables`, which is `NOXREF` — and both callers are
+inside `#ifndef SWDS`, the second also returning early on `g_pcls.state == ca_dedicated`, while
+`SWDS` is a compile definition of the engine target. Setting it advertises persistence that does not
+exist. `FCVAR_SERVER` is the only flag with a live effect here; persistence is `dodserver.cfg`,
+because a `changelevel` re-execs it and discards an rcon set.
+
+**`KTP_PusherClockStep` has no floor on purpose, and adding the obvious one is a regression.** One
+return value is both the clock advance and the push distance, so no single number serves both: at
+the threshold one ulp of the clock is `0.00390625 s` against a `0.001 s` frame, so a floor at one ulp
+would run the clock and the push nearly four times fast, in the exact regime the quantize protects.
+Handing back the raw `movetime` degrades to upstream behaviour instead, which for a cvar-gated change
+is the safe direction. The branch needs one entity's own clock past `2^15 s` at 1000 fps, and that
+clock advances only while its entity moves or waits and resets at every map load.
+
+**A linear pusher repays clock drift with a traced move and a rotating one does not.** The SDK's
+`CBaseToggle::LinearMoveDone` measures the residual and, above `0.03125` — the same 1/32 unit as
+`DIST_EPSILON` — re-issues the move, which runs back through the pusher and therefore traces, pushes
+and can block; `AngularMoveDone` assigns `m_vecFinalAngle` and returns. So the clock bug applies to
+every `MOVETYPE_PUSH` entity while its visible consequence is structurally confined to rotating
+ones — an independent reason for the same locus the map content already pointed at. No patch is
+available on this leg: `KTPhlsdk` is what modules are built against, not the source of the shipped
+game library.
+
+**This repo mixes line endings within itself.** `rehlds/engine/sv_phys.cpp` and `sv_phys.h` are CRLF
+throughout; `sv_main.cpp`, `ktp_pushtelemetry.h`, this file and `CLAUDE.md` are LF. An
+LF-normalising write to either `sv_phys` file rewrites every line and buries the change it was
+making — which is a live hazard, since the pusher work lives in exactly those two files.
+
 ### Changed
 
 - **`REHLDS_API_VERSION_MINOR` 15 → 16 — the fork's vtable has never matched the
