@@ -54,6 +54,10 @@ cvar_t sv_friction = { "sv_friction", "4", FCVAR_SERVER, 0.0f, NULL };
 cvar_t sv_stopspeed = { "sv_stopspeed", "100", FCVAR_SERVER, 0.0f, NULL };
 
 cvar_t ktp_pusher_clock_quantize = { "ktp_pusher_clock_quantize", "0", 0, 0.0f, NULL };
+// FCVAR_SERVER is the only flag with an effect in a SWDS build, and it is the one
+// that puts the arm state in the match log -- without it a quiet record cannot be
+// told from a record nobody armed.
+cvar_t ktp_pusher_contain_report = { "ktp_pusher_contain_report", "0", FCVAR_SERVER, 0.0f, NULL };
 
 // A pusher keeps its own float clock, so past a few hundred seconds that clock
 // cannot hold ltime + movetime: it then ticks at a different rate than the push
@@ -66,8 +70,9 @@ float KTP_PusherClockStep(float ltime, float movetime)
 	volatile float advanced = ltime + movetime;
 	float step = advanced - ltime;
 
-	// A step under half the clock's resolution quantizes to nothing, and the
-	// entity would then never reach its think time at all.
+	// A step under half the clock's resolution quantizes to nothing, and the entity
+	// would then never reach its think time. One return value feeds both the clock
+	// and the push distance, so no floor serves both: hand back the unfixed value.
 	return (step != 0.0f) ? step : movetime;
 }
 
@@ -567,6 +572,78 @@ int KTP_PushVictimSlot(int flags, int entindex)
 	return (slot >= 0 && slot < MAX_CLIENTS) ? slot : -1;
 }
 
+// KTP: [KTP_PROFILE] contain: accumulators. Game thread only; reset in KTP_ProfileResetInterval.
+uint32 g_ktp_contain_stops = 0;
+uint32 g_ktp_contain_tests = 0;
+uint32 g_ktp_contain_hits = 0;
+uint32 g_ktp_contain_unblocked = 0;
+uint32 g_ktp_contain_blind = 0;
+uint32 g_ktp_contain_slot[MAX_CLIENTS];
+int g_ktp_contain_last_ent = -1;
+int g_ktp_contain_last_spawn = 0;
+
+qboolean KTP_PusherBlockedThisInterval(int pusher, int spawn)
+{
+	for (int i = 0; i < g_ktp_push_track_n; i++)
+	{
+		if (g_ktp_push_track[i].pusher == pusher && g_ktp_push_track[i].spawn == spawn)
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+void KTP_PusherContainSample(edict_t *pusher)
+{
+	++g_ktp_contain_stops;
+
+	// SV_HullForBsp is fatal on a SOLID_BSP entity whose model is not a brush, and a
+	// report-only probe must not add a path that can kill the server.
+	if (pusher->v.solid != SOLID_BSP || Mod_GetType(pusher->v.modelindex) != mod_brush)
+		return;
+
+	int pusher_ent = NUM_FOR_EDICT(pusher);
+	qboolean blocked = KTP_PusherBlockedThisInterval(pusher_ent, g_psvs.spawncount);
+
+	for (int i = 0; i < g_psvs.maxclients; i++)
+	{
+		client_t *cl = &g_psvs.clients[i];
+		if (!cl->active || cl->fakeclient || !cl->edict || cl->edict->free)
+			continue;
+
+		edict_t *ent = cl->edict;
+		if (ent->v.solid == SOLID_NOT || (ent->v.flags & FL_PROXY))
+			continue;
+
+		// A dead player's hull is a point, which no brush ever contains.
+		if (ent->v.mins[0] == ent->v.maxs[0])
+			continue;
+
+		++g_ktp_contain_tests;
+
+		// Clipped against this pusher alone: the question is whether the hull is in
+		// THIS brush, not whether the player is stuck in the map.
+		trace_t tr = SV_ClipMoveToEntity(pusher, ent->v.origin, ent->v.mins, ent->v.maxs, ent->v.origin);
+		if (!tr.startsolid)
+			continue;
+
+		++g_ktp_contain_hits;
+		++g_ktp_contain_slot[i];
+		g_ktp_contain_last_ent = pusher_ent;
+		g_ktp_contain_last_spawn = g_psvs.spawncount;
+
+		if (blocked)
+			continue;
+
+		++g_ktp_contain_unblocked;
+
+		// The track table drops pushers once it is full, so "no block on record" is
+		// only as good as the table: count the hits taken after it overflowed.
+		if (g_ktp_push_untracked)
+			++g_ktp_contain_blind;
+	}
+}
+
 void SV_PushMove(edict_t *pusher, float movetime)
 {
 	if (VectorIsZero(pusher->v.velocity))
@@ -860,6 +937,10 @@ void SV_Physics_Pusher(edict_t *ent)
 	float thinktime = ent->v.nextthink;
 	float oldltime = ent->v.ltime;
 	float movetime;
+	// Cvar first: the disabled path must not pay for two VectorIsZero per pusher per frame.
+	const qboolean ktp_contain = (ktp_pusher_contain_report.value != 0.0f && g_ktp_profiling_enabled) ? TRUE : FALSE;
+	const qboolean ktp_wasmoving = ktp_contain
+		&& (!VectorIsZero(ent->v.velocity) || !VectorIsZero(ent->v.avelocity));
 
 	if (thinktime < oldltime + host_frametime)
 	{
@@ -920,6 +1001,15 @@ void SV_Physics_Pusher(edict_t *ent)
 		ent->v.nextthink = 0;
 		gGlobalVariables.time = g_psv.time;
 		gEntityInterface.pfnThink(ent);
+	}
+
+	// Sampled on the stopping edge only: a blocked pusher reverses rather than
+	// parking, so a hit here is a contact the block path never reported. The think
+	// above can remove the entity.
+	if (ktp_wasmoving && !ent->free
+		&& VectorIsZero(ent->v.velocity) && VectorIsZero(ent->v.avelocity))
+	{
+		KTP_PusherContainSample(ent);
 	}
 }
 

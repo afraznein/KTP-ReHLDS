@@ -39,6 +39,7 @@ extern cvar_t sv_stepsize;
 extern cvar_t sv_friction;
 extern cvar_t sv_stopspeed;
 extern cvar_t ktp_pusher_clock_quantize;
+extern cvar_t ktp_pusher_contain_report;
 
 extern vec3_t *g_moved_from;
 extern edict_t **g_moved_edict;

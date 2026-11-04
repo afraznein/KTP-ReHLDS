@@ -10,6 +10,57 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ### Added
 
+- **A report-only containment probe for pushers, behind `ktp_pusher_contain_report`.**
+  A blocked push is already counted — `pfnBlocked` fires, the engine reverts both
+  parties and the `push:` record gets a row. The stuck-in-a-door reports describe the
+  other case: the door finishes its swing, parks, and a player is inside it with
+  nothing logged anywhere. The block path cannot see that case, because it only runs
+  for contacts the hull test already selected and pushed.
+
+  `ktp_pusher_contain_report 1` samples the stopping edge instead. `SV_Physics_Pusher`
+  notes whether the entity was moving on entry; if the think then parks it, each
+  connected client's hull is clipped against that pusher alone with
+  `SV_ClipMoveToEntity`, and a `startsolid` is a containment. Nothing moves and no
+  engine state changes — `SV_ClipMoveToEntity` takes its trace by value, so unlike
+  `SV_TestEntityPosition` it does not overwrite the global trace the game DLL reads.
+
+  New `[KTP_PROFILE] contain:` record, emitted every interval:
+
+  ```
+  contain: armed=1 stops=42 tests=168 hits=2 unblocked=2 blind=0 clients=1
+  contain_detail: pusher_last=57(func_door_rotating/door_a) victim_worst=3(name) victim_worst_n=2
+  ```
+
+  `armed=` and `stops=` are why a zero here is readable. The record prints whether the
+  cvar is on at all, and `stops=` counts the pushers that reached the stopping edge, so
+  `hits=0` can be told apart from a probe nobody armed and from an interval in which no
+  door stopped. `unblocked=` is the subset with no block on record for that pusher this
+  interval — the population a nudge inside the push path could never reach, since a
+  blocked push reverts. `blind=` counts `unblocked` hits taken after the 16-entry
+  tracking table had already overflowed, where "no block on record" may be the table
+  rather than the engine.
+
+  What it settles: whether the reported symptom is a containment the hull test missed
+  at all. Until it reports a non-zero `unblocked`, a nudge of any magnitude inside
+  `SV_PushRotate` is a fix for a population that has not been shown to exist.
+
+  A blocked pusher reverses rather than parking, so the two records are close to
+  disjoint by construction. Costs one global float compare per `MOVETYPE_PUSH` entity
+  per frame while disabled, and one hull trace per connected client per door stop while
+  armed. Requires `ktp_profile_frame 1`, like the rest of the push telemetry — the
+  interval record is the only reader.
+
+  `FCVAR_SERVER`, deliberately, and it is the only flag here with an effect: in a `SWDS`
+  build `FCVAR_ARCHIVE` reaches only `Cvar_WriteVariables`, whose sole caller
+  `Host_WriteConfiguration` is compiled out by `#ifndef SWDS` and returns on
+  `ca_dedicated` besides, and `FCVAR_SPONLY` is tested against `g_pcls.state` on the
+  client. `FCVAR_SERVER` is what puts the arm state in the match log twice over —
+  `Log_PrintServerVars` at every log open, and `Cvar_DirectSet` on each change — which
+  for a measurement whose entire output is log lines is the difference between a clean
+  result and a probe that never ran. The cost is accepted: `Cvar_DirectSet` also
+  broadcasts the change to connected players, and `FCVAR_UNLOGGED` would suppress the
+  broadcast and the log line in the same branch, so the quiet option is also the blind one.
+
 - **Two measurements of what LAN removes.** In 15 12-mans (78,334 shots) settings changed
   neither registration (99.97%) nor the rewind's reach. What separates an online match from a
   LAN is how stale the picture is on each side of a shot, and the engine recorded neither.
@@ -662,6 +713,25 @@ interval, and a new connection in a reused slot does not inherit it.
   Applies to every `MOVETYPE_PUSH` entity, not only doors. Untested on a live
   1000-fps server: `ktp_pusherclock_tests.cpp` pins the arithmetic and a simulation of
   the physics loop, which is not the same as watching a door.
+
+  **No floor on `movetime`, and that is the decision rather than an omission.** When the
+  step quantizes to zero the function hands back the raw `movetime`, which is the
+  unfixed upstream path — the guarded build degrades to the engine's own behaviour
+  instead of preventing both branches. A floor cannot be expressed here: the one return
+  value is both the clock advance and the push distance, and the branch exists precisely
+  where no single number serves both. Flooring to one ulp of the clock at the threshold
+  would advance `ltime` by 0.00390625 s for a 0.001 s frame — a clock running 3.9x fast
+  and a push 3.9x too long, a new defect in exactly the regime the fix protects. Making
+  both branches unreachable means separating the two quantities through `SV_PushMove`,
+  `SV_PushRotate` and `SV_Physics_Pusher`, which changes the physics rather than the
+  clock bookkeeping.
+
+  The branch is also unreachable on this fleet. `step` vanishes when `movetime` falls
+  below half the clock's resolution, so at 1000 fps it needs `ltime` at 32768 s and at
+  100 fps at 262144 s — 9.1 hours and 3 days of one entity's own clock, which resets at
+  every map load. Degrading to upstream is the safe direction for a cvar-gated change:
+  the guarded path cannot be worse than the unguarded engine, so arming the cvar
+  introduces no failure mode of its own.
 
 - **`Con_DebugLog` was an unsynchronized write reachable from the Steam background
   thread on every failed `sendto()`, 34 lines below the comment forbidding exactly

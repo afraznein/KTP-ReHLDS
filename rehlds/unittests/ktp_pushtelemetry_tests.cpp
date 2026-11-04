@@ -20,6 +20,19 @@ static void ktp_push_reset_all()
 		g_ktp_push_victim_slot[i] = 0;
 }
 
+static void ktp_contain_reset_all()
+{
+	g_ktp_contain_stops = 0;
+	g_ktp_contain_tests = 0;
+	g_ktp_contain_hits = 0;
+	g_ktp_contain_unblocked = 0;
+	g_ktp_contain_blind = 0;
+	g_ktp_contain_last_ent = -1;
+	g_ktp_contain_last_spawn = 0;
+	for (int i = 0; i < MAX_CLIENTS; i++)
+		g_ktp_contain_slot[i] = 0;
+}
+
 TEST(SplitsRotateFromMove, KtpPushTelemetry, 1000)
 {
 	ktp_push_reset_all();
@@ -144,4 +157,58 @@ TEST(IntervalResetCoversPushCounters, KtpPushTelemetry, 1000)
 	LONGS_EQUAL("pusher table survived the reset", 0, g_ktp_push_track_n);
 	for (int i = 0; i < MAX_CLIENTS; i++)
 		UINT32_EQUALS("per-slot victims survived the reset", 0u, g_ktp_push_victim_slot[i]);
+}
+
+// The containment report's whole claim is "no block was recorded for this pusher",
+// so the lookup deciding that has to agree with the table the blocks went into.
+TEST(ContainBlockLookupTracksTheTable, KtpPushTelemetry, 1000)
+{
+	ktp_push_reset_all();
+
+	CHECK("empty table reported a block", !KTP_PusherBlockedThisInterval(40, MAP_A));
+
+	KTP_PushSampleBlocked(40, 1, ROTATE, 100, MAP_A);
+
+	CHECK("a blocked pusher read as never blocked", KTP_PusherBlockedThisInterval(40, MAP_A));
+	CHECK("an unrelated pusher read as blocked", !KTP_PusherBlockedThisInterval(41, MAP_A));
+
+	// An edict index is reused by the next map, and attributing the previous map's
+	// block to it would silence a real containment on this one.
+	CHECK("a block carried across a changelevel", !KTP_PusherBlockedThisInterval(40, MAP_A + 1));
+
+	// Overflow drops the pusher, so the lookup answers "no block" for a door that
+	// blocked. g_ktp_contain_blind is what keeps that honest in the record.
+	ktp_push_reset_all();
+	for (int i = 0; i < KTP_PUSH_TRACK_N + 1; i++)
+		KTP_PushSampleBlocked(100 + i, NOT_A_CLIENT, MOVE, 10 * i, MAP_A);
+
+	UINT32_EQUALS("fixture did not overflow the table", 1u, g_ktp_push_untracked);
+	CHECK("the dropped pusher is still in the table",
+		!KTP_PusherBlockedThisInterval(100 + KTP_PUSH_TRACK_N, MAP_A));
+}
+
+// A counter left out of KTP_ProfileResetInterval reports a lifetime total under an
+// interval label -- and here that would turn one old containment into a standing one.
+TEST(IntervalResetCoversContainCounters, KtpPushTelemetry, 1000)
+{
+	ktp_contain_reset_all();
+
+	g_ktp_contain_stops = 5;
+	g_ktp_contain_tests = 9;
+	g_ktp_contain_hits = 2;
+	g_ktp_contain_unblocked = 1;
+	g_ktp_contain_blind = 1;
+	g_ktp_contain_last_ent = 40;
+	g_ktp_contain_slot[3] = 2;
+
+	KTP_ProfileResetInterval();
+
+	UINT32_EQUALS("stops survived the reset", 0u, g_ktp_contain_stops);
+	UINT32_EQUALS("tests survived the reset", 0u, g_ktp_contain_tests);
+	UINT32_EQUALS("hits survived the reset", 0u, g_ktp_contain_hits);
+	UINT32_EQUALS("unblocked survived the reset", 0u, g_ktp_contain_unblocked);
+	UINT32_EQUALS("blind survived the reset", 0u, g_ktp_contain_blind);
+	LONGS_EQUAL("last pusher survived the reset", -1, g_ktp_contain_last_ent);
+	for (int i = 0; i < MAX_CLIENTS; i++)
+		UINT32_EQUALS("per-slot containment survived the reset", 0u, g_ktp_contain_slot[i]);
 }

@@ -40,3 +40,22 @@ int KTP_PushVictimSlot(int flags, int entindex);
 
 // Index of the tracked pusher with the most blocks, or -1 when none.
 int KTP_PushWorstTrack(void);
+
+// Containment: a client hull inside a pusher that has already come to rest. A
+// block reverts both parties, so a block proves the engine SAW the contact --
+// containment with no block is a contact its hull test never selected.
+extern uint32 g_ktp_contain_stops;
+extern uint32 g_ktp_contain_tests;
+extern uint32 g_ktp_contain_hits;
+extern uint32 g_ktp_contain_unblocked;
+extern uint32 g_ktp_contain_blind;
+extern uint32 g_ktp_contain_slot[MAX_CLIENTS];
+extern int g_ktp_contain_last_ent;
+extern int g_ktp_contain_last_spawn;
+
+// Whether this pusher has a block on record in the current interval. Entries are
+// created only by a block, so presence is the answer.
+qboolean KTP_PusherBlockedThisInterval(int pusher, int spawn);
+
+// Report-only. Caller owns the cvar gate and the just-stopped edge.
+void KTP_PusherContainSample(struct edict_s *pusher);
