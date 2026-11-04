@@ -9531,6 +9531,12 @@ void KTP_ProfileResetInterval(void)
 	g_ktp_push_episodes = 0;
 	g_ktp_push_untracked = 0;
 	g_ktp_push_track_n = 0;
+	g_ktp_contain_stops = 0;
+	g_ktp_contain_tests = 0;
+	g_ktp_contain_hits = 0;
+	g_ktp_contain_unblocked = 0;
+	g_ktp_contain_blind = 0;
+	g_ktp_contain_last_ent = -1;
 	// ping_stamp survives on purpose: it tracks connection identity, not the interval.
 	// g_ktp_net_session survives too: it is the connection, emitted at disconnect.
 	for (int i = 0; i < MAX_CLIENTS; i++)
@@ -9544,6 +9550,7 @@ void KTP_ProfileResetInterval(void)
 		g_ktp_net_subinterval_slot[i] = 0;
 		g_ktp_net_synth_ms_slot[i] = 0;
 		g_ktp_push_victim_slot[i] = 0;
+		g_ktp_contain_slot[i] = 0;
 	}
 }
 
@@ -10212,6 +10219,47 @@ void EXT_FUNC SV_Frame_Internal()
 				}
 			}
 
+			// A client hull inside a pusher that already stopped. Unlike a block this
+			// is not a failure the engine reported, so armed= and stops= carry whether
+			// the probe ran at all: without them a quiet line reads as a clean fleet.
+			{
+				int contain_clients = 0;
+				for (int i = 0; i < MAX_CLIENTS; i++)
+				{
+					if (g_ktp_contain_slot[i])
+						contain_clients++;
+				}
+				Log_Printf("[KTP_PROFILE] contain: armed=%d stops=%u tests=%u hits=%u unblocked=%u blind=%u clients=%d\n",
+					ktp_pusher_contain_report.value != 0.0f ? 1 : 0,
+					g_ktp_contain_stops, g_ktp_contain_tests, g_ktp_contain_hits,
+					g_ktp_contain_unblocked, g_ktp_contain_blind, contain_clients);
+
+				if (g_ktp_contain_hits)
+				{
+					uint32 contain_worst_n = 0;
+					int contain_worst = KTP_NetWorstSlot(g_ktp_contain_slot, &contain_worst_n);
+
+					// Names share push_detail's stale-name caveat: an entry from before a
+					// changelevel names nothing on this map and prints as '-'.
+					const char *contain_class = "-";
+					const char *contain_target = "-";
+					if (g_ktp_contain_last_spawn == g_psvs.spawncount && g_ktp_contain_last_ent > 0
+						&& g_ktp_contain_last_ent < g_psv.num_edicts && !g_psv.edicts[g_ktp_contain_last_ent].free)
+					{
+						const edict_t *ce = &g_psv.edicts[g_ktp_contain_last_ent];
+						if (ce->v.classname)
+							contain_class = &pr_strings[ce->v.classname];
+						if (ce->v.targetname && pr_strings[ce->v.targetname])
+							contain_target = &pr_strings[ce->v.targetname];
+					}
+					Log_Printf("[KTP_PROFILE] contain_detail: pusher_last=%d(%s/%s) victim_worst=%d(%s) victim_worst_n=%u\n",
+						g_ktp_contain_last_ent, contain_class, contain_target,
+						contain_worst,
+						contain_worst >= 0 ? g_psvs.clients[contain_worst].name : "-",
+						contain_worst_n);
+				}
+			}
+
 			// Reset accumulators
 			KTP_ProfileResetInterval();
 			g_ktp_profile_last_log_time = current_time;
@@ -10400,6 +10448,7 @@ void SV_Init(void)
 	Cvar_RegisterVariable(&sv_skyname);
 	Cvar_RegisterVariable(&sv_maxvelocity);
 	Cvar_RegisterVariable(&ktp_pusher_clock_quantize);
+	Cvar_RegisterVariable(&ktp_pusher_contain_report);
 	Cvar_RegisterVariable(&sv_cheats);
 	Cvar_HookVariable(sv_cheats.name, &sv_cheats_hook);
 	if (COM_CheckParm("-dev"))
