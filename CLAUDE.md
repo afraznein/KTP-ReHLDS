@@ -55,6 +55,61 @@ all 24 HLTV instances on the **data server** (not the 24 game hosts, so
 distro loads on your machine and fails there, taking every proxy down at the next
 restart. The script refuses to emit an artifact that would.
 
+### Build provenance -- ⛔ never build this repo from a git WORKTREE through WSL
+
+🔴 **A WSL build of a Windows git worktree LOSES ITS PROVENANCE AND STILL REPORTS SUCCESS.** The
+estate's two standing rules land here together: isolate work in a detached worktree on `C:`, and
+compile with `wsl bash -c "cd '/mnt/n/...' && bash build_linux.sh"`. Do both and the engine is built blind.
+
+🔑 **Mechanism.** A worktree's `.git` is a FILE holding `gitdir: N:/Nein_/KTP Git Projects/KTPReHLDS/.git/worktrees/<name>`
+-- a **Windows** path. There is no `N:` inside WSL, so git reads the pointer as RELATIVE and fails with
+`fatal: not a git repository: /mnt/c/ktp-wt-<name>/N:/Nein_/KTP Git Projects/KTPReHLDS/.git/worktrees/<name>`.
+➡️ **The DOUBLED path in that error is the whole diagnosis, and the only place the cause is visible.**
+
+⛔ **The banner and the exit code BOTH lie.** Every git call in `rehlds/version/appversion.sh` has a
+silent fallback, so before the gate below it wrote `APP_VERSION "3.22.0.0-dev"` with `APP_COMMIT_SHA ""`,
+`make` returned 0, and `build_linux.sh` printed `BUILD COMPLETE!` and `[KTP-BUILD] OK` over it. The binary
+is functionally correct and provenance-blind. ⚠️ **`identity is the md5, never the banner` is exactly why
+this slipped -- the md5 was fine, so every identity check passed.** ➡️ **A ZERO BUILD NUMBER IS THE TELL**;
+it was caught only by reading `3.22.0.0-dev` against the fielded `3.22.0.1076-dev`.
+
+✅ **Controls that separate this from a broken toolchain:** WSL git works perfectly in a REAL checkout on
+the same mount -- `git -C "/mnt/n/Nein_/KTP Git Projects/KTPReHLDS/" rev-list --count HEAD` answers -- and the
+build number is just `git rev-list --count`, so the correct value was reachable the whole time.
+⛔ **`GIT_DIR` is NOT the cause:** `appversion.sh` calls `git -C "$GIT_DIR/"`, which is a chdir and not the
+env var, so exporting `GIT_DIR` reproduces a DIFFERENT failure wearing the same message.
+⚠️ **Test any WSL git question with a script FILE, never escaped quotes inside `bash -c`** -- a nested-quoting
+mistake made a working checkout look broken while this was being diagnosed.
+
+✅ **The fix: clone into the WSL filesystem and build there.** A clone has a real `.git` DIRECTORY, and
+native ext4 is also far faster than `/mnt/c` for this tree.
+
+```bash
+git clone "/mnt/n/Nein_/KTP Git Projects/KTPReHLDS" ~/ktp-rehlds-build
+cd ~/ktp-rehlds-build
+# origin/main is a remote-TRACKING ref in the source, not a local branch, so the
+# clone does not bring it as a branch and that SHA is otherwise unreachable.
+git fetch "/mnt/n/Nein_/KTP Git Projects/KTPReHLDS" refs/remotes/origin/main:refs/heads/buildmain
+git checkout buildmain
+# APP_COMMIT_URL is built from the remote url, so leaving origin pointing at the
+# local path stamps that path into the engine instead of a commit link.
+git remote set-url origin https://github.com/afraznein/KTP-ReHLDS.git
+KTP_NO_STAGE=1 bash build_linux.sh
+```
+
+⚠️ **`MSYS_NO_PATHCONV=1` is required to pass a `/mnt/...` script path through Git Bash to `wsl`** --
+without it the argument is rewritten to `C:/Program Files/Git/mnt/...` and the script is simply not found,
+which reads as a missing file rather than as a mangled argument.
+
+⛔ **The version step now REFUSES instead of stamping zeros.** `check_git_provenance()` in
+`rehlds/version/appversion.sh` fails the `appversion` CMake target -- `make` exits 2 and no `appversion.h` is
+written -- whenever `rev-parse --verify HEAD` or `rev-list --count HEAD` comes back empty or zero.
+✅ **`REHLDS_ALLOW_NO_GIT=1` is the deliberate escape for a build outside any checkout** (source tarball,
+vendored copy): it prints the entire refusal anyway and stamps `APP_VERSION "3.22.0.0-nogit"` with
+`APP_COMMIT_SHA "nogit"`, so the artifact says what it is wherever it prints its version.
+⚠️ **`rehlds/version/appversion.bat` (the MSVC path) still carries the old silent fallbacks** -- nothing on
+this fleet is built through it, but it is not gated.
+
 ## Project Structure
 - `build.sh` - CMake build script (repo root; this is the build)
 - `REVIEWS.md` - what has been read against what range, and what was left unread.

@@ -40,6 +40,20 @@ init()
 		MAINTENANCE=0
 	fi
 
+	check_git_provenance
+
+	# The opt-out stamps what the build is, rather than a plausible-looking zero.
+	if [ -n "$NO_GIT" ]; then
+		COMMIT_COUNT=0
+		COMMIT_SHA=nogit
+		COMMIT_URL=
+		NEW_VERSION="$MAJOR.$MINOR.$MAINTENANCE.0-nogit"
+		if [ "$NEW_VERSION" != "$OLD_VERSION" ]; then
+			update_appversion
+		fi
+		return 0
+	fi
+
 	BRANCH_NAME=$(git -C "$GIT_DIR/" rev-parse --abbrev-ref HEAD)
 	if [ $? -ne 0 -o "$BRANCH_NAME" = "" ]; then
 		BRANCH_NAME=master
@@ -114,6 +128,59 @@ init()
 	if [ "$NEW_VERSION" != "$OLD_VERSION" ]; then
 		update_appversion
 	fi
+}
+
+# A build that cannot read its own commit refuses. Every git call in init() has a
+# silent fallback, so a provenance-blind engine md5-verifies identically to a good
+# one and only a 0 build number gives it away.
+check_git_provenance()
+{
+	local probe_err probe_sha probe_count
+
+	probe_err=$(git -C "$GIT_DIR/" rev-parse --verify HEAD 2>&1 >/dev/null)
+	probe_sha=$(git -C "$GIT_DIR/" rev-parse --verify HEAD 2>/dev/null)
+	probe_count=$(git -C "$GIT_DIR/" rev-list --count HEAD 2>/dev/null)
+
+	if [ -n "$probe_sha" ] && [ -n "$probe_count" ] && [ "$probe_count" != "0" ]; then
+		NO_GIT=
+		return 0
+	fi
+
+	{
+	echo ""
+	echo "========================================"
+	echo "[appversion] REFUSING: no build provenance"
+	echo "========================================"
+	echo "  source dir : $SOURCE_DIR"
+	echo "  HEAD sha   : ${probe_sha:-<none>}"
+	echo "  commit count: ${probe_count:-<none>}"
+	if [ -n "$probe_err" ]; then
+		echo "  git said   : $probe_err"
+	fi
+	echo ""
+	echo "Writing APP_VERSION with build number 0 and an empty APP_COMMIT_SHA would"
+	echo "produce a working engine that cannot be traced to a commit, and its md5"
+	echo "verifies exactly like a good one. Refusing instead of stamping zeros."
+	echo ""
+	echo "A DOUBLED path in the git error above means a WSL build of a Windows git"
+	echo "worktree: the worktree's .git is a file holding a Windows gitdir path, which"
+	echo "git inside WSL reads as relative. Clone into the WSL filesystem and build"
+	echo "there -- see CLAUDE.md, section 'Build provenance'."
+	echo ""
+	echo "For a real build outside any checkout (source tarball, vendored copy), set"
+	echo "REHLDS_ALLOW_NO_GIT=1. Everything above is still true: the version is then"
+	echo "stamped '-nogit' and the binary says so wherever it prints its version."
+	echo ""
+	} 1>&2
+
+	# Permitted, never silent: the refusal above still prints, and the stamp ships.
+	if [ -n "$REHLDS_ALLOW_NO_GIT" ]; then
+		echo "[appversion] REHLDS_ALLOW_NO_GIT is set -- continuing with a -nogit stamp." 1>&2
+		NO_GIT=1
+		return 0
+	fi
+
+	exit 1
 }
 
 update_appversion()

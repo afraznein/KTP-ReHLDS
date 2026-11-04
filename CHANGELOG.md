@@ -693,6 +693,28 @@ making — which is a live hazard, since the pusher work lives in exactly those 
 
 ### Added
 
+- **`appversion.sh` refuses the build when it cannot determine its own commit.** Every git
+  call in it had a silent fallback, so a build with no readable history wrote
+  `APP_VERSION "3.22.0.0-dev"` with an empty `APP_COMMIT_SHA`, `make` returned 0, and
+  `build_linux.sh` printed `BUILD COMPLETE!` and `[KTP-BUILD] OK` over it. The engine was
+  functionally correct and provenance-blind, and because identity here is the md5 and never
+  the banner, every identity check passed it — the only tell was a **zero build number**,
+  caught by reading `3.22.0.0-dev` against a fielded `3.22.0.1076-dev`.
+
+  `check_git_provenance()` probes `rev-parse --verify HEAD` and `rev-list --count HEAD` and
+  exits 1 when either comes back empty or the count is `0`, which fails the `appversion`
+  CMake target before anything is compiled. It prints git's own stderr, because that is the
+  only place the cause is visible.
+
+  `REHLDS_ALLOW_NO_GIT=1` is the deliberate escape for a build outside any checkout (source
+  tarball, vendored copy). It prints the entire refusal anyway and stamps
+  `APP_VERSION "3.22.0.0-nogit"` with `APP_COMMIT_SHA "nogit"`, so the artifact says what it
+  is instead of carrying a number that reads like a real one.
+
+  ⚠️ The condition that found this — a Windows git worktree built through WSL, whose `.git` is a
+  **file** holding a Windows gitdir path that git inside WSL reads as relative — is documented
+  in `CLAUDE.md` § Build provenance. The doubled path in the resulting `fatal:` is the diagnosis.
+
 - **`build_proxy.sh` — `proxy.so` now has a build path, and one that refuses an artifact
   the data server cannot load.** The top-level cmake has built the Proxy target on every
   `build.sh` run for months and the output was discarded every time, because
