@@ -323,6 +323,81 @@ With the probe on the loop adds three `clock_gettime` per 1 ms iteration and a h
 2026-09-25 on chicago:27018 against its three siblings (about a thousand fps samples each): p05, p50
 and p95 were indistinguishable, so no measurable cost.
 
+### A multi-second client stall is the NORM at ~999 fps, and the flood kick is its CONSEQUENCE
+
+*(Negative finding, measured 2026-11-03 and closed. No engine change follows from it. Sample sizes
+and controls are in `CHANGELOG.md`'s `### Verified` entry under `[Unreleased]`.)*
+
+Players report a 1-2 s freeze, some of them followed by a disconnect and a chat line about flooding
+the server. **Both halves are accounted for and neither is an engine fault.**
+✅ **The stall is the ordinary case:** across 1,050 per-client disconnect summaries from non-kicked
+clients, the p95 of each client's worst move-packet gap ran 2.9-3.8 s by host while the servers held
+~999 fps. A 1-2 s freeze sits inside that distribution, and the server was not behind during it.
+
+🔑 **`SV_ParseMove` credits a client's SILENCE to the rate limiter as commands.**
+`numCmdsToIssue = numcmds + net_drop` (`sv_user.cpp`), and `net_drop` is the sequence gap,
+`sequence - (chan->incoming_sequence + 1)` (`net_chan.cpp`). The one packet that ends a stall
+therefore arrives carrying the whole stall, so the freeze is primary and the kick is downstream of
+it. ⛔ **Nothing was queued anywhere** — there is no backlog to find on either side, and looking for
+one is the wrong search. `CMD_MAXBACKUP` (64) bounds `numcmds + numbackup` and **not** `net_drop`,
+so one packet's contribution to the limiter is unbounded by that guard.
+
+⚠️ **The trip point is not a number of seconds, and reading it as one is the mistake.**
+`CheckBurstRate` floors its window at 0.2 s (*"small intervals may give too high rates"*) while
+`m_LastCheckTime` advances every 0.5 s, so the credited-command count needed to trip is the ceiling
+times somewhere in 0.2-0.5 s, decided only by where in the averaging window the packet lands. At the
+fleet's `sv_rehlds_movecmdrate_max_burst 10000` that is over 2,000 at the floor and over 5,000 at a
+full window — for a ~91 pps client at one command per packet, roughly 22 s of silence against
+roughly 55 s. **At the engine's own default of 5,500 it is over 1,100.** ➡️ **Quote the ceiling and
+the window phase, never a duration.**
+
+⛔ **`punish < 0` kicks; `>= 0` AUTO-BANS for that many minutes — and all four punish cvars default
+to `5`, not `-1`** (`rehlds_security.cpp`). The kick branch is a **config** choice:
+`KTPInfrastructure` `config/online/dodserver.cfg.example` sets all four to `-1`. ⚠️ **A config
+regenerated without those lines bans instead of kicking, and since `3.22.0.930` the ban branch is no
+longer a silent no-op** — so "we have never seen an auto-ban" is not evidence it is unreachable.
+`config/lan` and `config/local` carry only the two `*_burst_punish` lines, leaving both
+`*_avg_punish` at `5`.
+
+⛔ **The limiter's own diagnostic is `Con_DPrintf`, gated on `developer != 0`, and `developer` is `0`
+fleet-wide.** That line carries the measured rate `(%.1f)` and is the only place the rate exists at
+all; what reaches `console.log` is the `SV_DropClient` reason alone. ➡️ **The trip rate is not
+recoverable from a fleet log** — do not plan a measurement that needs it.
+
+⛔ **The wording a player quotes is NOT the engine's, so grepping a log for it reads as absence.**
+`Stop flooding the server!` is KTPAMXX `antiflood.amxx`'s chat notice (`amx_flood_time`, three
+strikes) and **it never kicks anyone**. The engine's strings are
+`Kicked for move commands flooding (burst)` and `... (Avg)`. Two subsystems, and only one of them
+can produce a disconnect.
+
+⛔ **`drops=` cannot corroborate any of this.** `KTP_NetSampleDrops` discards `net_drop >= 24`
+outright, which is exactly the regime that trips the limiter — a seventeen-hundred-packet gap
+contributes `0`. ➡️ **Read `gap_max_ms` and `stalls` on the per-client line instead.** ✅ Both are
+exact to a 65,535 ms cap, so a multi-second figure there is a measurement and not a saturation.
+
+⛔ **The reported onset window is PERMANENTLY unreadable, and that is settled rather than pending.**
+Console retention floors at 2026-10-13 on all 24 instances, so 2026-09-12/13 is gone — and under
+`developer 0` it would not have carried the rate even while it existed.
+
+### "Atlanta-only" lag spikes — refuted twice, on two different windows
+
+*(Negative finding, measured 2026-11-03 and closed. No engine change follows from it.)*
+
+One player reported lag spikes ending in a crash to desktop and attributed them to Atlanta.
+⛔ **Atlanta is not an outlier, and this has now been refuted on two separate windows — do not raise
+it a third time.** Over the retained console window 2026-10-13 to 2026-11-03, timeouts as a share of
+all client drops: **Dallas 7.47%** (the highest), Atlanta **5.51%**, Chicago **5.45%**, New York
+**4.69%**, Denver **2.99%**. Atlanta against the rest of the fleet is **4.84%**, and on overflow per
+session Atlanta is the **lowest** of the three busy regions.
+
+⚠️ **Compare the SHARE of drops, never a raw timeout count** — a raw count tracks how much a region
+is played, so the busiest region wins it whatever the netcode is doing. That is the shape the
+original claim had.
+
+⚠️ **A real crash to desktop in this period was root-caused separately — a map distributed without
+its models — and it does NOT explain this report:** its dates do not cover the reporter's
+2026-10-04/10-15. ➡️ Two findings in one window; do not collapse them into one.
+
 ### Extension Mode Hooks (KTPAMXX/DODX)
 | Hook | Purpose |
 |------|---------|
