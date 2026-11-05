@@ -715,6 +715,27 @@ making — which is a live hazard, since the pusher work lives in exactly those 
   **file** holding a Windows gitdir path that git inside WSL reads as relative — is documented
   in `CLAUDE.md` § Build provenance. The doubled path in the resulting `fatal:` is the diagnosis.
 
+- **The provenance gate now rejects a shallow clone, and covers the MSVC path.** That gate shipped
+  with two holes named in its own PR rather than left to be found; these are both of them.
+
+  `git rev-list --count` answers **1** in a `--depth=1` clone instead of failing, so a gate that
+  rejected only `0` let it through and stamped `3.22.0.1-dev` -- measured against the `3.22.0.1097-dev`
+  the same tree reports with its history intact. A build number that is wrong but plausible is worse
+  than a zero, because the zero was the only tell anyone had. `check_git_provenance()` now also reads
+  `rev-parse --is-shallow-repository` and requires a count above 1, and the refusal names
+  `git fetch --unshallow` / `fetch-depth: 0` as the remedy. That probe is blank on git before 2.15,
+  where the count floor still catches `--depth=1`.
+
+  No job in this repo was affected: everything that reaches the version step -- `windows` and `linux`
+  in `build.yml`, `engine-unittests` and `build-linux` in `ktp-ci.yml` -- already sets `fetch-depth: 0`.
+  The four checkouts that do not are in `header-drift` and `console-thread-safety`, and neither job runs
+  cmake, `build.sh` or msbuild. The hole was latent here and live for anyone cloning, which is why it is
+  closed in the gate and not by editing workflows.
+
+  `appversion.bat` still carried the original silent fallbacks, and
+  `rehlds/version/msvc/version.vcxproj` calls it on every `ReHLDS.sln` build. It now refuses on the same
+  three conditions, with the same wording and the same `REHLDS_ALLOW_NO_GIT=1` escape.
+
 - **`build_proxy.sh` — `proxy.so` now has a build path, and one that refuses an artifact
   the data server cannot load.** The top-level cmake has built the Proxy target on every
   `build.sh` run for months and the output was discarded every time, because

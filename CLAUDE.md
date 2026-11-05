@@ -103,12 +103,18 @@ which reads as a missing file rather than as a mangled argument.
 
 ⛔ **The version step now REFUSES instead of stamping zeros.** `check_git_provenance()` in
 `rehlds/version/appversion.sh` fails the `appversion` CMake target -- `make` exits 2 and no `appversion.h` is
-written -- whenever `rev-parse --verify HEAD` or `rev-list --count HEAD` comes back empty or zero.
+written -- whenever `rev-parse --verify HEAD` comes back empty, the clone is shallow, or the commit count is 0 or 1.
+🔴 **A SHALLOW CLONE IS THE QUIET ONE: `rev-list --count` ANSWERS 1, NOT 0, SO THE BUILD NUMBER LOOKS
+REAL.** Measured on a `--depth=1` clone of this repo: `3.22.0.1-dev`, where the same tree with its history
+intact reports `3.22.0.1097-dev`. ➡️ **The fix is `git fetch --unshallow`, or `fetch-depth: 0` on
+`actions/checkout`** -- every job in this repo that reaches the version step already sets it, so the hole was
+latent here and live for anyone cloning.
 ✅ **`REHLDS_ALLOW_NO_GIT=1` is the deliberate escape for a build outside any checkout** (source tarball,
 vendored copy): it prints the entire refusal anyway and stamps `APP_VERSION "3.22.0.0-nogit"` with
 `APP_COMMIT_SHA "nogit"`, so the artifact says what it is wherever it prints its version.
-⚠️ **`rehlds/version/appversion.bat` (the MSVC path) still carries the old silent fallbacks** -- nothing on
-this fleet is built through it, but it is not gated.
+✅ **`rehlds/version/appversion.bat` (the MSVC path) is gated the same way** -- same three conditions, same
+message wording, same escape. `rehlds/version/msvc/version.vcxproj` calls it on every `ReHLDS.sln` build, so
+MSBuild fails the `version` project rather than stamping a number nothing can trace.
 
 ## Project Structure
 - `build.sh` - CMake build script (repo root; this is the build)

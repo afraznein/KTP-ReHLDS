@@ -132,35 +132,54 @@ init()
 
 # A build that cannot read its own commit refuses. Every git call in init() has a
 # silent fallback, so a provenance-blind engine md5-verifies identically to a good
-# one and only a 0 build number gives it away.
+# one, and a truncated history stamps a build number that looks real.
 check_git_provenance()
 {
-	local probe_err probe_sha probe_count
+	local probe_err probe_sha probe_count probe_shallow reason
 
 	probe_err=$(git -C "$GIT_DIR/" rev-parse --verify HEAD 2>&1 >/dev/null)
 	probe_sha=$(git -C "$GIT_DIR/" rev-parse --verify HEAD 2>/dev/null)
 	probe_count=$(git -C "$GIT_DIR/" rev-list --count HEAD 2>/dev/null)
 
-	if [ -n "$probe_sha" ] && [ -n "$probe_count" ] && [ "$probe_count" != "0" ]; then
+	# Blank on git older than 2.15, which the commit-count floor below still covers.
+	probe_shallow=$(git -C "$GIT_DIR/" rev-parse --is-shallow-repository 2>/dev/null)
+
+	# A depth-limited clone answers 1, so rejecting only 0 passes a truncated
+	# history through as a build number nothing downstream can tell is wrong.
+	if [ -n "$probe_sha" ] && [ "$probe_shallow" != "true" ] && \
+	   [ -n "$probe_count" ] && [ "$probe_count" -gt 1 ]; then
 		NO_GIT=
 		return 0
+	fi
+
+	if [ -z "$probe_sha" ]; then
+		reason="git could not name HEAD"
+	elif [ "$probe_shallow" = "true" ]; then
+		reason="shallow clone, so the commit count is truncated"
+	else
+		reason="commit count ${probe_count:-<none>} cannot be a real history"
 	fi
 
 	{
 	echo ""
 	echo "========================================"
-	echo "[appversion] REFUSING: no build provenance"
+	echo "[appversion] REFUSING: $reason"
 	echo "========================================"
-	echo "  source dir : $SOURCE_DIR"
-	echo "  HEAD sha   : ${probe_sha:-<none>}"
+	echo "  source dir  : $SOURCE_DIR"
+	echo "  HEAD sha    : ${probe_sha:-<none>}"
 	echo "  commit count: ${probe_count:-<none>}"
+	echo "  shallow     : ${probe_shallow:-false}"
 	if [ -n "$probe_err" ]; then
-		echo "  git said   : $probe_err"
+		echo "  git said    : $probe_err"
 	fi
 	echo ""
-	echo "Writing APP_VERSION with build number 0 and an empty APP_COMMIT_SHA would"
-	echo "produce a working engine that cannot be traced to a commit, and its md5"
-	echo "verifies exactly like a good one. Refusing instead of stamping zeros."
+	echo "Writing APP_VERSION with a build number that is 0, or 1 because the history"
+	echo "was truncated, produces a working engine that cannot be traced to a commit,"
+	echo "and its md5 verifies exactly like a good one. Refusing instead of guessing."
+	echo ""
+	echo "A SHALLOW clone is the quiet one: 'git rev-list --count' answers 1 rather"
+	echo "than failing, so the build number looks real. Fetch the whole history --"
+	echo "'git fetch --unshallow', or 'fetch-depth: 0' on actions/checkout."
 	echo ""
 	echo "A DOUBLED path in the git error above means a WSL build of a Windows git"
 	echo "worktree: the worktree's .git is a file holding a Windows gitdir path, which"
