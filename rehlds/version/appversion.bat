@@ -19,6 +19,8 @@ set commitSHA=
 set commitURL=
 set commitCount=0
 set branch_name=master
+set version_suffix=dev
+set no_git=
 
 for /f "tokens=*" %%i in ('powershell -NoProfile -Command ^
     "$now = Get-Date; Write-Output ('{0:yyyy}|{0:MM}|{0:dd}|{0:HH}|{0:mm}|{0:ss}' -f $now)"') do (
@@ -99,6 +101,70 @@ IF EXIST "%srcdir%\version.h" (
 		)
 	)
 )
+
+::
+:: Refuse a build that cannot read its own commit, or whose history is truncated.
+:: Keep in step with check_git_provenance() in appversion.sh.
+::
+set probe_sha=
+set probe_count=
+set probe_shallow=
+set provenance_reason=
+
+FOR /F "tokens=*" %%i IN ('"git -C "%repodir%\." rev-parse --verify HEAD" 2^>NUL') DO set probe_sha=%%i
+FOR /F "tokens=*" %%i IN ('"git -C "%repodir%\." rev-list --count HEAD" 2^>NUL') DO set probe_count=%%i
+
+:: Blank on git older than 2.15, which the commit-count floor below still covers.
+FOR /F "tokens=*" %%i IN ('"git -C "%repodir%\." rev-parse --is-shallow-repository" 2^>NUL') DO set probe_shallow=%%i
+IF "!probe_shallow!" == "" set probe_shallow=false
+
+:: Last assignment wins, so these ascend in precedence to match appversion.sh.
+IF "!probe_count!" == "" set provenance_reason=git could not count the history
+IF "!probe_shallow!" == "true" set provenance_reason=shallow clone, so the commit count is truncated
+IF "!probe_sha!" == "" set provenance_reason=git could not name HEAD
+IF NOT "!provenance_reason!" == "" goto _no_provenance
+
+:: A depth-limited clone answers 1, so rejecting only 0 passes a truncated
+:: history through as a build number nothing downstream can tell is wrong.
+IF !probe_count! LEQ 1 set provenance_reason=commit count !probe_count! cannot be a real history
+IF NOT "!provenance_reason!" == "" goto _no_provenance
+goto _provenance_ok
+
+:_no_provenance
+>&2 echo.
+>&2 echo ========================================
+>&2 echo [appversion] REFUSING: !provenance_reason!
+>&2 echo ========================================
+>&2 echo   source dir  : %srcdir%
+>&2 echo   repo dir    : %repodir%
+>&2 echo   HEAD sha    : !probe_sha!
+>&2 echo   commit count: !probe_count!
+>&2 echo   shallow     : !probe_shallow!
+>&2 echo.
+>&2 echo Writing APP_VERSION with a build number that is 0, or 1 because the history
+>&2 echo was truncated, produces a working engine that cannot be traced to a commit,
+>&2 echo and its md5 verifies exactly like a good one. Refusing instead of guessing.
+>&2 echo.
+>&2 echo A SHALLOW clone is the quiet one: 'git rev-list --count' answers 1 rather
+>&2 echo than failing, so the build number looks real. Fetch the whole history --
+>&2 echo 'git fetch --unshallow', or 'fetch-depth: 0' on actions/checkout.
+>&2 echo.
+>&2 echo For a real build outside any checkout - source tarball, vendored copy - set
+>&2 echo REHLDS_ALLOW_NO_GIT=1. Everything above is still true: the version is then
+>&2 echo stamped '-nogit' and the binary says so wherever it prints its version.
+>&2 echo.
+
+:: Permitted, never silent: the refusal above still prints, and the stamp ships.
+IF NOT "%REHLDS_ALLOW_NO_GIT%" == "" (
+	>&2 echo [appversion] REHLDS_ALLOW_NO_GIT is set -- continuing with a -nogit stamp.
+	set no_git=1
+	goto _provenance_ok
+)
+
+exit /B 1
+
+:_provenance_ok
+IF DEFINED no_git goto _nogit_stamp
 
 ::
 :: Read revision and release date from it
@@ -185,11 +251,20 @@ IF [%localChanged%]==[1] (
 	set version_modifed=+m
 )
 
+goto _form_version
+
+:_nogit_stamp
+set commitCount=0
+set commitSHA=nogit
+set commitURL=
+set version_suffix=nogit
+
 ::
 :: Now form full version string like 1.0.0.1
 ::
 
-set new_version=%version_major%.%version_minor%.%version_maintenance%.%commitCount%-dev%version_modifed%
+:_form_version
+set new_version=%version_major%.%version_minor%.%version_maintenance%.!commitCount!-!version_suffix!!version_modifed!
 
 ::
 :: Update appversion.h if version has changed or modifications/mixed revisions detected
