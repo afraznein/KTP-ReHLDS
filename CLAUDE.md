@@ -427,6 +427,28 @@ may be the table rather than the engine** — so `unblocked` is only trustworthy
 ⚠️ **It samples the STOPPING EDGE only:** a door held open, or a player walking into a door that is
 already parked, is never tested, so this bounds the question rather than answering it in general.
 
+### Two ways the `contain:` and `push:` records read as more than they are
+
+**`hits` counts OSCILLATIONS, not incidents.** A blocked rotating door reverses rather than parking,
+so one stuck player is re-counted once per swing and the interval total grows with how long he stands
+there rather than with how many people it happened to. ⛔ **So a large `hits` is not a large number of
+players** — it is one of them, measured for longer. Episodes are the incident unit, which is why
+`push:` carries `episodes=` alongside `blocked=`: `blocked` scales with fps and `episodes` does not.
+➡️ Read `hits` beside `clients=`, and derive an incident count by grouping consecutive intervals,
+never by summing them. A headline taken off the raw total needs a multi-day measurement to deflate,
+and that has already happened once.
+
+**The NUMBER OF RECORDS is a 10-second timer, not a play proxy.** Both records are emitted once per
+profiling interval on hosts that run continuously, so a per-instance record count measures UPTIME and
+comes out near-identical across the fleet whatever anybody played. ⛔ Never use it as a denominator,
+an exposure weight, or evidence that one instance saw more play than another — instances agreeing to
+within a fraction of a percent is the clock agreeing with itself, not a finding.
+➡️ `net: clients=` is the sound denominator: it excludes HLTV and proxy slots (`g_ktp_net_seen_mask`),
+so a zero there is a real absence of players rather than a missing reading.
+
+And `stops=` is EXPOSURE, not a defect count — it says how often the probe had something to test, so
+it belongs under a `hits` figure as its denominator and never beside it as a severity.
+
 ### Client updates are quantised to whole frames — `cl_updaterate 102` delivers a phase-locked 100/s
 
 `SV_SendClientMessages` books the next update off the frame it actually went out on:
