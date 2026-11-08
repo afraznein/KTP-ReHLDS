@@ -53,6 +53,41 @@ extern uint32 g_ktp_contain_slot[MAX_CLIENTS];
 extern int g_ktp_contain_last_ent;
 extern int g_ktp_contain_last_spawn;
 
+// Distinct contained pushers tracked per interval. Containment is rarer than a
+// block, so the same short linear table applies; hits on a pusher that does not
+// fit are counted under contain_untracked.
+#define KTP_CONTAIN_TRACK_N 16
+#define KTP_CONTAIN_NAME_N 32
+
+typedef struct ktp_contain_track_s
+{
+	int pusher;       // edict index
+	int spawn;        // g_psvs.spawncount when first seen
+	int stops;        // this pusher's stop ordinal, counted from the entry's creation
+	int last_stop;    // stops at the latest hit
+	uint32 hits;
+	uint32 episodes;
+	// Resolved at the hit, not at the log: an edict index names nothing once the
+	// map has changed, which is why the interval summary can only print '-'.
+	char map[64];
+	char classname[KTP_CONTAIN_NAME_N];
+	char target[KTP_CONTAIN_NAME_N];
+} ktp_contain_track_t;
+
+// A stop is one arrival at rest, so a door a player stands in reads as a hit per
+// arrival. An episode is a run of consecutive stops of one pusher holding a
+// client, which is the unit a single containment produces exactly one of.
+extern uint32 g_ktp_contain_episodes;
+extern uint32 g_ktp_contain_untracked;
+extern ktp_contain_track_t g_ktp_contain_track[KTP_CONTAIN_TRACK_N];
+extern int g_ktp_contain_track_n;
+
+// Split out of KTP_PusherContainSample so the episode edge is reachable without a
+// server: Stop advances one pusher's arrival ordinal, Hit records a contained
+// client on it. Names are copied at the hit; a NULL prints as '-'.
+void KTP_ContainSampleStop(int pusher, int spawn);
+void KTP_ContainSampleHit(int pusher, int spawn, const char *map, const char *classname, const char *target);
+
 // Whether this pusher has a block on record in the current interval. Entries are
 // created only by a block, so presence is the answer.
 qboolean KTP_PusherBlockedThisInterval(int pusher, int spawn);

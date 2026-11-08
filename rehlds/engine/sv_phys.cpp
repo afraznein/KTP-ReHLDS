@@ -581,6 +581,81 @@ uint32 g_ktp_contain_blind = 0;
 uint32 g_ktp_contain_slot[MAX_CLIENTS];
 int g_ktp_contain_last_ent = -1;
 int g_ktp_contain_last_spawn = 0;
+uint32 g_ktp_contain_episodes = 0;
+uint32 g_ktp_contain_untracked = 0;
+ktp_contain_track_t g_ktp_contain_track[KTP_CONTAIN_TRACK_N];
+int g_ktp_contain_track_n = 0;
+
+static ktp_contain_track_t *KTP_ContainFind(int pusher, int spawn)
+{
+	for (int i = 0; i < g_ktp_contain_track_n; i++)
+	{
+		if (g_ktp_contain_track[i].pusher == pusher && g_ktp_contain_track[i].spawn == spawn)
+			return &g_ktp_contain_track[i];
+	}
+
+	return NULL;
+}
+
+// Q_strncpy is strncpy, which leaves a truncated copy unterminated.
+static void KTP_ContainCopyName(char *dst, size_t len, const char *src)
+{
+	if (!src)
+	{
+		dst[0] = 0;
+		return;
+	}
+
+	Q_strncpy(dst, src, len - 1);
+	dst[len - 1] = 0;
+}
+
+void KTP_ContainSampleStop(int pusher, int spawn)
+{
+	// An entry exists only once this pusher has contained someone, so an arrival
+	// before the first hit is not counted and the ordinal starts at that hit.
+	ktp_contain_track_t *t = KTP_ContainFind(pusher, spawn);
+	if (t)
+		++t->stops;
+}
+
+void KTP_ContainSampleHit(int pusher, int spawn, const char *map, const char *classname, const char *target)
+{
+	++g_ktp_contain_hits;
+
+	ktp_contain_track_t *t = KTP_ContainFind(pusher, spawn);
+	if (!t)
+	{
+		if (g_ktp_contain_track_n >= KTP_CONTAIN_TRACK_N)
+		{
+			++g_ktp_contain_untracked;
+			return;
+		}
+
+		t = &g_ktp_contain_track[g_ktp_contain_track_n++];
+		t->pusher = pusher;
+		t->spawn = spawn;
+		t->stops = 1;
+		// Two short of the first arrival, so that arrival opens an episode.
+		t->last_stop = -1;
+		t->hits = 0;
+		t->episodes = 0;
+		KTP_ContainCopyName(t->map, sizeof(t->map), map);
+		KTP_ContainCopyName(t->classname, sizeof(t->classname), classname);
+		KTP_ContainCopyName(t->target, sizeof(t->target), target);
+	}
+
+	++t->hits;
+
+	// A second contained client on the same arrival is the same episode; a gap in
+	// this pusher's arrivals is someone who left and came back.
+	if (t->stops != t->last_stop && t->stops != t->last_stop + 1)
+	{
+		++t->episodes;
+		++g_ktp_contain_episodes;
+	}
+	t->last_stop = t->stops;
+}
 
 qboolean KTP_PusherBlockedThisInterval(int pusher, int spawn)
 {
@@ -605,6 +680,14 @@ void KTP_PusherContainSample(edict_t *pusher)
 	int pusher_ent = NUM_FOR_EDICT(pusher);
 	qboolean blocked = KTP_PusherBlockedThisInterval(pusher_ent, g_psvs.spawncount);
 
+	// Advanced before the hull tests, so a hit below is dated by the arrival it
+	// actually happened on.
+	KTP_ContainSampleStop(pusher_ent, g_psvs.spawncount);
+
+	const char *pusher_class = pusher->v.classname ? &pr_strings[pusher->v.classname] : NULL;
+	const char *pusher_target = (pusher->v.targetname && pr_strings[pusher->v.targetname])
+		? &pr_strings[pusher->v.targetname] : NULL;
+
 	for (int i = 0; i < g_psvs.maxclients; i++)
 	{
 		client_t *cl = &g_psvs.clients[i];
@@ -627,10 +710,11 @@ void KTP_PusherContainSample(edict_t *pusher)
 		if (!tr.startsolid)
 			continue;
 
-		++g_ktp_contain_hits;
 		++g_ktp_contain_slot[i];
 		g_ktp_contain_last_ent = pusher_ent;
 		g_ktp_contain_last_spawn = g_psvs.spawncount;
+
+		KTP_ContainSampleHit(pusher_ent, g_psvs.spawncount, g_psv.name, pusher_class, pusher_target);
 
 		if (blocked)
 			continue;

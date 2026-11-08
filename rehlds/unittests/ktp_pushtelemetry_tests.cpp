@@ -29,9 +29,16 @@ static void ktp_contain_reset_all()
 	g_ktp_contain_blind = 0;
 	g_ktp_contain_last_ent = -1;
 	g_ktp_contain_last_spawn = 0;
+	g_ktp_contain_episodes = 0;
+	g_ktp_contain_untracked = 0;
+	g_ktp_contain_track_n = 0;
 	for (int i = 0; i < MAX_CLIENTS; i++)
 		g_ktp_contain_slot[i] = 0;
 }
+
+static const char *MAP_A_NAME = "dod_donner";
+static const char *DOOR_CLASS = "func_door_rotating";
+static const char *DOOR_TARGET = "church_gate";
 
 TEST(SplitsRotateFromMove, KtpPushTelemetry, 1000)
 {
@@ -200,6 +207,10 @@ TEST(IntervalResetCoversContainCounters, KtpPushTelemetry, 1000)
 	g_ktp_contain_blind = 1;
 	g_ktp_contain_last_ent = 40;
 	g_ktp_contain_slot[3] = 2;
+	KTP_ContainSampleHit(40, MAP_A, MAP_A_NAME, DOOR_CLASS, DOOR_TARGET);
+
+	CHECK("fixture did not populate the episode counters",
+		g_ktp_contain_episodes && g_ktp_contain_track_n);
 
 	KTP_ProfileResetInterval();
 
@@ -209,6 +220,112 @@ TEST(IntervalResetCoversContainCounters, KtpPushTelemetry, 1000)
 	UINT32_EQUALS("unblocked survived the reset", 0u, g_ktp_contain_unblocked);
 	UINT32_EQUALS("blind survived the reset", 0u, g_ktp_contain_blind);
 	LONGS_EQUAL("last pusher survived the reset", -1, g_ktp_contain_last_ent);
+	UINT32_EQUALS("episodes survived the reset", 0u, g_ktp_contain_episodes);
+	UINT32_EQUALS("untracked survived the reset", 0u, g_ktp_contain_untracked);
+	LONGS_EQUAL("contained-pusher table survived the reset", 0, g_ktp_contain_track_n);
 	for (int i = 0; i < MAX_CLIENTS; i++)
 		UINT32_EQUALS("per-slot containment survived the reset", 0u, g_ktp_contain_slot[i]);
+}
+
+// hits= counts one per arrival at rest, so a player who simply stands in a doorway
+// inflates it for as long as the door keeps being nudged. Episodes must not.
+TEST(ConsecutiveArrivalsAreOneContainEpisode, KtpPushTelemetry, 1000)
+{
+	ktp_contain_reset_all();
+
+	KTP_ContainSampleHit(40, MAP_A, MAP_A_NAME, DOOR_CLASS, DOOR_TARGET);
+	for (int i = 0; i < 20; i++)
+	{
+		KTP_ContainSampleStop(40, MAP_A);
+		KTP_ContainSampleHit(40, MAP_A, MAP_A_NAME, DOOR_CLASS, DOOR_TARGET);
+	}
+
+	UINT32_EQUALS("hits", 21u, g_ktp_contain_hits);
+	UINT32_EQUALS("one standing player is one episode", 1u, g_ktp_contain_episodes);
+	LONGS_EQUAL("distinct contained pushers", 1, g_ktp_contain_track_n);
+	UINT32_EQUALS("per-pusher episodes", 1u, g_ktp_contain_track[0].episodes);
+	UINT32_EQUALS("per-pusher hits", 21u, g_ktp_contain_track[0].hits);
+
+	// The player steps out, the door arrives twice empty, and they step back in.
+	KTP_ContainSampleStop(40, MAP_A);
+	KTP_ContainSampleStop(40, MAP_A);
+	KTP_ContainSampleHit(40, MAP_A, MAP_A_NAME, DOOR_CLASS, DOOR_TARGET);
+	UINT32_EQUALS("a gap did not start a new episode", 2u, g_ktp_contain_episodes);
+
+	// A second client contained on the SAME arrival is one failure of that door.
+	KTP_ContainSampleHit(40, MAP_A, MAP_A_NAME, DOOR_CLASS, DOOR_TARGET);
+	UINT32_EQUALS("same arrival opened a second episode", 2u, g_ktp_contain_episodes);
+	UINT32_EQUALS("the second client's hit was dropped", 23u, g_ktp_contain_hits);
+
+	// A different door on the same arrival is its own episode.
+	KTP_ContainSampleHit(41, MAP_A, MAP_A_NAME, DOOR_CLASS, "side_gate");
+	UINT32_EQUALS("episodes are per pusher", 3u, g_ktp_contain_episodes);
+}
+
+// An edict index is reused by the next map, so a containment there must not
+// continue this map's entry -- that would name this door for that one's episodes.
+TEST(ChangelevelDoesNotMergeContainedPushers, KtpPushTelemetry, 1000)
+{
+	ktp_contain_reset_all();
+
+	KTP_ContainSampleHit(40, MAP_A, MAP_A_NAME, DOOR_CLASS, DOOR_TARGET);
+	KTP_ContainSampleHit(40, MAP_A + 1, "dod_kalt", DOOR_CLASS, "bunker_door");
+
+	LONGS_EQUAL("same index on a new map merged", 2, g_ktp_contain_track_n);
+	UINT32_EQUALS("the new map's first containment is an episode", 2u, g_ktp_contain_episodes);
+	ZSTR_EQUAL("first entry's map", MAP_A_NAME, g_ktp_contain_track[0].map);
+	ZSTR_EQUAL("second entry's map", "dod_kalt", g_ktp_contain_track[1].map);
+	ZSTR_EQUAL("second entry's targetname", "bunker_door", g_ktp_contain_track[1].target);
+}
+
+// The record exists to say WHICH door on WHICH map, and the edict index answers
+// neither once the map has changed -- hence the copy at the hit.
+TEST(ContainRecordCapturesMapAndTargetname, KtpPushTelemetry, 1000)
+{
+	ktp_contain_reset_all();
+
+	KTP_ContainSampleHit(40, MAP_A, MAP_A_NAME, DOOR_CLASS, DOOR_TARGET);
+	ZSTR_EQUAL("map", MAP_A_NAME, g_ktp_contain_track[0].map);
+	ZSTR_EQUAL("classname", DOOR_CLASS, g_ktp_contain_track[0].classname);
+	ZSTR_EQUAL("targetname", DOOR_TARGET, g_ktp_contain_track[0].target);
+
+	// A door with no targetname must not read as the previous entry's door.
+	KTP_ContainSampleHit(41, MAP_A, MAP_A_NAME, "func_door", NULL);
+	ZSTR_EQUAL("a NULL targetname was not empty", "", g_ktp_contain_track[1].target);
+	ZSTR_EQUAL("a NULL targetname disturbed the classname", "func_door", g_ktp_contain_track[1].classname);
+
+	// Q_strncpy is strncpy: a truncated copy that is not terminated runs the
+	// targetname into whatever follows it in the record.
+	char longname[KTP_CONTAIN_NAME_N * 2];
+	for (int i = 0; i < (int)sizeof(longname) - 1; i++)
+		longname[i] = 'x';
+	longname[sizeof(longname) - 1] = 0;
+
+	KTP_ContainSampleHit(42, MAP_A, MAP_A_NAME, longname, longname);
+	LONGS_EQUAL("truncated targetname was not terminated",
+		KTP_CONTAIN_NAME_N - 1, (int)Q_strlen(g_ktp_contain_track[2].target));
+	LONGS_EQUAL("truncated classname was not terminated",
+		KTP_CONTAIN_NAME_N - 1, (int)Q_strlen(g_ktp_contain_track[2].classname));
+}
+
+// A hit the table cannot hold still happened, so it must reach the totals -- but
+// it has no entry to date, so it must NOT invent an episode.
+TEST(ContainOverflowCountsWithoutInventingEpisodes, KtpPushTelemetry, 1000)
+{
+	ktp_contain_reset_all();
+
+	for (int i = 0; i < KTP_CONTAIN_TRACK_N + 3; i++)
+		KTP_ContainSampleHit(100 + i, MAP_A, MAP_A_NAME, DOOR_CLASS, DOOR_TARGET);
+
+	LONGS_EQUAL("table grew past its bound", KTP_CONTAIN_TRACK_N, g_ktp_contain_track_n);
+	UINT32_EQUALS("overflow hits", 3u, g_ktp_contain_untracked);
+	UINT32_EQUALS("overflow dropped from the total",
+		(uint32)(KTP_CONTAIN_TRACK_N + 3), g_ktp_contain_hits);
+	UINT32_EQUALS("an untracked hit opened an episode",
+		(uint32)KTP_CONTAIN_TRACK_N, g_ktp_contain_episodes);
+
+	// An arrival of a pusher the table never held must not touch another entry.
+	KTP_ContainSampleStop(100 + KTP_CONTAIN_TRACK_N, MAP_A);
+	UINT32_EQUALS("an untracked arrival changed the episode count",
+		(uint32)KTP_CONTAIN_TRACK_N, g_ktp_contain_episodes);
 }

@@ -9537,6 +9537,9 @@ void KTP_ProfileResetInterval(void)
 	g_ktp_contain_unblocked = 0;
 	g_ktp_contain_blind = 0;
 	g_ktp_contain_last_ent = -1;
+	g_ktp_contain_episodes = 0;
+	g_ktp_contain_untracked = 0;
+	g_ktp_contain_track_n = 0;
 	// ping_stamp survives on purpose: it tracks connection identity, not the interval.
 	// g_ktp_net_session survives too: it is the connection, emitted at disconnect.
 	for (int i = 0; i < MAX_CLIENTS; i++)
@@ -10229,10 +10232,13 @@ void EXT_FUNC SV_Frame_Internal()
 					if (g_ktp_contain_slot[i])
 						contain_clients++;
 				}
-				Log_Printf("[KTP_PROFILE] contain: armed=%d stops=%u tests=%u hits=%u unblocked=%u blind=%u clients=%d\n",
+				// episodes= is the figure to read: hits= counts one per arrival, so a
+				// player standing in a door inflates it with nothing new happening.
+				Log_Printf("[KTP_PROFILE] contain: armed=%d stops=%u tests=%u hits=%u episodes=%u unblocked=%u blind=%u clients=%d pushers=%d untracked=%u\n",
 					ktp_pusher_contain_report.value != 0.0f ? 1 : 0,
 					g_ktp_contain_stops, g_ktp_contain_tests, g_ktp_contain_hits,
-					g_ktp_contain_unblocked, g_ktp_contain_blind, contain_clients);
+					g_ktp_contain_episodes, g_ktp_contain_unblocked, g_ktp_contain_blind,
+					contain_clients, g_ktp_contain_track_n, g_ktp_contain_untracked);
 
 				if (g_ktp_contain_hits)
 				{
@@ -10257,6 +10263,23 @@ void EXT_FUNC SV_Frame_Internal()
 						contain_worst,
 						contain_worst >= 0 ? g_psvs.clients[contain_worst].name : "-",
 						contain_worst_n);
+				}
+
+				// One record per contained door, naming the map and targetname captured
+				// when it happened -- the only form that still identifies the door after
+				// a changelevel. Bounded by the track table, and silent when nothing hit.
+				for (int i = 0; i < g_ktp_contain_track_n; i++)
+				{
+					const ktp_contain_track_t *ct = &g_ktp_contain_track[i];
+					if (!ct->episodes)
+						continue;
+
+					Log_Printf("[KTP_PROFILE] contain_episode: pusher=%d(%s/%s) map=%s episodes=%u hits=%u arrivals=%d\n",
+						ct->pusher,
+						ct->classname[0] ? ct->classname : "-",
+						ct->target[0] ? ct->target : "-",
+						ct->map[0] ? ct->map : "-",
+						ct->episodes, ct->hits, ct->stops);
 				}
 			}
 
