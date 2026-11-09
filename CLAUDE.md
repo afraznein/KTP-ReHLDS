@@ -449,6 +449,36 @@ so a zero there is a real absence of players rather than a missing reading.
 And `stops=` is EXPOSURE, not a defect count — it says how often the probe had something to test, so
 it belongs under a `hits` figure as its denominator and never beside it as a severity.
 
+### `contain_episode:` — the per-door record, and why its count is not the `contain:` count
+
+A `contain:` `hits` is one arrival at rest, so a player who simply stands in a doorway is re-counted
+every time the door is nudged back onto him. `contain_episode:` exists because the incident unit is
+the **episode** — a run of one pusher's consecutive arrivals while it holds a client — which a single
+containment produces exactly one of. A gap in that pusher's arrivals is somebody who left and came
+back, so it opens a new episode; a second client caught on the *same* arrival does not, because that
+is one failure of that door.
+
+```
+[KTP_PROFILE] contain_episode: pusher=40(func_door_rotating/church_gate) map=dod_donner episodes=1 hits=21 arrivals=21
+```
+
+🔑 **The map, classname and `targetname` are what identify the door, and they are copied AT THE HIT
+rather than at the log** — an edict index names nothing once the map has changed, which is also why
+the interval summary line can only print `-`, and why the same index seen on a new map opens its own
+entry instead of continuing this one. A pusher with no `targetname` prints `-` and must not be read as
+the previous entry's door.
+
+⛔ **An episode count and an arrival count are not comparable, so a before/after against the older
+record is not a like-for-like comparison.** `hits` answers *how long was somebody in a door*;
+`episodes` answers *how many doors failed*. A figure that drops across the change has not improved —
+two different questions were asked.
+⚠️ **Nor is an episode a player count.** Episodes are per pusher, so clients caught together on one
+arrival are one episode, and the existing warning above — a large `hits` is one player measured for
+longer — is not repaired by switching fields.
+⚠️ **`untracked=` is this record's readability guard, the way `blind=0` is for `unblocked`.** The
+tracking table is bounded; a hit it cannot hold still reaches `hits` but deliberately opens no
+episode, so `episodes` undercounts while `untracked` is non-zero. Read the two together.
+
 ### Client updates are quantised to whole frames — `cl_updaterate 102` delivers a phase-locked 100/s
 
 `SV_SendClientMessages` books the next update off the frame it actually went out on:
