@@ -158,7 +158,9 @@ void KTP_NetClientStaleDelta(int slot, qboolean proxy);
 void KTP_NetClientSampleAck(int slot, qboolean proxy, int ack, double now);
 // Smallest bin whose cumulative count reaches pct% of total; 0 when total is 0.
 uint32 KTP_HistPercentile(const uint32 *hist, int n, uint32 total, int pct);
-// Prints one net_client: line per populated human slot, then restarts every slot. match/half are echoed verbatim.
+// Prints one net_client: line per connected human slot, then restarts every slot. match/half are echoed verbatim.
+// Whether a slot prints a slice. Packets are not a condition: a client that stopped sending is the case to show.
+qboolean KTP_NetClientSliceWanted(const client_t *cl);
 void KTP_NetClientEmitAll(const char *match, const char *half, double now);
 // One slot's slice, printed and restarted. `end` is appended as `end=<end>` when non-NULL.
 void KTP_NetClientEmitOne(int slot, const char *match, const char *half, const char *end, double now);
