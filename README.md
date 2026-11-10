@@ -122,6 +122,7 @@ next map change. Writer-side timings land on the `[KTP_PROFILE] io:` line; see
 | `ktp_extension_loaded` | `0` | Sentinel — counts extensions loaded from `extensions.ini`. Assert `>= 1` after a restart |
 | `ktp_userinfo_hook` | `1` | `SV_ClientUserInfoChanged` hookchain dispatch; `0` disables it live (rollback switch) |
 | `ktp_pusher_clock_quantize` | `0` | `1` quantizes a pusher's `movetime` to what its float `ltime` can represent, so a door stops on the angle that was planned. Affects every `MOVETYPE_PUSH` entity |
+| `ktp_pusher_step_hz` | `0` | Above `0`, pushers move in fixed steps of `1/hz` seconds instead of once per server frame, so `100` gives every door the 10 ms step of a 100 fps server. Player movement and hit registration are unaffected. Affects every `MOVETYPE_PUSH` entity |
 
 Full detail in `CLAUDE.md` and [CHANGELOG.md](CHANGELOG.md).
 
