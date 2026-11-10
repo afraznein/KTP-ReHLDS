@@ -792,6 +792,20 @@ making — which is a live hazard, since the pusher work lives in exactly those 
 
 ### Fixed
 
+- **A `net_client:` slice with no packets is printed instead of skipped, so a client that
+  stops sending leaves rows rather than a hole.** `KTP_NetClientEmitOne` required
+  `c->packets`, and a client that is timing out sends none. Its 10 s slices were therefore
+  dropped for the whole stall, and so was the `end=disconnect` slice when the timeout
+  finally dropped it, which is the slice the disconnect path was added to keep. In
+  `ktp_net_clients` this showed up as one player's rows stopping for 30 to 121 s inside a
+  half and resuming with nothing marking the gap. The engine's own client count dipped
+  by one across each of those holes.
+
+  The decision is now `KTP_NetClientSliceWanted`: connected, not a proxy, not a bot.
+  An empty slice prints `pkts=0` with zero percentiles (`KTP_HistPercentile` returns 0 on
+  an empty histogram), `pps=0.0` and `cmds_pkt=0.00`. Consumers that average a field across
+  a player's slices will now see those zeros, where before they saw no row at all.
+
 - **The command-rate average check reads the *burst* cvar to decide whether it is
   switched off, so neither `max_avg` cvar can disable the check it names and either
   `max_burst` cvar silently disables two checks instead of one.**

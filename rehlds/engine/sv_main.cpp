@@ -7969,6 +7969,12 @@ void KTP_NetClientEmitDisconnect(client_t *cl, const char *reason, double now)
 	KTP_NetClientEmitOne(cl - g_psvs.clients, match, half, end, now);
 }
 
+// A timing-out client has no packets, so requiring them hid the slices before a drop and its end=disconnect.
+qboolean KTP_NetClientSliceWanted(const client_t *cl)
+{
+	return cl->connected && !cl->proxy && !cl->fakeclient;
+}
+
 void KTP_NetClientEmitOne(int slot, const char *match, const char *half, const char *end, double now)
 {
 	if (slot < 0 || slot >= g_psvs.maxclients)
@@ -7980,7 +7986,7 @@ void KTP_NetClientEmitOne(int slot, const char *match, const char *half, const c
 		// buffered command runs the level change has already inactivated every client. Gating
 		// on active printed nothing while the reset below still ran -- each half was discarded
 		// (measured 2026-10-24, 1.3-7116-NY1: prelive slices only, half-2 prelive spanning 74 s).
-		if (cl->connected && !cl->proxy && !cl->fakeclient && c->packets)
+		if (KTP_NetClientSliceWanted(cl))
 		{
 			uint32 msec_max = 0, arrivals = 0;
 			for (int i = 0; i < KTP_NET_HIST_N; i++)
