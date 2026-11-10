@@ -10,6 +10,27 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ### Added
 
+- **Fixed-rate pusher stepping, behind `ktp_pusher_step_hz` (default `0`, off).**
+  Doors advance by `host_frametime` every server frame, so on a ~1 ms frame they move
+  in 0.1° slivers, and a door that is blocked reverses by one sliver per frame — a
+  shallow overlap that a single legacy 10 ms reversal cleared becomes a per-frame
+  block/reverse fight. With the cvar armed, `SV_Physics_Pusher` banks frame time per
+  pusher and pushes only once `1/hz` seconds have accumulated, passing the banked time
+  as `movetime`; at `100` every door steps exactly as it did on a 100 fps server.
+  Player movement, traces, hit registration, lag compensation and client updates are
+  untouched.
+
+  A think that falls inside the banked time lands on `thinktime` and drops the rest,
+  the same remainder upstream drops, so a swing takes the same time and fires its think
+  on the same frame. The bank is keyed on edict slot, `serialnumber` and `spawncount`
+  and is cleared whenever the cvar reads `0`. At `0` the upstream movetime selection
+  runs unchanged. `ktp_pusherstep_tests.cpp` pins the off path against upstream's
+  expression, ten 1 ms frames making one 10 ms step, no time lost or doubled across
+  100,000 frames of the fleet's 0.98 ms frame, the think landing, and a 90° swing at
+  1 ms frames finishing on the same angle in under a hundred pushes.
+
+  Arming it changes what the `push:` record counts. Freeze a baseline first.
+
 - **A report-only containment probe for pushers, behind `ktp_pusher_contain_report`.**
   A blocked push is already counted — `pfnBlocked` fires, the engine reverts both
   parties and the `push:` record gets a row. The stuck-in-a-door reports describe the

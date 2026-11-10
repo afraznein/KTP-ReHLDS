@@ -10472,6 +10472,7 @@ void SV_Init(void)
 	Cvar_RegisterVariable(&sv_maxvelocity);
 	Cvar_RegisterVariable(&ktp_pusher_clock_quantize);
 	Cvar_RegisterVariable(&ktp_pusher_contain_report);
+	Cvar_RegisterVariable(&ktp_pusher_step_hz);
 	Cvar_RegisterVariable(&sv_cheats);
 	Cvar_HookVariable(sv_cheats.name, &sv_cheats_hook);
 	if (COM_CheckParm("-dev"))

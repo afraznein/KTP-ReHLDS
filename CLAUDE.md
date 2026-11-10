@@ -295,19 +295,27 @@ low; say which you are testing.** ⛔ **Dropping 1500 → 1000 is not that test*
 rejection regime and nothing else. ⚠️ And ~1 ms frames are what `sv_maxupdaterate 120`, the 300 ms
 rewind and the shadow measurement are built on, so this is a trade, not a free knob.
 
-### Pusher displacement scales with 1/fps while `DIST_EPSILON` does not — the door-stuck mechanism
+### Pusher displacement scales with 1/fps — and `DIST_EPSILON` is NOT a per-step tax on it
 
 `SV_Physics_Pusher` sets `movetime = host_frametime` (`sv_phys.cpp`) and hands it to `SV_PushMove` /
 `SV_PushRotate`, so **per-frame door displacement is inversely proportional to the frame rate**: a
-100 u/s door advances ~1.0 unit per frame at 100 fps and ~0.067 at 1000. `DIST_EPSILON = 0.03125`
-units (`world.cpp`) is an **absolute** trace backoff, so the share of each frame's push thrown away
-rises with fps — about 2.8% at 100 fps against about 28% at 1000. Three facts make it stick rather
-than merely slow: `SV_PushMove`/`SV_PushRotate` rewind and call `pfnBlocked` but never resolve
-penetration; `move = velocity * movetime` is recomputed fresh each frame, so motion lost to the
-epsilon is never repaid; and `SV_PushEntity` does one trace with no slide/retry, so a grazing contact
-truncates the whole move. ⚠️ **Plausible and untested as the cause of a stuck report** — the
-`push:` counters are the baseline, and `blocked=0` in the window of a report points at the hull test
-rather than this path.
+100 u/s door advances ~1.0 unit per frame at 100 fps and ~0.067 at 1000.
+🔻 **CORRECTED — this section used to say `DIST_EPSILON` throws away ~2.8% of each push at 100 fps and
+~28% at 1000. Reading `SV_RecursiveHullCheck` (`world.cpp`) refutes it.** The epsilon places a
+crossing point an ABSOLUTE 1/32 unit on the near side of the plane: a push that does not reach a plane
+loses nothing at either rate, a push that does ends 1/32 u short of it at either rate, and a start
+already within 1/32 u clamps to `fraction 0` at either rate. The only step-scaled term is the
+`frac -= 0.1` "shouldn't happen" back-off, which is proportional to the step and so SMALLER at 1 ms.
+⛔ **Do not re-derive a frame-rate mechanism from the epsilon.**
+✅ **What does scale with the frame rate, read from source:** `pfnBlocked` fires once per blocked
+frame and the SDK `CBaseDoor::Blocked` reverses the door on every call, so at ~1 ms frames a reversal
+moves the leaf 0.1° before the next inside-test where legacy 10 ms frames moved it 1° — a shallow
+overlap that one legacy reversal cleared becomes a per-frame block/reverse jitter. And the door pushes
+a player ~ten times between two of his own usercmds, each with its own single-trace
+`SV_PushEntity`. Two further facts hold at any rate: the push paths rewind and call `pfnBlocked` but
+never resolve penetration, and `SV_PushEntity` does one trace with no slide/retry.
+⚠️ **That these are why players report more stucks than on legacy servers is a hypothesis** —
+`ktp_pusher_step_hz` (below) exists to test it.
 
 📌 **Where the door fights actually land, so a repro starts in the right place.** The live
 S10 rotation is **38 `func_door_rotating` against 1 `func_door`** (entity lumps read off the live
@@ -337,7 +345,7 @@ zero, which DoD's standing hull is not. Both default `0`.
 `ktp_pusher_clock_quantize` (default `0`) beside the KTP profiling, and upstream has not functionally
 touched these functions since 2017. ⚠️ **Carry-the-remainder can still push a player THROUGH
 geometry**, which is worse than the bug being fixed — the clock fix below is not that, and does not
-repay motion lost to `DIST_EPSILON`.
+carry the motion of a truncated push.
 
 ### A pusher's clock ticks at a different rate than its push moves — `ktp_pusher_clock_quantize`
 
@@ -478,6 +486,27 @@ longer — is not repaired by switching fields.
 ⚠️ **`untracked=` is this record's readability guard, the way `blind=0` is for `unblocked`.** The
 tracking table is bounded; a hit it cannot hold still reaches `hits` but deliberately opens no
 episode, so `episodes` undercounts while `untracked` is non-zero. Read the two together.
+
+### Doors step at a fixed rate when armed — `ktp_pusher_step_hz`
+
+`ktp_pusher_step_hz` (default `0`, `FCVAR_SERVER`) makes `SV_Physics_Pusher` bank frame time per
+pusher and push only when a whole step of `1/hz` seconds has built up, so at `100` every door moves in
+10 ms steps — legacy's step — while player movement, traces, hit registration, rewind and client
+updates stay on the 1 ms grid. At `0` the upstream selection runs unchanged, inline.
+🔑 **The think lands exactly where upstream lands it.** When `nextthink` falls inside the banked time
+the push stops on `thinktime` and the bank is dropped, which is the remainder upstream drops too, so a
+swing takes the same 0.9 s and the door's clock lags real time by the same amount either way. A block
+still reverts one push — now one step — and the bank was already spent on it.
+⚠️ **The bank is keyed on edict slot, `serialnumber` and `spawncount`, and is cleared whenever the
+cvar is seen at `0`**, so a reused slot, a new map or a disarm/re-arm never pays out stale time.
+⚠️ **Arming it changes what `push:` counts** — fewer blocked frames per held door by construction —
+so a before/after needs a baseline frozen before the arm, and `episodes` and `blocked` both reported.
+⚠️ **`1000` is NOT an exact negative control on the fleet's ~0.98 ms frames**: a frame shorter than the
+step banks once and pairs with the next. Use a value well above the frame rate (e.g. `5000`), which
+steps every frame.
+⛔ `FCVAR_ARCHIVE` is a no-op on SWDS and an rcon set dies at the next `changelevel` — persist it in
+the instance's config. Blast radius is every `MOVETYPE_PUSH` entity; on the live rotation that is
+doors, buttons and static water/conveyor brushes, with no trains, plats or riders.
 
 ### Client updates are quantised to whole frames — `cl_updaterate 102` delivers a phase-locked 100/s
 

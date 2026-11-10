@@ -58,6 +58,9 @@ cvar_t ktp_pusher_clock_quantize = { "ktp_pusher_clock_quantize", "0", 0, 0.0f, 
 // that puts the arm state in the match log -- without it a quiet record cannot be
 // told from a record nobody armed.
 cvar_t ktp_pusher_contain_report = { "ktp_pusher_contain_report", "0", FCVAR_SERVER, 0.0f, NULL };
+// Doors step at this rate instead of once per server frame, so a block reverses
+// them by a whole step rather than a sliver of one. 0 keeps upstream stepping.
+cvar_t ktp_pusher_step_hz = { "ktp_pusher_step_hz", "0", FCVAR_SERVER, 0.0f, NULL };
 
 // A pusher keeps its own float clock, so past a few hundred seconds that clock
 // cannot hold ltime + movetime: it then ticks at a different rate than the push
@@ -74,6 +77,92 @@ float KTP_PusherClockStep(float ltime, float movetime)
 	// would then never reach its think time. One return value feeds both the clock
 	// and the push distance, so no floor serves both: hand back the unfixed value.
 	return (step != 0.0f) ? step : movetime;
+}
+
+// A sum of frame times rounds just under the step it should reach, which would
+// otherwise push that step a whole frame late.
+static const double KTP_PUSHER_STEP_SLACK = 1.0e-6;
+
+float KTP_PusherStepPlan(double *pending, double frametime, float thinktime, float ltime, float stepHz)
+{
+	if (!(stepHz > 0.0f))
+	{
+		float movetime;
+
+		if (thinktime < ltime + frametime)
+		{
+			movetime = thinktime - ltime;
+
+			if (movetime < 0.0f)
+				movetime = 0.0f;
+		}
+		else
+		{
+			movetime = frametime;
+		}
+
+		return movetime;
+	}
+
+	double elapsed = *pending + frametime;
+
+	// The think lands on its own time exactly as upstream lands it, and the rest
+	// of the frame is dropped exactly as upstream drops it.
+	if (thinktime < ltime + elapsed)
+	{
+		*pending = 0.0;
+		float movetime = thinktime - ltime;
+		return (movetime < 0.0f) ? 0.0f : movetime;
+	}
+
+	if (elapsed + KTP_PUSHER_STEP_SLACK >= 1.0 / stepHz)
+	{
+		*pending = 0.0;
+		return (float)elapsed;
+	}
+
+	*pending = elapsed;
+	return 0.0f;
+}
+
+struct ktp_pusher_step_slot_t
+{
+	double pending;
+	int serial;
+	int spawn;
+};
+
+static ktp_pusher_step_slot_t g_ktp_pusher_step[MAX_EDICTS];
+// Time banked before a disarm must not be paid out after a re-arm.
+static qboolean g_ktp_pusher_step_stale = TRUE;
+
+static double *KTP_PusherStepPending(edict_t *ent)
+{
+	static double unbanked;
+
+	if (g_ktp_pusher_step_stale)
+	{
+		Q_memset(g_ktp_pusher_step, 0, sizeof(g_ktp_pusher_step));
+		g_ktp_pusher_step_stale = FALSE;
+	}
+
+	int e = NUM_FOR_EDICT(ent);
+	if (e <= 0 || e >= MAX_EDICTS)
+	{
+		unbanked = 0.0;
+		return &unbanked;
+	}
+
+	// A freed slot reused by a new entity, or a new map, must start from nothing.
+	ktp_pusher_step_slot_t *slot = &g_ktp_pusher_step[e];
+	if (slot->serial != ent->serialnumber || slot->spawn != g_psvs.spawncount)
+	{
+		slot->pending = 0.0;
+		slot->serial = ent->serialnumber;
+		slot->spawn = g_psvs.spawncount;
+	}
+
+	return &slot->pending;
 }
 
 NOXREF void SV_CheckAllEnts()
@@ -1026,16 +1115,27 @@ void SV_Physics_Pusher(edict_t *ent)
 	const qboolean ktp_wasmoving = ktp_contain
 		&& (!VectorIsZero(ent->v.velocity) || !VectorIsZero(ent->v.avelocity));
 
-	if (thinktime < oldltime + host_frametime)
-	{
-		movetime = thinktime - ent->v.ltime;
+	const float ktp_step_hz = ktp_pusher_step_hz.value;
 
-		if (movetime < 0.0f)
-			movetime = 0.0f;
+	if (ktp_step_hz > 0.0f)
+	{
+		movetime = KTP_PusherStepPlan(KTP_PusherStepPending(ent), host_frametime, thinktime, oldltime, ktp_step_hz);
 	}
 	else
 	{
-		movetime = host_frametime;
+		g_ktp_pusher_step_stale = TRUE;
+
+		if (thinktime < oldltime + host_frametime)
+		{
+			movetime = thinktime - ent->v.ltime;
+
+			if (movetime < 0.0f)
+				movetime = 0.0f;
+		}
+		else
+		{
+			movetime = host_frametime;
+		}
 	}
 
 	if (movetime)
