@@ -773,3 +773,21 @@ TEST(DisconnectReasonIsOneLine, KtpNetTelemetry, 1000)
 	KTP_NetSanitizeReason(NULL, out, sizeof(out));
 	CHECK("null reason is empty", out[0] == '\0');
 }
+
+// A client timing out sends nothing, so an empty slice is the reading, not noise to skip.
+TEST(EmptySliceStillPrints, KtpNetTelemetry, 1000)
+{
+	client_t cl;
+	Q_memset(&cl, 0, sizeof(cl));
+	cl.connected = TRUE;
+	CHECK("connected player with no packets is skipped", KTP_NetClientSliceWanted(&cl));
+
+	cl.proxy = TRUE;
+	CHECK("proxy printed", !KTP_NetClientSliceWanted(&cl));
+	cl.proxy = FALSE;
+	cl.fakeclient = TRUE;
+	CHECK("bot printed", !KTP_NetClientSliceWanted(&cl));
+	cl.fakeclient = FALSE;
+	cl.connected = FALSE;
+	CHECK("empty slot printed", !KTP_NetClientSliceWanted(&cl));
+}
