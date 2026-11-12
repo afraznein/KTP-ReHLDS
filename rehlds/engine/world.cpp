@@ -1115,6 +1115,8 @@ void SV_SingleClipMoveToEntity(edict_t *ent, const vec_t *start, const vec_t *mi
 		trace->hitgroup = SV_HitgroupForStudioHull(last_hitgroup);
 	}
 
+	// Gating the rotation on fraction is safe: a containment trace never writes plane.normal
+	// (it stays zeroed), and every hull-check path that writes it also sets fraction below 1.
 	if (trace->fraction != 1.0f)
 	{
 		if (rotated)
