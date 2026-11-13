@@ -38,6 +38,15 @@ check "main: bare commit with another session's staging" block g -C "$main" comm
 dirty "$main"
 check "main: commit -a" block g -C "$main" commit -q -a -m sweep
 
+piped_sweep() { # the hook's output goes to a reader that quits after one line; the commit must still be refused
+  before=$(git -C "$main" rev-parse HEAD)
+  g -C "$main" commit -q -m piped 2>&1 | head -1 >/dev/null
+  [ "$(git -C "$main" rev-parse HEAD)" != "$before" ]
+}
+dirty "$main"
+git -C "$main" add theirs.txt mine.txt
+check "main: bare commit piped into head" block piped_sweep
+
 dirty "$main"
 git -C "$main" add theirs.txt
 check "main: pathspec commit" pass g -C "$main" commit -q -m mine -- mine.txt
