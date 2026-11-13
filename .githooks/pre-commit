@@ -1,4 +1,5 @@
 #!/bin/sh
+trap '' PIPE   # a reader that closes early (git commit | head) would kill this with SIGPIPE, and Git for Windows then commits anyway
 # Refuse a commit in the shared main checkout that could sweep up another session's staged work.
 # Git names the index it hands this hook, and that tells the commit forms apart:
 #   git commit -m .. -- <paths>   next-index-<pid>.lock   only the named paths      allowed
