@@ -9536,6 +9536,7 @@ void KTP_ProfileResetInterval(void)
 	g_ktp_push_move = 0;
 	g_ktp_push_episodes = 0;
 	g_ktp_push_untracked = 0;
+	g_ktp_push_blocked_time = 0.0;
 	g_ktp_push_track_n = 0;
 	g_ktp_contain_stops = 0;
 	g_ktp_contain_tests = 0;
@@ -10187,9 +10188,10 @@ void EXT_FUNC SV_Frame_Internal()
 					}
 				}
 				uint32 push_blocked = g_ktp_push_rotate + g_ktp_push_move;
-				Log_Printf("[KTP_PROFILE] push: blocked=%u rotate=%u move=%u episodes=%u pushers=%d untracked=%u client_blocks=%u victims=%d\n",
+				Log_Printf("[KTP_PROFILE] push: blocked=%u rotate=%u move=%u episodes=%u pushers=%d untracked=%u client_blocks=%u victims=%d blocked_ms=%.1f\n",
 					push_blocked, g_ktp_push_rotate, g_ktp_push_move, g_ktp_push_episodes,
-					g_ktp_push_track_n, g_ktp_push_untracked, push_client_blocks, push_victims);
+					g_ktp_push_track_n, g_ktp_push_untracked, push_client_blocks, push_victims,
+					g_ktp_push_blocked_time * 1000.0);
 
 				int push_worst = KTP_PushWorstTrack();
 				uint32 push_victim_worst_n = 0;

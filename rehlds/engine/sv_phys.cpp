@@ -585,13 +585,25 @@ uint32 g_ktp_push_rotate = 0;
 uint32 g_ktp_push_move = 0;
 uint32 g_ktp_push_episodes = 0;
 uint32 g_ktp_push_untracked = 0;
+double g_ktp_push_blocked_time = 0.0;
 ktp_push_track_t g_ktp_push_track[KTP_PUSH_TRACK_N];
 int g_ktp_push_track_n = 0;
 uint32 g_ktp_push_victim_slot[MAX_CLIENTS];
 
 extern bool g_ktp_profiling_enabled;
 
-void KTP_PushSampleBlocked(int pusher, int victim_slot, qboolean rotate, int frame, int spawn)
+double KTP_PushEpisodeGap(float stepHz, double frametime)
+{
+	if (!(stepHz > 0.0f))
+		return 0.0;
+
+	// A step fires on the first frame that banks 1/hz less KTP_PUSHER_STEP_SLACK, so the
+	// spacing never reaches 1/hz plus that frame; the slack covers the sum's rounding.
+	return 1.0 / stepHz + frametime + KTP_PUSHER_STEP_SLACK;
+}
+
+void KTP_PushSampleBlocked(int pusher, int victim_slot, qboolean rotate, int frame, int spawn,
+	double time, double gap, double movetime)
 {
 	if (rotate)
 		++g_ktp_push_rotate;
@@ -624,15 +636,27 @@ void KTP_PushSampleBlocked(int pusher, int victim_slot, qboolean rotate, int fra
 		t->blocks = 0;
 		t->episodes = 0;
 		t->last_frame = frame - 2;
+		t->last_time = 0.0;
 	}
 
+	const qboolean same_frame = (frame == t->last_frame);
+	const qboolean continues = same_frame || frame == t->last_frame + 1
+		|| (gap > 0.0 && t->blocks && time - t->last_time <= gap);
+
 	++t->blocks;
-	if (frame != t->last_frame && frame != t->last_frame + 1)
+	if (!continues)
 	{
 		++t->episodes;
 		++g_ktp_push_episodes;
 	}
+
+	// The rotate and move halves of one pusher can both block in a frame; that is one
+	// frame of lost motion, not two.
+	if (!same_frame)
+		g_ktp_push_blocked_time += movetime;
+
 	t->last_frame = frame;
+	t->last_time = time;
 }
 
 int KTP_PushWorstTrack(void)
@@ -920,7 +944,8 @@ void SV_PushMove(edict_t *pusher, float movetime)
 
 			pusher->v.ltime -= movetime;
 			if (g_ktp_profiling_enabled)
-				KTP_PushSampleBlocked(NUM_FOR_EDICT(pusher), KTP_PushVictimSlot(check->v.flags, NUM_FOR_EDICT(check)), FALSE, host_framecount, g_psvs.spawncount);
+				KTP_PushSampleBlocked(NUM_FOR_EDICT(pusher), KTP_PushVictimSlot(check->v.flags, NUM_FOR_EDICT(check)), FALSE, host_framecount, g_psvs.spawncount,
+					g_psv.time, KTP_PushEpisodeGap(ktp_pusher_step_hz.value, host_frametime), movetime);
 			gEntityInterface.pfnBlocked(pusher, check);
 
 			// move back any entities we already moved
@@ -1077,7 +1102,8 @@ qboolean SV_PushRotate(edict_t *pusher, float movetime)
 
 			pusher->v.ltime -= movetime;
 			if (g_ktp_profiling_enabled)
-				KTP_PushSampleBlocked(NUM_FOR_EDICT(pusher), KTP_PushVictimSlot(check->v.flags, NUM_FOR_EDICT(check)), TRUE, host_framecount, g_psvs.spawncount);
+				KTP_PushSampleBlocked(NUM_FOR_EDICT(pusher), KTP_PushVictimSlot(check->v.flags, NUM_FOR_EDICT(check)), TRUE, host_framecount, g_psvs.spawncount,
+					g_psv.time, KTP_PushEpisodeGap(ktp_pusher_step_hz.value, host_frametime), movetime);
 			gEntityInterface.pfnBlocked(pusher, check);
 
 			// move back any entities we already moved

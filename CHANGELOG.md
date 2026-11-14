@@ -10,6 +10,30 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ### Added
 
+- **`push:` episodes mean something again under `ktp_pusher_step_hz`, and a new `blocked_ms=`
+  field reads the same at any step rate.** An episode was a run of blocks on the same or the
+  next frame. A stepped door moves only once per step, so a door held shut blocks once a step,
+  two or three ~1 ms frames apart at 500 Hz, and every one of those blocks opened a new episode:
+  on the fleet `episodes=` came out equal to `blocked=` in every interval. With stepping armed a
+  block now also continues the run when it lands within one step period plus the current frame
+  of the last one (`KTP_PushEpisodeGap`), the widest spacing two consecutive steps can have. At
+  `ktp_pusher_step_hz 0` the gap is 0 and the frame rule runs unchanged, so a per-frame baseline
+  stays comparable.
+
+  `blocked=` counts pusher moves, so its unit changes with the cvar: a frame at 0, a step above
+  it. `blocked_ms=` sums the `movetime` of each blocked push, once per pusher per frame, so it is
+  the door motion lost to blocks in milliseconds whatever the step rate. Appended at the end of
+  the line; nothing in the stack parses `push:` positionally.
+
+  ```
+  [KTP_PROFILE] push: blocked=500 rotate=500 move=0 episodes=1 pushers=1 untracked=0 client_blocks=500 victims=1 blocked_ms=1000.0
+  ```
+
+  `ktp_pushtelemetry_tests.cpp` holds a door shut for a second at 500 Hz on alternating 0.9/1.1 ms
+  frames (one episode, one second of blocked time), the same hold under the frame rule (one
+  episode per step, the fleet's reading), a swing-back half a second later (a second episode),
+  both edges of the gap, and a rotate+move frame counted once.
+
 - **Fixed-rate pusher stepping, behind `ktp_pusher_step_hz` (default `0`, off).**
   Doors advance by `host_frametime` every server frame, so on a ~1 ms frame they move
   in 0.1° slivers, and a door that is blocked reverses by one sliver per frame — a

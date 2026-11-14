@@ -18,6 +18,7 @@ typedef struct ktp_push_track_s
 	uint32 blocks;
 	uint32 episodes;
 	int last_frame;   // host_framecount of the latest block
+	double last_time; // g_psv.time of the latest block
 } ktp_push_track_t;
 
 extern uint32 g_ktp_push_rotate;
@@ -26,6 +27,9 @@ extern uint32 g_ktp_push_move;
 // player for a second reads as sys_ticrate blocks. An episode is a run of
 // consecutive blocked frames on one pusher, which does not scale with fps.
 extern uint32 g_ktp_push_episodes;
+// Seconds of pusher motion lost to blocks: the movetime of each blocked push, once per
+// pusher per frame. Unlike blocked=, it reads the same under any ktp_pusher_step_hz.
+extern double g_ktp_push_blocked_time;
 extern uint32 g_ktp_push_untracked;
 extern ktp_push_track_t g_ktp_push_track[KTP_PUSH_TRACK_N];
 extern int g_ktp_push_track_n;
@@ -33,7 +37,15 @@ extern uint32 g_ktp_push_victim_slot[MAX_CLIENTS];
 
 // victim_slot is the client slot, or -1 for a non-client (a grenade, a dropped
 // weapon, a proxy). Every block is counted; only client slots are attributed.
-void KTP_PushSampleBlocked(int pusher, int victim_slot, qboolean rotate, int frame, int spawn);
+// gap 0 keeps the frame rule: a block on the same or the next frame continues the
+// episode. A stepped pusher moves only once per step, so a door held shut blocks once
+// per step, several frames apart; gap is then the widest spacing that is still one run.
+void KTP_PushSampleBlocked(int pusher, int victim_slot, qboolean rotate, int frame, int spawn,
+	double time = 0.0, double gap = 0.0, double movetime = 0.0);
+
+// The episode gap for KTP_PushSampleBlocked: 0 when pushers step every frame, else one
+// step period plus the current frame, the most two consecutive steps can be apart.
+double KTP_PushEpisodeGap(float stepHz, double frametime);
 
 // A proxy is FL_CLIENT too, and a slot naming the HLTV would read as a stuck player.
 int KTP_PushVictimSlot(int flags, int entindex);
