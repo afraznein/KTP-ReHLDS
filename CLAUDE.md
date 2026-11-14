@@ -188,7 +188,7 @@ Low-overhead profiling to identify performance bottlenecks. Covers the full `SV_
 [KTP_PROFILE] net_detail: lagcomp_first=3(PlayerA) latency_worst=7(PlayerB) jitter_worst=7(PlayerB) maxunlag_excess_worst=7(PlayerB) shadow_worst=-1(-) drops_worst=7(PlayerB) drops_worst_n=9 latzero_worst=4(PlayerA) latzero_worst_n=2 updates_worst=7(PlayerB) updates_worst_n=998 loss_worst=7(PlayerB) loss_worst_n=6 subinterval_worst=4(PlayerA) subinterval_worst_n=305 synth_worst=7(PlayerB) synth_worst_n=210 interp_diff_worst=4(PlayerA)   (conditional: only when a slot exists to name; latency/jitter names share send_detail_peak's stale-name caveat)
 [KTP_PROFILE] rewind: attempts=4812 miss=37 skip=112 depth_worst=118.4ms dist_worst=204.6u
 [KTP_PROFILE] net_session: client=7(PlayerB) steamid=<auth id> dur=2412s pkts=241012 cmds=240877 drops=1210 latzero=3 subinterval=0 synth_ms=4180 ignorecmd_hits=2 latency_avg=84.2ms latency_max=191.0ms jitter_avg=3.1ms loss_avg=0.4 loss_max=6   (NOT interval-driven: one line per human client at SV_DropClient_internal, covering the whole connection across maps; needs profiling + ktp_profile_net on at disconnect)
-[KTP_PROFILE] push: blocked=1412 rotate=1400 move=12 episodes=6 pushers=3 untracked=0 client_blocks=1405 victims=2   (every interval; blocked pusher frames from SV_PushMove/SV_PushRotate. blocked scales with fps, episodes does not — see CHANGELOG)
+[KTP_PROFILE] push: blocked=1412 rotate=1400 move=12 episodes=6 pushers=3 untracked=0 client_blocks=1405 victims=2 blocked_ms=1412.0   (every interval; blocked pusher moves from SV_PushMove/SV_PushRotate — a frame at ktp_pusher_step_hz 0, a step above it. blocked scales with fps/step rate, episodes and blocked_ms do not — see CHANGELOG)
 [KTP_PROFILE] push_detail: pusher_worst=87(func_door_rotating/door_axis2) pusher_worst_n=1398 pusher_worst_episodes=2 victim_worst=4(PlayerA) victim_worst_n=1398   (conditional: only when something was blocked)
 ```
 
@@ -442,6 +442,12 @@ so one stuck player is re-counted once per swing and the interval total grows wi
 there rather than with how many people it happened to. ⛔ **So a large `hits` is not a large number of
 players** — it is one of them, measured for longer. Episodes are the incident unit, which is why
 `push:` carries `episodes=` alongside `blocked=`: `blocked` scales with fps and `episodes` does not.
+⚠️ **Under `ktp_pusher_step_hz` a build without the step-aware episode gap reports `episodes` = `blocked`**
+(each step of a held door lands frames after the last, past the old same-or-next-frame rule). Compare
+across step rates with `blocked_ms`, never with `blocked`, whose unit is a frame at 0 and a step above it.
+⚠️ **The interval is NOT reset at a changelevel**, so the first `push:`/`contain:` record after
+`Started map` carries the previous map's blocks — its `push_detail` names the pusher `(-/-)`. A per-map
+reader must attribute that record to the previous map.
 ➡️ Read `hits` beside `clients=`, and derive an incident count by grouping consecutive intervals,
 never by summing them. A headline taken off the raw total needs a multi-day measurement to deflate,
 and that has already happened once.

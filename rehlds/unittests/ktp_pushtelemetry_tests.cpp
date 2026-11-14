@@ -15,6 +15,7 @@ static void ktp_push_reset_all()
 	g_ktp_push_move = 0;
 	g_ktp_push_episodes = 0;
 	g_ktp_push_untracked = 0;
+	g_ktp_push_blocked_time = 0.0;
 	g_ktp_push_track_n = 0;
 	for (int i = 0; i < MAX_CLIENTS; i++)
 		g_ktp_push_victim_slot[i] = 0;
@@ -86,6 +87,91 @@ TEST(ConsecutiveFramesAreOneEpisode, KtpPushTelemetry, 1000)
 	UINT32_EQUALS("episodes are per pusher", 3u, g_ktp_push_episodes);
 }
 
+// A stepped door moves once per step, two or three ~1 ms frames apart, so a door held
+// shut blocks once a step. Under the frame rule each of those opened an episode, which
+// made episodes= equal blocked= on a fleet stepping at 500 Hz.
+static int ktp_push_hold_stepped(int pusher, int frame, double *time, double seconds, float hz, qboolean stepAware)
+{
+	const double frames[2] = { 0.0009, 0.0011 };
+	const double step = 1.0 / hz;
+	double bank = 0.0;
+	int steps = 0;
+
+	for (double held = 0.0; held < seconds; frame++)
+	{
+		const double dt = frames[frame & 1];
+		*time += dt;
+		held += dt;
+		bank += dt;
+		if (bank + 1.0e-6 >= step)
+		{
+			KTP_PushSampleBlocked(pusher, 3, ROTATE, frame, MAP_A, *time,
+				stepAware ? KTP_PushEpisodeGap(hz, dt) : 0.0, bank);
+			bank = 0.0;
+			steps++;
+		}
+	}
+
+	return steps;
+}
+
+TEST(SteppedHoldIsOneEpisode, KtpPushTelemetry, 1000)
+{
+	ktp_push_reset_all();
+	double time = 100.0;
+
+	int steps = ktp_push_hold_stepped(40, 1000, &time, 1.0, 500.0f, TRUE);
+
+	CHECK("a 1 s hold at 500 Hz is a few hundred steps", steps > 300 && steps <= 501);
+	UINT32_EQUALS("every step blocked", (uint32)steps, g_ktp_push_rotate);
+	UINT32_EQUALS("one held door is one episode", 1u, g_ktp_push_episodes);
+	DOUBLES_EQUAL("blocked time is the time held", 1.0, g_ktp_push_blocked_time, 0.003);
+
+	// The door swings away and comes back half a second later: a new contact.
+	time += 0.5;
+	ktp_push_hold_stepped(40, 3000, &time, 0.1, 500.0f, TRUE);
+	UINT32_EQUALS("a real gap still opens an episode", 2u, g_ktp_push_episodes);
+}
+
+TEST(FrameRuleCountsEveryStepAsAnEpisode, KtpPushTelemetry, 1000)
+{
+	ktp_push_reset_all();
+	double time = 100.0;
+
+	int steps = ktp_push_hold_stepped(40, 1000, &time, 1.0, 500.0f, FALSE);
+
+	UINT32_EQUALS("without the gap each step is its own episode", (uint32)steps, g_ktp_push_episodes);
+}
+
+TEST(EpisodeGapIsOffWithoutStepping, KtpPushTelemetry, 1000)
+{
+	DOUBLES_EQUAL("hz 0", 0.0, KTP_PushEpisodeGap(0.0f, 0.001), 0.0);
+	DOUBLES_EQUAL("negative hz", 0.0, KTP_PushEpisodeGap(-5.0f, 0.001), 0.0);
+	DOUBLES_EQUAL("500 Hz at 1 ms frames", 0.003, KTP_PushEpisodeGap(500.0f, 0.001), 0.00001);
+
+	// Spacing just past one step plus the frame is not the same run.
+	ktp_push_reset_all();
+	const double gap = KTP_PushEpisodeGap(500.0f, 0.001);
+	KTP_PushSampleBlocked(40, 3, ROTATE, 1000, MAP_A, 10.0, gap, 0.002);
+	KTP_PushSampleBlocked(40, 3, ROTATE, 1003, MAP_A, 10.0 + gap - 1.0e-7, gap, 0.002);
+	UINT32_EQUALS("inside the gap", 1u, g_ktp_push_episodes);
+	KTP_PushSampleBlocked(40, 3, ROTATE, 1007, MAP_A, 10.0 + 2.0 * gap + 1.0e-6, gap, 0.002);
+	UINT32_EQUALS("past the gap", 2u, g_ktp_push_episodes);
+}
+
+// One frame of a rotate+move pusher blocked in both halves lost one frame of motion.
+TEST(BlockedTimeCountsAFrameOnce, KtpPushTelemetry, 1000)
+{
+	ktp_push_reset_all();
+	g_ktp_push_blocked_time = 0.0;
+
+	KTP_PushSampleBlocked(40, 3, ROTATE, 500, MAP_A, 5.0, 0.0, 0.001);
+	KTP_PushSampleBlocked(40, 3, MOVE, 500, MAP_A, 5.0, 0.0, 0.001);
+	KTP_PushSampleBlocked(41, 3, ROTATE, 500, MAP_A, 5.0, 0.0, 0.001);
+
+	DOUBLES_EQUAL("two doors, one frame each", 0.002, g_ktp_push_blocked_time, 1.0e-9);
+}
+
 // An edict index is reused by the next map, so it must not continue an entry
 // from the previous one, or push_detail names this map's entity for that one's blocks.
 TEST(ChangelevelDoesNotMergePushers, KtpPushTelemetry, 1000)
@@ -146,14 +232,15 @@ TEST(IntervalResetCoversPushCounters, KtpPushTelemetry, 1000)
 {
 	ktp_push_reset_all();
 
-	KTP_PushSampleBlocked(40, 1, ROTATE, 100, MAP_A);
+	KTP_PushSampleBlocked(40, 1, ROTATE, 100, MAP_A, 1.0, 0.0, 0.001);
 	KTP_PushSampleBlocked(50, 2, MOVE, 100, MAP_A);
 	for (int i = 0; i < KTP_PUSH_TRACK_N; i++)
 		KTP_PushSampleBlocked(200 + i, NOT_A_CLIENT, MOVE, 100, MAP_A);
 
 	CHECK("fixture did not populate the counters",
 		g_ktp_push_rotate && g_ktp_push_move && g_ktp_push_episodes && g_ktp_push_untracked
-		&& g_ktp_push_track_n && g_ktp_push_victim_slot[1] && g_ktp_push_victim_slot[2]);
+		&& g_ktp_push_track_n && g_ktp_push_victim_slot[1] && g_ktp_push_victim_slot[2]
+		&& g_ktp_push_blocked_time > 0.0);
 
 	KTP_ProfileResetInterval();
 
@@ -161,6 +248,7 @@ TEST(IntervalResetCoversPushCounters, KtpPushTelemetry, 1000)
 	UINT32_EQUALS("move survived the reset", 0u, g_ktp_push_move);
 	UINT32_EQUALS("episodes survived the reset", 0u, g_ktp_push_episodes);
 	UINT32_EQUALS("untracked survived the reset", 0u, g_ktp_push_untracked);
+	DOUBLES_EQUAL("blocked time survived the reset", 0.0, g_ktp_push_blocked_time, 0.0);
 	LONGS_EQUAL("pusher table survived the reset", 0, g_ktp_push_track_n);
 	for (int i = 0; i < MAX_CLIENTS; i++)
 		UINT32_EQUALS("per-slot victims survived the reset", 0u, g_ktp_push_victim_slot[i]);
