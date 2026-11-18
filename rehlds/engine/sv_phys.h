@@ -66,10 +66,11 @@ float KTP_PusherStepPlan(double *pending, double frametime, float thinktime, flo
 #define KTP_DOORGUARD_REVERSED    1 // the game turned the door back by itself
 #define KTP_DOORGUARD_RETARGET    2 // sent on through the blocker; out* hold the move back
 #define KTP_DOORGUARD_SKIP_FIELD  3 // sent on, but the private field failed its self-check
-#define KTP_DOORGUARD_SKIP_MIRROR 4 // sent on, and the other side does not turn it back
+#define KTP_DOORGUARD_SKIP_MIRROR 4 // sent on, but the door does not close at 0 or the other side does not turn it back
 int KTP_DoorGuardPlan(const vec_t *angles, float ltime,
 	const vec_t *avelBefore, float nextthinkBefore,
 	const vec_t *avelAfter, float nextthinkAfter, const vec_t *finalAngle,
+	const vec_t *closedAngle,
 	vec_t *outAvel, float *outNextthink, vec_t *outFinal);
 qboolean KTP_DoorGuardFieldMatches(const vec_t *angles, const vec_t *avelocity, float nextthink, float ltime,
 	const vec_t *field);

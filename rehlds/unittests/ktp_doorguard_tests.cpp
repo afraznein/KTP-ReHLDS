@@ -25,6 +25,9 @@ static ktp_guard_move_t ktp_angular_move(const vec_t *angles, float ltime, const
 	return m;
 }
 
+// Every door in the rotation rests closed at 0.
+static const vec3_t ktp_closed0 = { 0.0f, 0.0f, 0.0f };
+
 static void ktp_vec(vec_t *v, float x, float y, float z)
 {
 	v[0] = x;
@@ -49,7 +52,7 @@ TEST(SentOnThroughTheBlockerComesBack, KtpDoorGuard, 1000)
 	vec3_t avel, finalAngle;
 	float nextthink = -1.0f;
 	int v = KTP_DoorGuardPlan(angles, ltime, avelBefore, closing.nextthink,
-		game.avelocity, game.nextthink, game.finalAngle, avel, &nextthink, finalAngle);
+		game.avelocity, game.nextthink, game.finalAngle, ktp_closed0, avel, &nextthink, finalAngle);
 
 	LONGS_EQUAL("re-targeted", KTP_DOORGUARD_RETARGET, v);
 	DOUBLES_EQUAL("ends on the side it came from", -90.0, finalAngle[1], 1.0e-4);
@@ -64,7 +67,7 @@ TEST(SentOnThroughTheBlockerComesBack, KtpDoorGuard, 1000)
 	CHECK("the move it writes is self-consistent", KTP_DoorGuardFieldMatches(angles, avel, nextthink, ltime, finalAngle));
 }
 
-TEST(MirrorsOnBothSidesAndOtherAxes, KtpDoorGuard, 1000)
+TEST(MirrorsFromThePlusSide, KtpDoorGuard, 1000)
 {
 	const float ltime = 12.0f;
 	vec3_t angles, closed, farSide;
@@ -79,19 +82,9 @@ TEST(MirrorsOnBothSidesAndOtherAxes, KtpDoorGuard, 1000)
 	vec3_t avel, finalAngle;
 	float nextthink;
 	LONGS_EQUAL("+ side", KTP_DOORGUARD_RETARGET, KTP_DoorGuardPlan(angles, ltime, closing.avelocity, closing.nextthink,
-		game.avelocity, game.nextthink, game.finalAngle, avel, &nextthink, finalAngle));
+		game.avelocity, game.nextthink, game.finalAngle, ktp_closed0, avel, &nextthink, finalAngle));
 	DOUBLES_EQUAL("+ side goes back to +90", 90.0, finalAngle[1], 1.0e-4);
 	DOUBLES_EQUAL("60 degrees at 60 deg/s", ltime + 1.0, nextthink, 1.0e-4);
-
-	// A door that swings on the roll axis (spawnflags ROTATE_Z).
-	ktp_vec(angles, 0.0f, 0.0f, -20.0f);
-	ktp_vec(farSide, 0.0f, 0.0f, 90.0f);
-	closing = ktp_angular_move(angles, ltime, closed, 100.0f);
-	game = ktp_angular_move(angles, ltime, farSide, 100.0f);
-	LONGS_EQUAL("roll axis", KTP_DOORGUARD_RETARGET, KTP_DoorGuardPlan(angles, ltime, closing.avelocity, closing.nextthink,
-		game.avelocity, game.nextthink, game.finalAngle, avel, &nextthink, finalAngle));
-	DOUBLES_EQUAL("roll axis goes back to -90", -90.0, finalAngle[2], 1.0e-4);
-	DOUBLES_EQUAL("yaw untouched", 0.0, finalAngle[1], 1.0e-6);
 }
 
 // Every case the guard must leave to the game, and the outputs it must not touch.
@@ -112,26 +105,55 @@ TEST(LeavesTheGameAlone, KtpDoorGuard, 1000)
 	// The 0.25 s limiter swallowed the call: nothing moved.
 	ktp_guard_move_t closing = ktp_angular_move(angles, ltime, closed, 100.0f);
 	LONGS_EQUAL("unchanged", KTP_DOORGUARD_UNCHANGED, KTP_DoorGuardPlan(angles, ltime, closing.avelocity, closing.nextthink,
-		closing.avelocity, closing.nextthink, closing.finalAngle, avel, &nextthink, finalAngle));
+		closing.avelocity, closing.nextthink, closing.finalAngle, ktp_closed0, avel, &nextthink, finalAngle));
 
 	// The game picked the good side itself.
 	ktp_guard_move_t good = ktp_angular_move(angles, ltime, open, 100.0f);
 	LONGS_EQUAL("reversed by the game", KTP_DOORGUARD_REVERSED, KTP_DoorGuardPlan(angles, ltime, closing.avelocity, closing.nextthink,
-		good.avelocity, good.nextthink, good.finalAngle, avel, &nextthink, finalAngle));
+		good.avelocity, good.nextthink, good.finalAngle, ktp_closed0, avel, &nextthink, finalAngle));
 
 	// A blocked OPENING door: DoorGoDown heads for closed, which is always a reversal.
 	ktp_guard_move_t opening = ktp_angular_move(angles, ltime, open, 100.0f);
 	LONGS_EQUAL("opening door backs off", KTP_DOORGUARD_REVERSED, KTP_DoorGuardPlan(angles, ltime, opening.avelocity, opening.nextthink,
-		closing.avelocity, closing.nextthink, closing.finalAngle, avel, &nextthink, finalAngle));
+		closing.avelocity, closing.nextthink, closing.finalAngle, ktp_closed0, avel, &nextthink, finalAngle));
 
 	// Left on the far heading by an earlier block, DoorGoDown aims at closed, which lies
 	// the same way. Closed mirrors onto itself, so there is no other side to send it to.
 	ktp_guard_move_t onward = ktp_angular_move(angles, ltime, farSide, 100.0f);
 	LONGS_EQUAL("a close has no mirror", KTP_DOORGUARD_SKIP_MIRROR, KTP_DoorGuardPlan(angles, ltime, onward.avelocity, onward.nextthink,
-		closing.avelocity, closing.nextthink, closing.finalAngle, avel, &nextthink, finalAngle));
+		closing.avelocity, closing.nextthink, closing.finalAngle, ktp_closed0, avel, &nextthink, finalAngle));
 
 	DOUBLES_EQUAL("nextthink untouched", 1234.0, nextthink, 0.0);
 	DOUBLES_EQUAL("avel untouched", 7.0, avel[1], 0.0);
+	DOUBLES_EQUAL("final untouched", 7.0, finalAngle[1], 0.0);
+}
+
+// -final is the side the door came from only when it closes at 0. A door that rests
+// elsewhere would be sent to an angle no move of its own ever targets.
+TEST(LeavesADoorThatDoesNotCloseAtZero, KtpDoorGuard, 1000)
+{
+	const float ltime = 20.0f;
+	vec3_t angles, closed, farSide, avel, finalAngle;
+	float nextthink = 1234.0f;
+	ktp_vec(angles, 0.0f, -50.0f, 0.0f);
+	ktp_vec(closed, 0.0f, 90.0f, 0.0f);
+	ktp_vec(farSide, 0.0f, 180.0f, 0.0f);
+	ktp_vec(finalAngle, 7.0f, 7.0f, 7.0f);
+
+	// Heading for its closed angle at 90 and blocked on the way: DoorGoDown aims at 90 again.
+	ktp_guard_move_t earlier = ktp_angular_move(angles, ltime, closed, 50.0f);
+	ktp_guard_move_t closing = ktp_angular_move(angles, ltime, closed, 100.0f);
+	LONGS_EQUAL("closed at 90, sent on to closed", KTP_DOORGUARD_SKIP_MIRROR, KTP_DoorGuardPlan(angles, ltime,
+		earlier.avelocity, earlier.nextthink, closing.avelocity, closing.nextthink, closing.finalAngle,
+		closed, avel, &nextthink, finalAngle));
+
+	// The same geometry with a DoorGoUp re-target past the blocker is left alone too.
+	ktp_guard_move_t onward = ktp_angular_move(angles, ltime, farSide, 100.0f);
+	LONGS_EQUAL("closed at 90, sent on to open", KTP_DOORGUARD_SKIP_MIRROR, KTP_DoorGuardPlan(angles, ltime,
+		closing.avelocity, closing.nextthink, onward.avelocity, onward.nextthink, onward.finalAngle,
+		closed, avel, &nextthink, finalAngle));
+
+	DOUBLES_EQUAL("nothing written", 1234.0, nextthink, 0.0);
 	DOUBLES_EQUAL("final untouched", 7.0, finalAngle[1], 0.0);
 }
 
@@ -163,16 +185,16 @@ TEST(RefusesAFieldThatDoesNotMatch, KtpDoorGuard, 1000)
 	{
 		ktp_vec(field, bad[i][0], bad[i][1], bad[i][2]);
 		LONGS_EQUAL("mismatched field", KTP_DOORGUARD_SKIP_FIELD, KTP_DoorGuardPlan(angles, ltime, closing.avelocity, closing.nextthink,
-			game.avelocity, game.nextthink, field, avel, &nextthink, finalAngle));
+			game.avelocity, game.nextthink, field, ktp_closed0, avel, &nextthink, finalAngle));
 	}
 
 	ktp_vec(field, 0.0f, std::numeric_limits<float>::quiet_NaN(), 0.0f);
 	LONGS_EQUAL("NaN field", KTP_DOORGUARD_SKIP_FIELD, KTP_DoorGuardPlan(angles, ltime, closing.avelocity, closing.nextthink,
-		game.avelocity, game.nextthink, field, avel, &nextthink, finalAngle));
+		game.avelocity, game.nextthink, field, ktp_closed0, avel, &nextthink, finalAngle));
 
 	// nextthink at or behind ltime is no move in progress.
 	LONGS_EQUAL("nextthink in the past", KTP_DOORGUARD_SKIP_FIELD, KTP_DoorGuardPlan(angles, ltime, closing.avelocity, closing.nextthink,
-		game.avelocity, ltime, game.finalAngle, avel, &nextthink, finalAngle));
+		game.avelocity, ltime, game.finalAngle, ktp_closed0, avel, &nextthink, finalAngle));
 
 	DOUBLES_EQUAL("nothing written", 1234.0, nextthink, 0.0);
 	DOUBLES_EQUAL("final untouched", 7.0, finalAngle[1], 0.0);

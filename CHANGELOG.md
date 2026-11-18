@@ -26,8 +26,11 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
   destinations (`-final`), at the game's speed, writing `avelocity`, `nextthink` and the game's
   private `m_vecFinalAngle` together, since `AngularMoveDone` snaps the door to that field. A
   call the game's 0.25 s limiter swallowed changes nothing and the guard does nothing; a door the
-  game turned back by itself is left alone; a re-target to the closed angle has no other side
-  and is left alone.
+  game turned back by itself is left alone. `-final` is the side the door came from only for a
+  door that rests closed at 0, so the guard also reads the game's `m_vecAngle1` (`0x1a8`) and
+  leaves any other door alone; a re-target to closed then mirrors onto itself and is left alone
+  too. A door with a `targetname` is left alone, because `Blocked` moves every door sharing it and
+  turning back one leaf would split the pair.
 
   Two checks bound the write into game private data. The game DLL's md5 is taken when it loads
   (one line on the console, `game DLL md5 ...`), and the guard runs only on
@@ -38,16 +41,19 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
   touched.
 
   `push:` gains two fields, appended at the end: `guard=` counts re-targets made, and
-  `guard_skip=` counts doors the game sent on through the blocker that the guard left alone
-  (self-check failed, or no reversing side). Both are 0 with the cvar off.
+  `guard_skip=` counts re-targets refused because the field failed its self-check. Both are 0
+  with the cvar off.
+
+  Upstream code touched, as insertions only: `SV_PushRotate`'s block path (two snapshots before
+  `pfnBlocked`, the guard call after it) and `LoadEntityDLLs` (the hash after `LoadThisDll`).
 
   ```
   [KTP_PROFILE] push: blocked=3 rotate=3 move=0 episodes=1 pushers=1 untracked=0 client_blocks=3 victims=1 blocked_ms=6.3 guard=1 guard_skip=0
   ```
 
   `ktp_doorguard_tests.cpp` covers the thunder2 wedge (-43 degrees, sent on to +90, comes back to
-  -90 at 100 deg/s in 0.47 s), both swing sides and a roll-axis door, every case left to the
-  game (limiter, game reversal, opening door, a close with no mirror), a field that does not
+  -90 at 100 deg/s in 0.47 s), the other swing side, every case left to the game (limiter, game
+  reversal, opening door, a close with no mirror, a door closed at 90), a field that does not
   match (zeroed, half a degree off, the other side, wrong pitch, garbage, NaN, no move in
   progress), the self-check holding at map clocks up to two hours and 300 deg/s while still
   refusing half a degree, the identity pin to one bit, and the file hash.

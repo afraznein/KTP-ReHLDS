@@ -973,6 +973,8 @@ static const unsigned char KTP_DOORGUARD_GAMEDLL_MD5[16] = {
 	0xd6, 0xf5, 0xad, 0x86, 0x2d, 0xd6, 0xd4, 0xbe
 };
 static const int KTP_DOORGUARD_FINAL_ANGLE_OFS = 0x1e8;
+// m_vecAngle1, the closed angle; read only.
+static const int KTP_DOORGUARD_CLOSED_ANGLE_OFS = 0x1a8;
 
 static qboolean g_ktp_doorguard_gamedll_ok = FALSE;
 static char g_ktp_doorguard_gamedll_md5[33] = "not-loaded";
@@ -1054,6 +1056,7 @@ qboolean KTP_DoorGuardFieldMatches(const vec_t *angles, const vec_t *avelocity, 
 int KTP_DoorGuardPlan(const vec_t *angles, float ltime,
 	const vec_t *avelBefore, float nextthinkBefore,
 	const vec_t *avelAfter, float nextthinkAfter, const vec_t *finalAngle,
+	const vec_t *closedAngle,
 	vec_t *outAvel, float *outNextthink, vec_t *outFinal)
 {
 	// Blocked acts at most once per 0.25 s, so most calls change nothing.
@@ -1066,8 +1069,15 @@ int KTP_DoorGuardPlan(const vec_t *angles, float ltime,
 	if (!KTP_DoorGuardFieldMatches(angles, avelAfter, nextthinkAfter, ltime, finalAngle))
 		return KTP_DOORGUARD_SKIP_FIELD;
 
-	// DoorGoUp targets m_vecAngle2 or its negation, so the side it did not pick is -final.
-	// A DoorGoDown target is the closed angle, which mirrors onto itself and never reverses.
+	// DoorGoUp targets m_vecAngle2 or its negation, so the side it did not pick is -final,
+	// which is the side the door came from only when it closes at 0. A DoorGoDown target
+	// is then 0 too, which mirrors onto itself and never reverses.
+	for (int i = 0; i < 3; i++)
+	{
+		if (!(fabs(closedAngle[i]) < 0.001f))
+			return KTP_DOORGUARD_SKIP_MIRROR;
+	}
+
 	vec3_t mirror, delta;
 	VectorScale(finalAngle, -1.0f, mirror);
 	VectorSubtract(mirror, angles, delta);
@@ -1102,12 +1112,17 @@ static void KTP_DoorReversalGuard(edict_t *pusher, const vec_t *avelBefore, floa
 	if (Q_strcmp(&pr_strings[pusher->v.classname], "func_door_rotating"))
 		return;
 
+	// Blocked moves every door sharing the targetname; turning back one leaf would split the pair.
+	if (pusher->v.targetname)
+		return;
+
 	vec_t *field = (vec_t *)((byte *)pusher->pvPrivateData + KTP_DOORGUARD_FINAL_ANGLE_OFS);
 	vec3_t avel, finalAngle;
 	float nextthink;
 
+	const vec_t *closed = (const vec_t *)((byte *)pusher->pvPrivateData + KTP_DOORGUARD_CLOSED_ANGLE_OFS);
 	int verdict = KTP_DoorGuardPlan(pusher->v.angles, pusher->v.ltime, avelBefore, nextthinkBefore,
-		pusher->v.avelocity, pusher->v.nextthink, field, avel, &nextthink, finalAngle);
+		pusher->v.avelocity, pusher->v.nextthink, field, closed, avel, &nextthink, finalAngle);
 
 	if (verdict == KTP_DOORGUARD_RETARGET)
 	{
@@ -1119,7 +1134,7 @@ static void KTP_DoorReversalGuard(edict_t *pusher, const vec_t *avelBefore, floa
 		if (g_ktp_profiling_enabled)
 			++g_ktp_push_guard;
 	}
-	else if (verdict == KTP_DOORGUARD_SKIP_FIELD || verdict == KTP_DOORGUARD_SKIP_MIRROR)
+	else if (verdict == KTP_DOORGUARD_SKIP_FIELD)
 	{
 		if (g_ktp_profiling_enabled)
 			++g_ktp_push_guard_skip;
@@ -1270,6 +1285,7 @@ qboolean SV_PushRotate(edict_t *pusher, float movetime)
 			if (g_ktp_profiling_enabled)
 				KTP_PushSampleBlocked(NUM_FOR_EDICT(pusher), KTP_PushVictimSlot(check->v.flags, NUM_FOR_EDICT(check)), TRUE, host_framecount, g_psvs.spawncount,
 					g_psv.time, KTP_PushEpisodeGap(ktp_pusher_step_hz.value, host_frametime), movetime);
+			// KTP: ktp_door_reversal_guard reads the move the game had before Blocked.
 			vec3_t ktp_avel_blocked;
 			VectorCopy(pusher->v.avelocity, ktp_avel_blocked);
 			const float ktp_nextthink_blocked = pusher->v.nextthink;

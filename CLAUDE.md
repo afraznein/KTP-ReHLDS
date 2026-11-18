@@ -530,8 +530,11 @@ hashes the game DLL at load and prints it; armed on any other build the guard lo
 (nextthink - ltime)`) is the second net. ⚠️ **A new `dod_i386.so` disables it by design** — re-read
 the offset from the new binary (`AngularMove__11CBaseToggleG6Vectorf` stores the destination) before
 changing the pinned md5 in `sv_phys.cpp`.
-⚠️ `push:` `guard=` counts re-targets, `guard_skip=` doors sent on that it left alone. A `guard_skip`
-that climbs with the cvar armed means the self-check is refusing, which is the field moving, not noise.
+It also reads `m_vecAngle1` (`0x1a8`) and touches only doors that close at 0, because `-final` is the
+side the door came from only then; and it skips any door with a `targetname`, because `Blocked` moves
+every door sharing it.
+⚠️ `push:` `guard=` counts re-targets, `guard_skip=` re-targets refused by the self-check. A `guard_skip`
+that climbs with the cvar armed is the field moving, not noise.
 
 ### Client updates are quantised to whole frames — `cl_updaterate 102` delivers a phase-locked 100/s
 
