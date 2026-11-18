@@ -123,6 +123,7 @@ next map change. Writer-side timings land on the `[KTP_PROFILE] io:` line; see
 | `ktp_userinfo_hook` | `1` | `SV_ClientUserInfoChanged` hookchain dispatch; `0` disables it live (rollback switch) |
 | `ktp_pusher_clock_quantize` | `0` | `1` quantizes a pusher's `movetime` to what its float `ltime` can represent, so a door stops on the angle that was planned. Affects every `MOVETYPE_PUSH` entity |
 | `ktp_pusher_step_hz` | `0` | Above `0`, pushers move in fixed steps of `1/hz` seconds instead of once per server frame, so `100` gives every door the 10 ms step of a 100 fps server. Player movement and hit registration are unaffected. Affects every `MOVETYPE_PUSH` entity |
+| `ktp_door_reversal_guard` | `0` | `1` sends a blocked closing `func_door_rotating` back the way it came when the game would send it on through the blocker. Runs only on the DoD game DLL it was written against (md5 `4f4727b2390d3a0ed6f5ad862dd6d4be`); on any other build it logs and sets itself back to `0` |
 
 Full detail in `CLAUDE.md` and [CHANGELOG.md](CHANGELOG.md).
 

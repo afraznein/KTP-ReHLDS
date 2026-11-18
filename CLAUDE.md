@@ -514,6 +514,25 @@ steps every frame.
 the instance's config. Blast radius is every `MOVETYPE_PUSH` entity; on the live rotation that is
 doors, buttons and static water/conveyor brushes, with no trains, plats or riders.
 
+### A blocked closing rotating door can be sent on through the player — `ktp_door_reversal_guard`
+
+DoD's `CBaseDoor::Blocked` is not the SDK's: it acts at most once per 0.25 s of server time, and on a
+blocked CLOSE it calls `DoorGoUp`, which picks the reopen side from the last opener's facing. About
+half of all facings put that side past the blocker, so the door keeps pressing into him until the
+opener turns. Server time, so no step rate touches it. Reproduction: `design/rotating-door-holds/` (#71).
+`ktp_door_reversal_guard` (default `0`, `FCVAR_SERVER`) re-targets such a door to the other of
+`DoorGoUp`'s two destinations, `-final`, after `pfnBlocked` returns.
+🔑 **It writes game private data** (`m_vecFinalAngle`, `pvPrivateData + 0x1e8`), because
+`AngularMoveDone` snaps the door to that field; leaving it would teleport the door at the end of the
+swing. ⛔ **The offset is valid for ONE game DLL, md5 `4f4727b2390d3a0ed6f5ad862dd6d4be`.** The engine
+hashes the game DLL at load and prints it; armed on any other build the guard logs
+`door_guard: refused` and sets the cvar to `0`. A per-write self-check (`field == angles + avelocity *
+(nextthink - ltime)`) is the second net. ⚠️ **A new `dod_i386.so` disables it by design** — re-read
+the offset from the new binary (`AngularMove__11CBaseToggleG6Vectorf` stores the destination) before
+changing the pinned md5 in `sv_phys.cpp`.
+⚠️ `push:` `guard=` counts re-targets, `guard_skip=` doors sent on that it left alone. A `guard_skip`
+that climbs with the cvar armed means the self-check is refusing, which is the field moving, not noise.
+
 ### Client updates are quantised to whole frames — `cl_updaterate 102` delivers a phase-locked 100/s
 
 `SV_SendClientMessages` books the next update off the frame it actually went out on:

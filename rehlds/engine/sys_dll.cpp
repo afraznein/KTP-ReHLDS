@@ -982,6 +982,7 @@ void LoadEntityDLLs(const char *szBaseDir)
 					FS_GetLocalPath(szValue, szDllFilename, sizeof(szDllFilename));
 					Con_DPrintf("\nAdding:  %s/%s\n", szGameDir, szValue);
 					LoadThisDll(szDllFilename);
+					KTP_DoorGuardNoteGameDll(szDllFilename);
 				}
 				else
 				{

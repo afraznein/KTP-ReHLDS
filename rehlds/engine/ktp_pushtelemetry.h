@@ -30,6 +30,10 @@ extern uint32 g_ktp_push_episodes;
 // Seconds of pusher motion lost to blocks: the movetime of each blocked push, once per
 // pusher per frame. Unlike blocked=, it reads the same under any ktp_pusher_step_hz.
 extern double g_ktp_push_blocked_time;
+// ktp_door_reversal_guard: blocked rotating doors it sent back the way they came, and
+// doors the game sent on through the blocker that it left alone.
+extern uint32 g_ktp_push_guard;
+extern uint32 g_ktp_push_guard_skip;
 extern uint32 g_ktp_push_untracked;
 extern ktp_push_track_t g_ktp_push_track[KTP_PUSH_TRACK_N];
 extern int g_ktp_push_track_n;
