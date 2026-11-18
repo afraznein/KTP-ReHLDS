@@ -982,6 +982,8 @@ void LoadEntityDLLs(const char *szBaseDir)
 					FS_GetLocalPath(szValue, szDllFilename, sizeof(szDllFilename));
 					Con_DPrintf("\nAdding:  %s/%s\n", szGameDir, szValue);
 					LoadThisDll(szDllFilename);
+					// KTP: ktp_door_reversal_guard runs only on the game DLL it was read from.
+					KTP_DoorGuardNoteGameDll(szDllFilename);
 				}
 				else
 				{

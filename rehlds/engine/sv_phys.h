@@ -41,6 +41,7 @@ extern cvar_t sv_stopspeed;
 extern cvar_t ktp_pusher_clock_quantize;
 extern cvar_t ktp_pusher_contain_report;
 extern cvar_t ktp_pusher_step_hz;
+extern cvar_t ktp_door_reversal_guard;
 
 extern vec3_t *g_moved_from;
 extern edict_t **g_moved_edict;
@@ -59,6 +60,23 @@ void SV_PushMove(edict_t *pusher, float movetime);
 qboolean SV_PushRotate(edict_t *pusher, float movetime);
 float KTP_PusherClockStep(float ltime, float movetime);
 float KTP_PusherStepPlan(double *pending, double frametime, float thinktime, float ltime, float stepHz);
+
+// KTP_DoorGuardPlan verdicts. Only RETARGET fills the out parameters.
+#define KTP_DOORGUARD_UNCHANGED   0 // the game did not re-target
+#define KTP_DOORGUARD_REVERSED    1 // the game turned the door back by itself
+#define KTP_DOORGUARD_RETARGET    2 // sent on through the blocker; out* hold the move back
+#define KTP_DOORGUARD_SKIP_FIELD  3 // sent on, but the private field failed its self-check
+#define KTP_DOORGUARD_SKIP_MIRROR 4 // sent on, but the door does not close at 0 or the other side does not turn it back
+int KTP_DoorGuardPlan(const vec_t *angles, float ltime,
+	const vec_t *avelBefore, float nextthinkBefore,
+	const vec_t *avelAfter, float nextthinkAfter, const vec_t *finalAngle,
+	const vec_t *closedAngle,
+	vec_t *outAvel, float *outNextthink, vec_t *outFinal);
+qboolean KTP_DoorGuardFieldMatches(const vec_t *angles, const vec_t *avelocity, float nextthink, float ltime,
+	const vec_t *field);
+qboolean KTP_DoorGuardIdentityMatches(const unsigned char digest[16]);
+qboolean KTP_DoorGuardHashFile(const char *path, unsigned char digest[16]);
+void KTP_DoorGuardNoteGameDll(const char *path);
 void SV_Physics_Pusher(edict_t *ent);
 qboolean SV_CheckWater(edict_t *ent);
 float SV_RecursiveWaterLevel(const vec_t *origin, float mins, float maxs, int depth);

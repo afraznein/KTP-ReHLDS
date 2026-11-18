@@ -195,6 +195,7 @@ set(UNITTESTS_SRCS
 	unittests/crc32c_tests.cpp
 	unittests/delta_tests.cpp
 	unittests/info_tests.cpp
+	unittests/ktp_doorguard_tests.cpp
 	unittests/ktp_nettelemetry_tests.cpp
 	unittests/ktp_pusherclock_tests.cpp
 	unittests/ktp_pusherstep_tests.cpp

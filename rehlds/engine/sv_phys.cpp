@@ -62,6 +62,10 @@ cvar_t ktp_pusher_contain_report = { "ktp_pusher_contain_report", "0", FCVAR_SER
 // them by a whole step rather than a sliver of one. 0 keeps upstream stepping.
 cvar_t ktp_pusher_step_hz = { "ktp_pusher_step_hz", "0", FCVAR_SERVER, 0.0f, NULL };
 
+// A blocked closing func_door_rotating that the game sends on through the
+// blocker is sent back the way it came. 0 leaves the game's choice alone.
+cvar_t ktp_door_reversal_guard = { "ktp_door_reversal_guard", "0", FCVAR_SERVER, 0.0f, NULL };
+
 // A pusher keeps its own float clock, so past a few hundred seconds that clock
 // cannot hold ltime + movetime: it then ticks at a different rate than the push
 // moves, and the entity arrives at its think time off the angle that was planned.
@@ -586,6 +590,8 @@ uint32 g_ktp_push_move = 0;
 uint32 g_ktp_push_episodes = 0;
 uint32 g_ktp_push_untracked = 0;
 double g_ktp_push_blocked_time = 0.0;
+uint32 g_ktp_push_guard = 0;
+uint32 g_ktp_push_guard_skip = 0;
 ktp_push_track_t g_ktp_push_track[KTP_PUSH_TRACK_N];
 int g_ktp_push_track_n = 0;
 uint32 g_ktp_push_victim_slot[MAX_CLIENTS];
@@ -960,6 +966,181 @@ void SV_PushMove(edict_t *pusher, float movetime)
 	}
 }
 
+// The guard writes CBaseToggle::m_vecFinalAngle, game private data whose offset
+// was read from one build of DoD's game DLL, so it runs on that build alone.
+static const unsigned char KTP_DOORGUARD_GAMEDLL_MD5[16] = {
+	0x4f, 0x47, 0x27, 0xb2, 0x39, 0x0d, 0x3a, 0x0e,
+	0xd6, 0xf5, 0xad, 0x86, 0x2d, 0xd6, 0xd4, 0xbe
+};
+static const int KTP_DOORGUARD_FINAL_ANGLE_OFS = 0x1e8;
+// m_vecAngle1, the closed angle; read only.
+static const int KTP_DOORGUARD_CLOSED_ANGLE_OFS = 0x1a8;
+
+static qboolean g_ktp_doorguard_gamedll_ok = FALSE;
+static char g_ktp_doorguard_gamedll_md5[33] = "not-loaded";
+
+qboolean KTP_DoorGuardIdentityMatches(const unsigned char digest[16])
+{
+	return (Q_memcmp(digest, KTP_DOORGUARD_GAMEDLL_MD5, sizeof(KTP_DOORGUARD_GAMEDLL_MD5)) == 0) ? TRUE : FALSE;
+}
+
+// Read with stdio, not the engine FS: this is the path dlopen was handed.
+qboolean KTP_DoorGuardHashFile(const char *path, unsigned char digest[16])
+{
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return FALSE;
+
+	MD5Context_t ctx;
+	Q_memset(&ctx, 0, sizeof(ctx));
+	MD5Init(&ctx);
+
+	unsigned char chunk[4096];
+	size_t n;
+	while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0)
+		MD5Update(&ctx, chunk, (unsigned int)n);
+
+	qboolean ok = ferror(f) ? FALSE : TRUE;
+	fclose(f);
+	MD5Final(digest, &ctx);
+	return ok;
+}
+
+void KTP_DoorGuardNoteGameDll(const char *path)
+{
+	unsigned char digest[16];
+
+	g_ktp_doorguard_gamedll_ok = FALSE;
+	if (KTP_DoorGuardHashFile(path, digest))
+	{
+		Q_strncpy(g_ktp_doorguard_gamedll_md5, MD5_Print(digest), sizeof(g_ktp_doorguard_gamedll_md5) - 1);
+		g_ktp_doorguard_gamedll_md5[sizeof(g_ktp_doorguard_gamedll_md5) - 1] = 0;
+		g_ktp_doorguard_gamedll_ok = KTP_DoorGuardIdentityMatches(digest);
+	}
+	else
+	{
+		Q_strcpy(g_ktp_doorguard_gamedll_md5, "unreadable");
+	}
+
+	Con_Printf("KTP-REHLDS: game DLL md5 %s, ktp_door_reversal_guard %s\n", g_ktp_doorguard_gamedll_md5,
+		g_ktp_doorguard_gamedll_ok ? "available" : "unavailable (not the build it was written for)");
+}
+
+// The field is trusted only when it is the angle the entvars say the move arrives at.
+qboolean KTP_DoorGuardFieldMatches(const vec_t *angles, const vec_t *avelocity, float nextthink, float ltime,
+	const vec_t *field)
+{
+	double remaining = (double)nextthink - (double)ltime;
+	if (!(remaining > 0.0))
+		return FALSE;
+
+	double scale = fabs((double)nextthink);
+	if (scale < 1.0)
+		scale = 1.0;
+
+	for (int i = 0; i < 3; i++)
+	{
+		double expected = (double)angles[i] + (double)avelocity[i] * remaining;
+		// nextthink is ltime + travel rounded to a float, so the arrival it implies is
+		// off by up to half an ulp of nextthink (1.19e-7 is float epsilon) at the door's angular speed.
+		double tolerance = 0.01 + fabs((double)avelocity[i]) * scale * 1.1920929e-7;
+
+		// Written so a NaN field fails.
+		if (!(fabs((double)field[i] - expected) <= tolerance))
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+int KTP_DoorGuardPlan(const vec_t *angles, float ltime,
+	const vec_t *avelBefore, float nextthinkBefore,
+	const vec_t *avelAfter, float nextthinkAfter, const vec_t *finalAngle,
+	const vec_t *closedAngle,
+	vec_t *outAvel, float *outNextthink, vec_t *outFinal)
+{
+	// Blocked acts at most once per 0.25 s, so most calls change nothing.
+	if (VectorCompare(avelBefore, avelAfter) && nextthinkBefore == nextthinkAfter)
+		return KTP_DOORGUARD_UNCHANGED;
+
+	if (_DotProduct(avelBefore, avelAfter) <= 0.0f)
+		return KTP_DOORGUARD_REVERSED;
+
+	if (!KTP_DoorGuardFieldMatches(angles, avelAfter, nextthinkAfter, ltime, finalAngle))
+		return KTP_DOORGUARD_SKIP_FIELD;
+
+	// DoorGoUp targets m_vecAngle2 or its negation, so the side it did not pick is -final,
+	// which is the side the door came from only when it closes at 0. A DoorGoDown target
+	// is then 0 too, which mirrors onto itself and never reverses.
+	for (int i = 0; i < 3; i++)
+	{
+		if (!(fabs(closedAngle[i]) < 0.001f))
+			return KTP_DOORGUARD_SKIP_MIRROR;
+	}
+
+	vec3_t mirror, delta;
+	VectorScale(finalAngle, -1.0f, mirror);
+	VectorSubtract(mirror, angles, delta);
+
+	float dist = Length(delta);
+	float speed = Length(avelAfter);
+	if (!(_DotProduct(delta, avelBefore) < 0.0f) || !(dist > 0.0f) || !(speed > 0.0f))
+		return KTP_DOORGUARD_SKIP_MIRROR;
+
+	// The same move AngularMove would make toward the mirror at the game's speed.
+	float travel = dist / speed;
+	VectorScale(delta, 1.0f / travel, outAvel);
+	*outNextthink = ltime + travel;
+	VectorCopy(mirror, outFinal);
+	return KTP_DOORGUARD_RETARGET;
+}
+
+static void KTP_DoorGuardRefuse(void)
+{
+	Con_Printf("ktp_door_reversal_guard: game DLL md5 %s is not the build it was written for; set to 0\n",
+		g_ktp_doorguard_gamedll_md5);
+	Log_Printf("[KTP] door_guard: refused, game DLL md5 %s; ktp_door_reversal_guard set to 0\n",
+		g_ktp_doorguard_gamedll_md5);
+	Cvar_DirectSet(&ktp_door_reversal_guard, "0");
+}
+
+static void KTP_DoorReversalGuard(edict_t *pusher, const vec_t *avelBefore, float nextthinkBefore)
+{
+	if (!g_ktp_doorguard_gamedll_ok || pusher->free || !pusher->pvPrivateData)
+		return;
+
+	if (Q_strcmp(&pr_strings[pusher->v.classname], "func_door_rotating"))
+		return;
+
+	// Blocked moves every door sharing the targetname; turning back one leaf would split the pair.
+	if (pusher->v.targetname)
+		return;
+
+	vec_t *field = (vec_t *)((byte *)pusher->pvPrivateData + KTP_DOORGUARD_FINAL_ANGLE_OFS);
+	vec3_t avel, finalAngle;
+	float nextthink;
+
+	const vec_t *closed = (const vec_t *)((byte *)pusher->pvPrivateData + KTP_DOORGUARD_CLOSED_ANGLE_OFS);
+	int verdict = KTP_DoorGuardPlan(pusher->v.angles, pusher->v.ltime, avelBefore, nextthinkBefore,
+		pusher->v.avelocity, pusher->v.nextthink, field, closed, avel, &nextthink, finalAngle);
+
+	if (verdict == KTP_DOORGUARD_RETARGET)
+	{
+		// All three or the door arrives somewhere else: AngularMoveDone snaps to the field.
+		VectorCopy(avel, pusher->v.avelocity);
+		pusher->v.nextthink = nextthink;
+		VectorCopy(finalAngle, field);
+
+		if (g_ktp_profiling_enabled)
+			++g_ktp_push_guard;
+	}
+	else if (verdict == KTP_DOORGUARD_SKIP_FIELD)
+	{
+		if (g_ktp_profiling_enabled)
+			++g_ktp_push_guard_skip;
+	}
+}
+
 // Returns false if the pusher can't push
 qboolean SV_PushRotate(edict_t *pusher, float movetime)
 {
@@ -1104,7 +1285,13 @@ qboolean SV_PushRotate(edict_t *pusher, float movetime)
 			if (g_ktp_profiling_enabled)
 				KTP_PushSampleBlocked(NUM_FOR_EDICT(pusher), KTP_PushVictimSlot(check->v.flags, NUM_FOR_EDICT(check)), TRUE, host_framecount, g_psvs.spawncount,
 					g_psv.time, KTP_PushEpisodeGap(ktp_pusher_step_hz.value, host_frametime), movetime);
+			// KTP: ktp_door_reversal_guard reads the move the game had before Blocked.
+			vec3_t ktp_avel_blocked;
+			VectorCopy(pusher->v.avelocity, ktp_avel_blocked);
+			const float ktp_nextthink_blocked = pusher->v.nextthink;
 			gEntityInterface.pfnBlocked(pusher, check);
+			if (ktp_door_reversal_guard.value != 0.0f)
+				KTP_DoorReversalGuard(pusher, ktp_avel_blocked, ktp_nextthink_blocked);
 
 			// move back any entities we already moved
 			for (int e = 0; e < num_moved; e++)
@@ -1142,6 +1329,9 @@ void SV_Physics_Pusher(edict_t *ent)
 		&& (!VectorIsZero(ent->v.velocity) || !VectorIsZero(ent->v.avelocity));
 
 	const float ktp_step_hz = ktp_pusher_step_hz.value;
+
+	if (ktp_door_reversal_guard.value != 0.0f && !g_ktp_doorguard_gamedll_ok)
+		KTP_DoorGuardRefuse();
 
 	if (ktp_step_hz > 0.0f)
 	{

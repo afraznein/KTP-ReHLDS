@@ -10,6 +10,54 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
 
 ### Added
 
+- **A reversal guard for blocked rotating doors, behind `ktp_door_reversal_guard` (default `0`,
+  off).** A door closing onto a player it cannot push clear is blocked, and DoD's
+  `CBaseDoor::Blocked` calls `DoorGoUp`, which picks the side to reopen toward from the facing
+  of whoever last opened the door. For about half of all facings that side lies past the
+  blocker, so the door keeps pressing into him. `Blocked` acts at most once per 0.25 s of server
+  time, so the door alternates there until the opener turns or the blocker leaves: the long
+  holds in `push:` (seconds of `blocked_ms` per interval on door maps, unchanged by
+  `ktp_pusher_step_hz`). The reproduction and the reasoning are in
+  `design/rotating-door-holds/README.md` (#71).
+
+  With the cvar armed, `SV_PushRotate` notes the door's `avelocity` and `nextthink` before
+  `pfnBlocked` and looks again after it. If the game re-targeted the door and it still turns the
+  way the blocked step did, the guard re-targets it to the other of `DoorGoUp`'s two
+  destinations (`-final`), at the game's speed, writing `avelocity`, `nextthink` and the game's
+  private `m_vecFinalAngle` together, since `AngularMoveDone` snaps the door to that field. A
+  call the game's 0.25 s limiter swallowed changes nothing and the guard does nothing; a door the
+  game turned back by itself is left alone. `-final` is the side the door came from only for a
+  door that rests closed at 0, so the guard also reads the game's `m_vecAngle1` (`0x1a8`) and
+  leaves any other door alone; a re-target to closed then mirrors onto itself and is left alone
+  too. A door with a `targetname` is left alone, because `Blocked` moves every door sharing it and
+  turning back one leaf would split the pair.
+
+  Two checks bound the write into game private data. The game DLL's md5 is taken when it loads
+  (one line on the console, `game DLL md5 ...`), and the guard runs only on
+  `4f4727b2390d3a0ed6f5ad862dd6d4be`, the `dod_i386.so` the field offset (`0x1e8`) was read
+  from; armed on any other build it logs `door_guard: refused` and sets the cvar back to `0`.
+  Before each write the field must equal `angles + avelocity * (nextthink - ltime)` within
+  float rounding of `nextthink`, or the guard writes nothing. Only `func_door_rotating` is
+  touched.
+
+  `push:` gains two fields, appended at the end: `guard=` counts re-targets made, and
+  `guard_skip=` counts re-targets refused because the field failed its self-check. Both are 0
+  with the cvar off.
+
+  Upstream code touched, as insertions only: `SV_PushRotate`'s block path (two snapshots before
+  `pfnBlocked`, the guard call after it) and `LoadEntityDLLs` (the hash after `LoadThisDll`).
+
+  ```
+  [KTP_PROFILE] push: blocked=3 rotate=3 move=0 episodes=1 pushers=1 untracked=0 client_blocks=3 victims=1 blocked_ms=6.3 guard=1 guard_skip=0
+  ```
+
+  `ktp_doorguard_tests.cpp` covers the thunder2 wedge (-43 degrees, sent on to +90, comes back to
+  -90 at 100 deg/s in 0.47 s), the other swing side, every case left to the game (limiter, game
+  reversal, opening door, a close with no mirror, a door closed at 90), a field that does not
+  match (zeroed, half a degree off, the other side, wrong pitch, garbage, NaN, no move in
+  progress), the self-check holding at map clocks up to two hours and 300 deg/s while still
+  refusing half a degree, the identity pin to one bit, and the file hash.
+
 - **`push:` episodes mean something again under `ktp_pusher_step_hz`, and a new `blocked_ms=`
   field reads the same at any step rate.** An episode was a run of blocks on the same or the
   next frame. A stepped door moves only once per step, so a door held shut blocks once a step,

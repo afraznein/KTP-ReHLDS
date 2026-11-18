@@ -9537,6 +9537,8 @@ void KTP_ProfileResetInterval(void)
 	g_ktp_push_episodes = 0;
 	g_ktp_push_untracked = 0;
 	g_ktp_push_blocked_time = 0.0;
+	g_ktp_push_guard = 0;
+	g_ktp_push_guard_skip = 0;
 	g_ktp_push_track_n = 0;
 	g_ktp_contain_stops = 0;
 	g_ktp_contain_tests = 0;
@@ -10188,10 +10190,10 @@ void EXT_FUNC SV_Frame_Internal()
 					}
 				}
 				uint32 push_blocked = g_ktp_push_rotate + g_ktp_push_move;
-				Log_Printf("[KTP_PROFILE] push: blocked=%u rotate=%u move=%u episodes=%u pushers=%d untracked=%u client_blocks=%u victims=%d blocked_ms=%.1f\n",
+				Log_Printf("[KTP_PROFILE] push: blocked=%u rotate=%u move=%u episodes=%u pushers=%d untracked=%u client_blocks=%u victims=%d blocked_ms=%.1f guard=%u guard_skip=%u\n",
 					push_blocked, g_ktp_push_rotate, g_ktp_push_move, g_ktp_push_episodes,
 					g_ktp_push_track_n, g_ktp_push_untracked, push_client_blocks, push_victims,
-					g_ktp_push_blocked_time * 1000.0);
+					g_ktp_push_blocked_time * 1000.0, g_ktp_push_guard, g_ktp_push_guard_skip);
 
 				int push_worst = KTP_PushWorstTrack();
 				uint32 push_victim_worst_n = 0;
@@ -10481,6 +10483,7 @@ void SV_Init(void)
 	Cvar_RegisterVariable(&ktp_pusher_clock_quantize);
 	Cvar_RegisterVariable(&ktp_pusher_contain_report);
 	Cvar_RegisterVariable(&ktp_pusher_step_hz);
+	Cvar_RegisterVariable(&ktp_door_reversal_guard);
 	Cvar_RegisterVariable(&sv_cheats);
 	Cvar_HookVariable(sv_cheats.name, &sv_cheats_hook);
 	if (COM_CheckParm("-dev"))
