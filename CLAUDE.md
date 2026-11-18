@@ -316,6 +316,14 @@ a player ~ten times between two of his own usercmds, each with its own single-tr
 never resolve penetration, and `SV_PushEntity` does one trace with no slide/retry.
 ⚠️ **That these are why players report more stucks than on legacy servers is a hypothesis** —
 `ktp_pusher_step_hz` (below) exists to test it.
+🔻 **CORRECTED — the "reverses on every call" half is the SDK, NOT the DoD binary the fleet loads.**
+`dod_i386.so`'s `CBaseDoor::Blocked` returns early unless 0.25 s of `gpGlobals->time` has passed since
+its last reversal, so a held door is reversed at most four times a second at ANY frame or step rate.
+And a blocked CLOSING rotating door reopens toward the side picked from the OPENER's current facing,
+so about half the time the "reversal" keeps turning into the blocker — that, not the step rate, is
+what makes a multi-second hold. ➡️ Decoded addresses, a deterministic model and two reproduced fleet
+holds: `design/rotating-door-holds/`. ⛔ **Do not read DoD door behaviour off `KTPhlsdk`'s
+`doors.cpp`** — it is the SDK, and DoD changed both functions.
 
 📌 **Where the door fights actually land, so a repro starts in the right place.** The live
 S10 rotation is **38 `func_door_rotating` against 1 `func_door`** (entity lumps read off the live
