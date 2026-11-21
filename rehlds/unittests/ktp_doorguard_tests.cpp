@@ -261,3 +261,60 @@ TEST(HashesTheFileItWasHanded, KtpDoorGuard, 1000)
 
 	CHECK("a missing file is not a match", !KTP_DoorGuardHashFile(path, digest));
 }
+
+TEST(MetamodCandidatesFollowItsLoader, KtpDoorGuard, 1000)
+{
+	char out[KTP_DOORGUARD_CANDIDATES][KTP_DOORGUARD_PATH_MAX];
+
+	LONGS_EQUAL("relative: gamedir first", 2, KTP_DoorGuardMetamodCandidates("dlls/dod_i386.so", "dod", out));
+	ZSTR_EQUAL("install target", "dod/dlls/dod_i386.so", out[0]);
+	ZSTR_EQUAL("as written", "dlls/dod_i386.so", out[1]);
+
+	LONGS_EQUAL("absolute is taken as is", 1, KTP_DoorGuardMetamodCandidates("/opt/x/dod_i386.so", "dod", out));
+	ZSTR_EQUAL("absolute", "/opt/x/dod_i386.so", out[0]);
+
+	LONGS_EQUAL("no gamedir", 1, KTP_DoorGuardMetamodCandidates("dlls/dod_i386.so", "", out));
+	ZSTR_EQUAL("no gamedir, as written", "dlls/dod_i386.so", out[0]);
+
+	LONGS_EQUAL("unset localinfo", 0, KTP_DoorGuardMetamodCandidates("", "dod", out));
+	LONGS_EQUAL("null localinfo", 0, KTP_DoorGuardMetamodCandidates(NULL, "dod", out));
+}
+
+#ifndef _WIN32
+TEST(ResolvesOnlyAFileTheLinkerHasMapped, KtpDoorGuard, 1000)
+{
+	// libc is mapped in every process, so it stands in for the game DLL Metamod loaded.
+	void *libc = dlopen("libc.so.6", RTLD_LAZY | RTLD_NOLOAD);
+	CHECK("libc is loaded", libc != NULL);
+	Dl_info info;
+	CHECK("libc has a path", dladdr(dlsym(libc, "fopen"), &info) && info.dli_fname && info.dli_fname[0] == '/');
+	dlclose(libc);
+
+	char *mapped = realpath(info.dli_fname, NULL);
+	CHECK("libc path resolves", mapped != NULL);
+	char dir[KTP_DOORGUARD_PATH_MAX];
+	Q_strcpy(dir, mapped);
+	char *slash = Q_strrchr(dir, '/');
+	*slash = 0;
+
+	char out[KTP_DOORGUARD_PATH_MAX];
+	CHECK("relative to the game dir", KTP_DoorGuardResolveLoaded(slash + 1, dir, out, sizeof(out)));
+	ZSTR_EQUAL("resolved to the mapped file", mapped, out);
+	CHECK("absolute", KTP_DoorGuardResolveLoaded(mapped, "nowhere", out, sizeof(out)));
+	ZSTR_EQUAL("absolute resolved", mapped, out);
+	CHECK("too small a buffer is no answer", !KTP_DoorGuardResolveLoaded(mapped, "nowhere", out, 4));
+	CHECK("libc is not Metamod", !KTP_DoorGuardIsMetamod(mapped));
+	free(mapped);
+
+	const char *path = "ktp_doorguard_notloaded.tmp";
+	FILE *f = fopen(path, "wb");
+	CHECK("scratch file opens", f != NULL);
+	fwrite("abc", 1, 3, f);
+	fclose(f);
+	CHECK("a file that exists but is not mapped", !KTP_DoorGuardResolveLoaded(path, ".", out, sizeof(out)));
+	CHECK("an unmapped file is not Metamod", !KTP_DoorGuardIsMetamod(path));
+	remove(path);
+
+	CHECK("a missing file", !KTP_DoorGuardResolveLoaded("dlls/none.so", "dod", out, sizeof(out)));
+}
+#endif // _WIN32

@@ -58,6 +58,28 @@ Along with reverse engineering, a lot of defects and (potential) bugs were found
   progress), the self-check holding at map clocks up to two hours and 300 deg/s while still
   refusing half a degree, the identity pin to one bit, and the file hash.
 
+- **Under Metamod, the door reversal guard checks the game DLL Metamod loaded, not Metamod.**
+  The identity pin hashed whatever `liblist.gam`'s `gamedll_linux` names. In Lane B's bot topology
+  that is `metamod_i386.so` (md5 `c566a7aeac2e7ba76c6e631f235f9e13`), and the real game DLL comes in
+  only through `+localinfo mm_gamedll dlls/dod_i386.so`, so the guard reported unavailable in
+  every Lane B run with a bot. When the liblist file does not match the pin, `mm_gamedll` is set,
+  and the loaded module exports `metamod_startup` (Metamod's own startup, which is what loads
+  `mm_gamedll`), the engine resolves `mm_gamedll` the way Metamod does: `<gamedir>/<value>` first,
+  then the value as written, an absolute value as is. A candidate counts only if the dynamic
+  linker already has that file mapped (`dlopen` with `RTLD_NOLOAD`, then the link map's file and
+  the candidate are the same inode). That file is hashed and its md5 goes through the same pin;
+  there is no other way to arm the guard. One extra console line names both files:
+
+  ```
+  KTP-REHLDS: game DLL /opt/hlds/dod/addons/metamod/metamod_i386.so (md5 c566a7aeac2e7ba76c6e631f235f9e13) is Metamod; hashing its mm_gamedll "dlls/dod_i386.so", loaded from /opt/hlds/dod/dlls/dod_i386.so
+  KTP-REHLDS: game DLL md5 4f4727b2390d3a0ed6f5ad862dd6d4be, ktp_door_reversal_guard available
+  ```
+
+  If `mm_gamedll` names nothing mapped, it says so and keeps Metamod's md5, so the guard stays
+  unavailable. The fleet loads no Metamod: its liblist file matches the pin and none of this runs.
+  Windows builds keep the old behaviour. `ktp_doorguard_tests.cpp` covers the candidate order and
+  the mapped-file check, using libc as the mapped file and a scratch file as the unmapped one.
+
 - **`push:` episodes mean something again under `ktp_pusher_step_hz`, and a new `blocked_ms=`
   field reads the same at any step rate.** An episode was a run of blocks on the same or the
   next frame. A stepped door moves only once per step, so a door held shut blocks once a step,

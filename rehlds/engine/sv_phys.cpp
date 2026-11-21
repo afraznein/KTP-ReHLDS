@@ -1006,6 +1006,96 @@ qboolean KTP_DoorGuardHashFile(const char *path, unsigned char digest[16])
 	return ok;
 }
 
+// The two files Metamod can have loaded for mm_gamedll: <gamedir>/<value> (its install
+// target) and the value as written (what it dlopens when the install is skipped).
+int KTP_DoorGuardMetamodCandidates(const char *mmGamedll, const char *gameDir,
+	char out[KTP_DOORGUARD_CANDIDATES][KTP_DOORGUARD_PATH_MAX])
+{
+	if (!mmGamedll || !mmGamedll[0])
+		return 0;
+
+	int n = 0;
+	if (mmGamedll[0] != '/' && gameDir && gameDir[0])
+	{
+		int len = Q_snprintf(out[n], KTP_DOORGUARD_PATH_MAX, "%s/%s", gameDir, mmGamedll);
+		if (len > 0 && len < KTP_DOORGUARD_PATH_MAX)
+			n++;
+	}
+
+	if (Q_strlen(mmGamedll) < KTP_DOORGUARD_PATH_MAX)
+	{
+		Q_strcpy(out[n], mmGamedll);
+		n++;
+	}
+
+	return n;
+}
+
+#ifndef _WIN32
+// A dlopen with RTLD_NOLOAD never maps anything, so it answers whether the file is already loaded.
+static void *KTP_DoorGuardLoadedHandle(const char *path)
+{
+	return dlopen(path, RTLD_LAZY | RTLD_NOLOAD);
+}
+
+// Exported by Metamod-R (and every Metamod since Will Day's): its startup, which loads mm_gamedll.
+qboolean KTP_DoorGuardIsMetamod(const char *path)
+{
+	void *handle = KTP_DoorGuardLoadedHandle(path);
+	if (!handle)
+		return FALSE;
+
+	qboolean metamod = dlsym(handle, "_Z15metamod_startupv") ? TRUE : FALSE;
+	dlclose(handle);
+	return metamod;
+}
+
+// mm_gamedll is only a claim; a candidate counts when the dynamic linker has that file mapped.
+qboolean KTP_DoorGuardResolveLoaded(const char *mmGamedll, const char *gameDir, char *out, int outSize)
+{
+	char candidates[KTP_DOORGUARD_CANDIDATES][KTP_DOORGUARD_PATH_MAX];
+	int count = KTP_DoorGuardMetamodCandidates(mmGamedll, gameDir, candidates);
+
+	for (int i = 0; i < count; i++)
+	{
+		char *resolved = realpath(candidates[i], NULL);
+		if (!resolved)
+			continue;
+
+		qboolean ok = FALSE;
+		void *handle = KTP_DoorGuardLoadedHandle(resolved);
+		if (handle)
+		{
+			struct link_map *map = NULL;
+			struct stat want, have;
+			ok = (dlinfo(handle, RTLD_DI_LINKMAP, &map) == 0 && map && map->l_name
+				&& stat(resolved, &want) == 0 && stat(map->l_name, &have) == 0
+				&& want.st_dev == have.st_dev && want.st_ino == have.st_ino
+				&& (int)Q_strlen(resolved) < outSize) ? TRUE : FALSE;
+			dlclose(handle);
+		}
+
+		if (ok)
+			Q_strcpy(out, resolved);
+		free(resolved);
+		if (ok)
+			return TRUE;
+	}
+
+	return FALSE;
+}
+#else // _WIN32
+qboolean KTP_DoorGuardIsMetamod(const char *path)
+{
+	return FALSE;
+}
+
+qboolean KTP_DoorGuardResolveLoaded(const char *mmGamedll, const char *gameDir, char *out, int outSize)
+{
+	return FALSE;
+}
+#endif // _WIN32
+
 void KTP_DoorGuardNoteGameDll(const char *path)
 {
 	unsigned char digest[16];
@@ -1016,6 +1106,27 @@ void KTP_DoorGuardNoteGameDll(const char *path)
 		Q_strncpy(g_ktp_doorguard_gamedll_md5, MD5_Print(digest), sizeof(g_ktp_doorguard_gamedll_md5) - 1);
 		g_ktp_doorguard_gamedll_md5[sizeof(g_ktp_doorguard_gamedll_md5) - 1] = 0;
 		g_ktp_doorguard_gamedll_ok = KTP_DoorGuardIdentityMatches(digest);
+
+		// Metamod forwards to the game DLL it loaded, which is the one whose private data the guard writes.
+		const char *mmGamedll = g_ktp_doorguard_gamedll_ok ? "" : Info_ValueForKey(localinfo, "mm_gamedll");
+		if (mmGamedll[0] && KTP_DoorGuardIsMetamod(path))
+		{
+			char target[KTP_DOORGUARD_PATH_MAX];
+			if (KTP_DoorGuardResolveLoaded(mmGamedll, com_gamedir, target, sizeof(target))
+				&& KTP_DoorGuardHashFile(target, digest))
+			{
+				Con_Printf("KTP-REHLDS: game DLL %s (md5 %s) is Metamod; hashing its mm_gamedll \"%s\", loaded from %s\n",
+					path, g_ktp_doorguard_gamedll_md5, mmGamedll, target);
+				Q_strncpy(g_ktp_doorguard_gamedll_md5, MD5_Print(digest), sizeof(g_ktp_doorguard_gamedll_md5) - 1);
+				g_ktp_doorguard_gamedll_md5[sizeof(g_ktp_doorguard_gamedll_md5) - 1] = 0;
+				g_ktp_doorguard_gamedll_ok = KTP_DoorGuardIdentityMatches(digest);
+			}
+			else
+			{
+				Con_Printf("KTP-REHLDS: game DLL %s is Metamod, but its mm_gamedll \"%s\" is not a loaded file; hashed Metamod\n",
+					path, mmGamedll);
+			}
+		}
 	}
 	else
 	{

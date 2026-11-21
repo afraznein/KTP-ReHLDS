@@ -76,6 +76,12 @@ qboolean KTP_DoorGuardFieldMatches(const vec_t *angles, const vec_t *avelocity, 
 	const vec_t *field);
 qboolean KTP_DoorGuardIdentityMatches(const unsigned char digest[16]);
 qboolean KTP_DoorGuardHashFile(const char *path, unsigned char digest[16]);
+#define KTP_DOORGUARD_PATH_MAX 4096
+#define KTP_DOORGUARD_CANDIDATES 2
+int KTP_DoorGuardMetamodCandidates(const char *mmGamedll, const char *gameDir,
+	char out[KTP_DOORGUARD_CANDIDATES][KTP_DOORGUARD_PATH_MAX]);
+qboolean KTP_DoorGuardIsMetamod(const char *path);
+qboolean KTP_DoorGuardResolveLoaded(const char *mmGamedll, const char *gameDir, char *out, int outSize);
 void KTP_DoorGuardNoteGameDll(const char *path);
 void SV_Physics_Pusher(edict_t *ent);
 qboolean SV_CheckWater(edict_t *ent);
