@@ -540,7 +540,7 @@ the offset from the new binary (`AngularMove__11CBaseToggleG6Vectorf` stores the
 changing the pinned md5 in `sv_phys.cpp`.
 Under Metamod (Lane B's bot topology) the engine hashes the `+localinfo mm_gamedll` target instead,
 once the liblist module exports `metamod_startup` and that target is a file the dynamic linker has
-mapped; the console then prints `game DLL ... is Metamod; hashing its mm_gamedll ...` above the md5 line.
+mapped (a path-level check at boot); the pin still decides. The console then prints `game DLL ... is Metamod; hashing its mm_gamedll ...` above the md5 line.
 It also reads `m_vecAngle1` (`0x1a8`) and touches only doors that close at 0, because `-final` is the
 side the door came from only then; and it skips any door with a `targetname`, because `Blocked` moves
 every door sharing it.

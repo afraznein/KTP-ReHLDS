@@ -318,3 +318,45 @@ TEST(ResolvesOnlyAFileTheLinkerHasMapped, KtpDoorGuard, 1000)
 	CHECK("a missing file", !KTP_DoorGuardResolveLoaded("dlls/none.so", "dod", out, sizeof(out)));
 }
 #endif // _WIN32
+
+TEST(PinIsTheOnlyGateUnderMetamod, KtpDoorGuard, 1000)
+{
+	const unsigned char pinned[16] = {
+		0x4f, 0x47, 0x27, 0xb2, 0x39, 0x0d, 0x3a, 0x0e,
+		0xd6, 0xf5, 0xad, 0x86, 0x2d, 0xd6, 0xd4, 0xbe
+	};
+	unsigned char metamodDigest[16], otherBuild[16], out[16];
+	Q_memset(metamodDigest, 0xc5, sizeof(metamodDigest));
+	Q_memcpy(otherBuild, pinned, sizeof(otherBuild));
+	otherBuild[15] ^= 0x01;
+
+	CHECK("a loaded target that is not the pinned build",
+		!KTP_DoorGuardChooseIdentity(metamodDigest, TRUE, otherBuild, out));
+	CHECK("reports the target's md5", Q_memcmp(out, otherBuild, 16) == 0);
+
+	CHECK("Metamod and the pinned target", KTP_DoorGuardChooseIdentity(metamodDigest, TRUE, pinned, out));
+	CHECK("reports the target's md5 when pinned", Q_memcmp(out, pinned, 16) == 0);
+
+	CHECK("no target found keeps Metamod's md5", !KTP_DoorGuardChooseIdentity(metamodDigest, TRUE, NULL, out));
+	CHECK("Metamod's md5 reported", Q_memcmp(out, metamodDigest, 16) == 0);
+
+	CHECK("a pinned target counts only under Metamod", !KTP_DoorGuardChooseIdentity(metamodDigest, FALSE, pinned, out));
+	CHECK("not Metamod reports the liblist md5", Q_memcmp(out, metamodDigest, 16) == 0);
+
+	CHECK("a pinned liblist file", KTP_DoorGuardChooseIdentity(pinned, TRUE, otherBuild, out));
+	CHECK("never consults the target", Q_memcmp(out, pinned, 16) == 0);
+}
+
+#ifndef _WIN32
+#ifndef KTP_METAMOD_MARKER_SO
+#error "the Unittests build defines KTP_METAMOD_MARKER_SO; the Metamod marker test needs its fixture"
+#endif
+TEST(KnowsMetamodByItsStartup, KtpDoorGuard, 1000)
+{
+	CHECK("not Metamod before it is loaded", !KTP_DoorGuardIsMetamod(KTP_METAMOD_MARKER_SO));
+	void *fixture = dlopen(KTP_METAMOD_MARKER_SO, RTLD_NOW | RTLD_LOCAL);
+	CHECK("fixture loads", fixture != NULL);
+	CHECK("a module exporting metamod_startup is Metamod", KTP_DoorGuardIsMetamod(KTP_METAMOD_MARKER_SO));
+	dlclose(fixture);
+}
+#endif // _WIN32

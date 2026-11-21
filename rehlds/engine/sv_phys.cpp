@@ -1006,8 +1006,8 @@ qboolean KTP_DoorGuardHashFile(const char *path, unsigned char digest[16])
 	return ok;
 }
 
-// The two files Metamod can have loaded for mm_gamedll: <gamedir>/<value> (its install
-// target) and the value as written (what it dlopens when the install is skipped).
+// The files Metamod can have loaded for mm_gamedll: <gamedir>/<value> (its install target) and
+// the value as written (what it dlopens when the install is skipped). A leading '/' is POSIX absolute.
 int KTP_DoorGuardMetamodCandidates(const char *mmGamedll, const char *gameDir,
 	char out[KTP_DOORGUARD_CANDIDATES][KTP_DOORGUARD_PATH_MAX])
 {
@@ -1035,7 +1035,10 @@ int KTP_DoorGuardMetamodCandidates(const char *mmGamedll, const char *gameDir,
 // A dlopen with RTLD_NOLOAD never maps anything, so it answers whether the file is already loaded.
 static void *KTP_DoorGuardLoadedHandle(const char *path)
 {
-	return dlopen(path, RTLD_LAZY | RTLD_NOLOAD);
+	void *handle = dlopen(path, RTLD_LAZY | RTLD_NOLOAD);
+	if (!handle)
+		dlerror();
+	return handle;
 }
 
 // Metamod's startup, the code that loads mm_gamedll; Metamod-R exports it and a game DLL has no reason to.
@@ -1046,6 +1049,8 @@ qboolean KTP_DoorGuardIsMetamod(const char *path)
 		return FALSE;
 
 	qboolean metamod = dlsym(handle, "_Z15metamod_startupv") ? TRUE : FALSE;
+	if (!metamod)
+		dlerror();
 	dlclose(handle);
 	return metamod;
 }
@@ -1096,6 +1101,19 @@ qboolean KTP_DoorGuardResolveLoaded(const char *mmGamedll, const char *gameDir, 
 }
 #endif // _WIN32
 
+// Under Metamod the pin is checked against the game DLL Metamod loaded, never skipped.
+// targetDigest is NULL when that file was not found mapped or could not be read.
+qboolean KTP_DoorGuardChooseIdentity(const unsigned char liblistDigest[16], qboolean metamod,
+	const unsigned char *targetDigest, unsigned char outDigest[16])
+{
+	const unsigned char *chosen = liblistDigest;
+	if (!KTP_DoorGuardIdentityMatches(liblistDigest) && metamod && targetDigest)
+		chosen = targetDigest;
+
+	Q_memcpy(outDigest, chosen, 16);
+	return KTP_DoorGuardIdentityMatches(chosen);
+}
+
 void KTP_DoorGuardNoteGameDll(const char *path)
 {
 	unsigned char digest[16];
@@ -1103,30 +1121,37 @@ void KTP_DoorGuardNoteGameDll(const char *path)
 	g_ktp_doorguard_gamedll_ok = FALSE;
 	if (KTP_DoorGuardHashFile(path, digest))
 	{
-		Q_strncpy(g_ktp_doorguard_gamedll_md5, MD5_Print(digest), sizeof(g_ktp_doorguard_gamedll_md5) - 1);
-		g_ktp_doorguard_gamedll_md5[sizeof(g_ktp_doorguard_gamedll_md5) - 1] = 0;
-		g_ktp_doorguard_gamedll_ok = KTP_DoorGuardIdentityMatches(digest);
+		unsigned char targetDigest[16], chosen[16];
+		const unsigned char *target = NULL;
+		qboolean metamod = FALSE;
 
 		// Metamod forwards to the game DLL it loaded, which is the one whose private data the guard writes.
-		const char *mmGamedll = g_ktp_doorguard_gamedll_ok ? "" : Info_ValueForKey(localinfo, "mm_gamedll");
+		const char *mmGamedll = KTP_DoorGuardIdentityMatches(digest) ? "" : Info_ValueForKey(localinfo, "mm_gamedll");
 		if (mmGamedll[0] && KTP_DoorGuardIsMetamod(path))
 		{
-			char target[KTP_DOORGUARD_PATH_MAX];
-			if (KTP_DoorGuardResolveLoaded(mmGamedll, com_gamedir, target, sizeof(target))
-				&& KTP_DoorGuardHashFile(target, digest))
-			{
-				Con_Printf("KTP-REHLDS: game DLL %s (md5 %s) is Metamod; hashing its mm_gamedll \"%s\", loaded from %s\n",
-					path, g_ktp_doorguard_gamedll_md5, mmGamedll, target);
-				Q_strncpy(g_ktp_doorguard_gamedll_md5, MD5_Print(digest), sizeof(g_ktp_doorguard_gamedll_md5) - 1);
-				g_ktp_doorguard_gamedll_md5[sizeof(g_ktp_doorguard_gamedll_md5) - 1] = 0;
-				g_ktp_doorguard_gamedll_ok = KTP_DoorGuardIdentityMatches(digest);
-			}
-			else
+			metamod = TRUE;
+			char targetPath[KTP_DOORGUARD_PATH_MAX];
+			if (!KTP_DoorGuardResolveLoaded(mmGamedll, com_gamedir, targetPath, sizeof(targetPath)))
 			{
 				Con_Printf("KTP-REHLDS: game DLL %s is Metamod, but its mm_gamedll \"%s\" is not a loaded file; hashed Metamod\n",
 					path, mmGamedll);
 			}
+			else if (!KTP_DoorGuardHashFile(targetPath, targetDigest))
+			{
+				Con_Printf("KTP-REHLDS: game DLL %s is Metamod, but its mm_gamedll \"%s\" at %s could not be read; hashed Metamod\n",
+					path, mmGamedll, targetPath);
+			}
+			else
+			{
+				Con_Printf("KTP-REHLDS: game DLL %s (md5 %s) is Metamod; hashing its mm_gamedll \"%s\", loaded from %s\n",
+					path, MD5_Print(digest), mmGamedll, targetPath);
+				target = targetDigest;
+			}
 		}
+
+		g_ktp_doorguard_gamedll_ok = KTP_DoorGuardChooseIdentity(digest, metamod, target, chosen);
+		Q_strncpy(g_ktp_doorguard_gamedll_md5, MD5_Print(chosen), sizeof(g_ktp_doorguard_gamedll_md5) - 1);
+		g_ktp_doorguard_gamedll_md5[sizeof(g_ktp_doorguard_gamedll_md5) - 1] = 0;
 	}
 	else
 	{
