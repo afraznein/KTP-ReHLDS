@@ -1038,7 +1038,7 @@ static void *KTP_DoorGuardLoadedHandle(const char *path)
 	return dlopen(path, RTLD_LAZY | RTLD_NOLOAD);
 }
 
-// Exported by Metamod-R (and every Metamod since Will Day's): its startup, which loads mm_gamedll.
+// Metamod's startup, the code that loads mm_gamedll; Metamod-R exports it and a game DLL has no reason to.
 qboolean KTP_DoorGuardIsMetamod(const char *path)
 {
 	void *handle = KTP_DoorGuardLoadedHandle(path);
