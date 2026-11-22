@@ -232,6 +232,12 @@ if (CMAKE_BUILD_TYPE MATCHES Unittests)
 
 	add_executable(engine ${appversion.sh} ${ENGINE_SRCS})
 	target_link_libraries(engine PRIVATE cppunitlite)
+
+	# Stands in for Metamod in the door guard's marker test: it exports metamod_startup.
+	add_library(ktp_metamod_marker SHARED unittests/ktp_metamod_marker.cpp)
+	set_target_properties(ktp_metamod_marker PROPERTIES PREFIX "" COMPILE_FLAGS "-m32" LINK_FLAGS "-m32")
+	add_dependencies(engine ktp_metamod_marker)
+	target_compile_definitions(engine PRIVATE KTP_METAMOD_MARKER_SO="$<TARGET_FILE:ktp_metamod_marker>")
 else()
 	add_library(engine SHARED ${appversion.sh} ${ENGINE_SRCS})
 endif()

@@ -261,3 +261,102 @@ TEST(HashesTheFileItWasHanded, KtpDoorGuard, 1000)
 
 	CHECK("a missing file is not a match", !KTP_DoorGuardHashFile(path, digest));
 }
+
+TEST(MetamodCandidatesFollowItsLoader, KtpDoorGuard, 1000)
+{
+	char out[KTP_DOORGUARD_CANDIDATES][KTP_DOORGUARD_PATH_MAX];
+
+	LONGS_EQUAL("relative: gamedir first", 2, KTP_DoorGuardMetamodCandidates("dlls/dod_i386.so", "dod", out));
+	ZSTR_EQUAL("install target", "dod/dlls/dod_i386.so", out[0]);
+	ZSTR_EQUAL("as written", "dlls/dod_i386.so", out[1]);
+
+	LONGS_EQUAL("absolute is taken as is", 1, KTP_DoorGuardMetamodCandidates("/opt/x/dod_i386.so", "dod", out));
+	ZSTR_EQUAL("absolute", "/opt/x/dod_i386.so", out[0]);
+
+	LONGS_EQUAL("no gamedir", 1, KTP_DoorGuardMetamodCandidates("dlls/dod_i386.so", "", out));
+	ZSTR_EQUAL("no gamedir, as written", "dlls/dod_i386.so", out[0]);
+
+	LONGS_EQUAL("unset localinfo", 0, KTP_DoorGuardMetamodCandidates("", "dod", out));
+	LONGS_EQUAL("null localinfo", 0, KTP_DoorGuardMetamodCandidates(NULL, "dod", out));
+}
+
+#ifndef _WIN32
+TEST(ResolvesOnlyAFileTheLinkerHasMapped, KtpDoorGuard, 1000)
+{
+	// libc is mapped in every process, so it stands in for the game DLL Metamod loaded.
+	void *libc = dlopen("libc.so.6", RTLD_LAZY | RTLD_NOLOAD);
+	CHECK("libc is loaded", libc != NULL);
+	Dl_info info;
+	CHECK("libc has a path", dladdr(dlsym(libc, "fopen"), &info) && info.dli_fname && info.dli_fname[0] == '/');
+	dlclose(libc);
+
+	char *mapped = realpath(info.dli_fname, NULL);
+	CHECK("libc path resolves", mapped != NULL);
+	char dir[KTP_DOORGUARD_PATH_MAX];
+	Q_strcpy(dir, mapped);
+	char *slash = Q_strrchr(dir, '/');
+	*slash = 0;
+
+	char out[KTP_DOORGUARD_PATH_MAX];
+	CHECK("relative to the game dir", KTP_DoorGuardResolveLoaded(slash + 1, dir, out, sizeof(out)));
+	ZSTR_EQUAL("resolved to the mapped file", mapped, out);
+	CHECK("absolute", KTP_DoorGuardResolveLoaded(mapped, "nowhere", out, sizeof(out)));
+	ZSTR_EQUAL("absolute resolved", mapped, out);
+	CHECK("too small a buffer is no answer", !KTP_DoorGuardResolveLoaded(mapped, "nowhere", out, 4));
+	CHECK("libc is not Metamod", !KTP_DoorGuardIsMetamod(mapped));
+	free(mapped);
+
+	const char *path = "ktp_doorguard_notloaded.tmp";
+	FILE *f = fopen(path, "wb");
+	CHECK("scratch file opens", f != NULL);
+	fwrite("abc", 1, 3, f);
+	fclose(f);
+	CHECK("a file that exists but is not mapped", !KTP_DoorGuardResolveLoaded(path, ".", out, sizeof(out)));
+	CHECK("an unmapped file is not Metamod", !KTP_DoorGuardIsMetamod(path));
+	remove(path);
+
+	CHECK("a missing file", !KTP_DoorGuardResolveLoaded("dlls/none.so", "dod", out, sizeof(out)));
+}
+#endif // _WIN32
+
+TEST(PinIsTheOnlyGateUnderMetamod, KtpDoorGuard, 1000)
+{
+	const unsigned char pinned[16] = {
+		0x4f, 0x47, 0x27, 0xb2, 0x39, 0x0d, 0x3a, 0x0e,
+		0xd6, 0xf5, 0xad, 0x86, 0x2d, 0xd6, 0xd4, 0xbe
+	};
+	unsigned char metamodDigest[16], otherBuild[16], out[16];
+	Q_memset(metamodDigest, 0xc5, sizeof(metamodDigest));
+	Q_memcpy(otherBuild, pinned, sizeof(otherBuild));
+	otherBuild[15] ^= 0x01;
+
+	CHECK("a loaded target that is not the pinned build",
+		!KTP_DoorGuardChooseIdentity(metamodDigest, TRUE, otherBuild, out));
+	CHECK("reports the target's md5", Q_memcmp(out, otherBuild, 16) == 0);
+
+	CHECK("Metamod and the pinned target", KTP_DoorGuardChooseIdentity(metamodDigest, TRUE, pinned, out));
+	CHECK("reports the target's md5 when pinned", Q_memcmp(out, pinned, 16) == 0);
+
+	CHECK("no target found keeps Metamod's md5", !KTP_DoorGuardChooseIdentity(metamodDigest, TRUE, NULL, out));
+	CHECK("Metamod's md5 reported", Q_memcmp(out, metamodDigest, 16) == 0);
+
+	CHECK("a pinned target counts only under Metamod", !KTP_DoorGuardChooseIdentity(metamodDigest, FALSE, pinned, out));
+	CHECK("not Metamod reports the liblist md5", Q_memcmp(out, metamodDigest, 16) == 0);
+
+	CHECK("a pinned liblist file", KTP_DoorGuardChooseIdentity(pinned, TRUE, otherBuild, out));
+	CHECK("never consults the target", Q_memcmp(out, pinned, 16) == 0);
+}
+
+#ifndef _WIN32
+#ifndef KTP_METAMOD_MARKER_SO
+#error "the Unittests build defines KTP_METAMOD_MARKER_SO; the Metamod marker test needs its fixture"
+#endif
+TEST(KnowsMetamodByItsStartup, KtpDoorGuard, 1000)
+{
+	CHECK("not Metamod before it is loaded", !KTP_DoorGuardIsMetamod(KTP_METAMOD_MARKER_SO));
+	void *fixture = dlopen(KTP_METAMOD_MARKER_SO, RTLD_NOW | RTLD_LOCAL);
+	CHECK("fixture loads", fixture != NULL);
+	CHECK("a module exporting metamod_startup is Metamod", KTP_DoorGuardIsMetamod(KTP_METAMOD_MARKER_SO));
+	dlclose(fixture);
+}
+#endif // _WIN32
